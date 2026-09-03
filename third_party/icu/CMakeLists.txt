@@ -38,6 +38,36 @@ set(ICU_SRC_URL  "https://github.com/unicode-org/icu/releases/download/${ICU_TAG
 set(ICU_DATA_URL "https://github.com/unicode-org/icu/releases/download/${ICU_TAG}/icu4c-${ICU_VER_US}-data-bin-l.zip")
 
 # ---------------------------------------------------------------------------
+# Convention directory: third_party/icu/download/
+# Drop the archives there (icu4c-*-src.tgz, icu4c-*-data-bin-l.zip)
+# and they will be picked up automatically, no CMake variables needed.
+# ---------------------------------------------------------------------------
+set(ICU_DOWNLOAD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/download")
+if(IS_DIRECTORY "${ICU_DOWNLOAD_DIR}")
+  if(NOT ICU_LOCAL_SRC_ZIP OR NOT EXISTS "${ICU_LOCAL_SRC_ZIP}")
+    file(GLOB _dl_src "${ICU_DOWNLOAD_DIR}/icu4c-*-src.tgz")
+    if(_dl_src)
+      list(GET _dl_src 0 ICU_LOCAL_SRC_ZIP)
+      message(STATUS "ICU: auto-detected local source from download dir: ${ICU_LOCAL_SRC_ZIP}")
+    endif()
+  endif()
+  if(NOT ICU_LOCAL_DATA_ZIP OR NOT EXISTS "${ICU_LOCAL_DATA_ZIP}")
+    file(GLOB _dl_data "${ICU_DOWNLOAD_DIR}/icu4c-*-data-bin-l.zip")
+    if(_dl_data)
+      list(GET _dl_data 0 ICU_LOCAL_DATA_ZIP)
+      message(STATUS "ICU: auto-detected local data from download dir: ${ICU_LOCAL_DATA_ZIP}")
+    endif()
+  endif()
+  if(NOT ICU_LOCAL_DATA_DAT OR NOT EXISTS "${ICU_LOCAL_DATA_DAT}")
+    file(GLOB _dl_dat "${ICU_DOWNLOAD_DIR}/icudt*.dat")
+    if(_dl_dat)
+      list(GET _dl_dat 0 ICU_LOCAL_DATA_DAT)
+      message(STATUS "ICU: auto-detected local dat from download dir: ${ICU_LOCAL_DATA_DAT}")
+    endif()
+  endif()
+endif()
+
+# ---------------------------------------------------------------------------
 # Fetch ICU source (icu4c); prefer a local zip when provided
 # ---------------------------------------------------------------------------
 set(_src_url "${ICU_SRC_URL}")

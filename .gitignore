@@ -11,3 +11,6 @@ CMakeCache.txt
 CMakeFiles/
 .cache
 .vscode
+
+# ICU local archives (drop into third_party/icu/download/ for offline builds)
+third_party/icu/download/
