@@ -16,7 +16,14 @@ add_executable(clux src/main.c)
 add_library(clux_core STATIC src/core/allocator.c src/core/panic.c src/core/vec.c src/core/rbtree.c src/core/omap.c)
 target_include_directories(clux_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
+# ---------------------------------------------------------------------------
+# Command library (subcommand dispatch framework)
+# ---------------------------------------------------------------------------
+add_library(clux_cmd STATIC src/cmd/cmd.c)
+target_include_directories(clux_cmd PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
 target_link_libraries(clux PRIVATE
+    clux_cmd
     clux_core
     ICU::i18n
     ICU::uc

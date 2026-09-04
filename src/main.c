@@ -1,90 +1,100 @@
 #include <stdio.h>
 
-#include "unicode/ubrk.h"
+#include "cmd/cmd.h"
 #include "unicode/uchar.h"
-#include "unicode/ucnv.h"
-#include "unicode/ustring.h"
 #include "unicode/utypes.h"
 #include "icu_data.h"
 
-/* Segment a UTF-8 string into grapheme clusters and print each cluster's
- * UTF-16 code units, demonstrating that multi-codepoint sequences (ZWJ
- * families, skin-tone modifiers, regional-indicator flags) are one cluster. */
-static void demo_grapheme(const char *utf8) {
-  UChar buf[256];
-  int32_t len = 0;
-  UErrorCode status = U_ZERO_ERROR;
+/* ---- "format" subcommand ---- */
 
-  u_strFromUTF8(buf, 256, &len, utf8, -1, &status);
-  if (U_FAILURE(status)) {
-    fprintf(stderr, "  utf8 conversion failed: %s\n", u_errorName(status));
-    return;
-  }
-
-  UBreakIterator *bi = ubrk_open(UBRK_CHARACTER, "en", buf, len, &status);
-  if (U_FAILURE(status)) {
-    fprintf(stderr, "  ubrk_open failed: %s\n", u_errorName(status));
-    ubrk_close(bi);
-    return;
-  }
-
-  int cluster = 0;
-  int32_t start = ubrk_first(bi);
-  for (int32_t end = ubrk_next(bi); end != UBRK_DONE;
-       start = end, end = ubrk_next(bi)) {
-    cluster++;
-    printf("  cluster %d: U+", cluster);
-    for (int32_t i = start; i < end; i++) {
-      printf("%04X ", (unsigned)buf[i]);
-    }
-    printf("(%d UTF-16 unit%s)\n", end - start,
-           (end - start) == 1 ? "" : "s");
-  }
-  ubrk_close(bi);
-  printf("  => \"%s\" = %d grapheme cluster(s)\n", utf8, cluster);
+static int cmd_format(const cmd_args_t *args) {
+  (void)args;
+  fprintf(stderr, "format: not implemented\n");
+  return 1;
 }
 
-int main(int argc, char *argv[]) {
-  (void)argc;
-  (void)argv;
+/* ---- "build" subcommand ---- */
+
+static int cmd_build(const cmd_args_t *args) {
+  (void)args;
+  fprintf(stderr, "build: not implemented\n");
+  return 1;
+}
+
+/* ---- "run" subcommand ---- */
+
+static int cmd_run(const cmd_args_t *args) {
+  (void)args;
+  fprintf(stderr, "run: not implemented\n");
+  return 1;
+}
+
+/* ---- "test" subcommand ---- */
+
+static int cmd_test(const cmd_args_t *args) {
+  (void)args;
+  fprintf(stderr, "test: not implemented\n");
+  return 1;
+}
+
+/* ---- "version" subcommand ---- */
+
+static int cmd_version(const cmd_args_t *args) {
+  (void)args;
 
   if (icu_data_init() != 0) {
     fprintf(stderr, "failed to initialize ICU common data\n");
     return 1;
   }
 
-  /* Report the linked ICU library version. */
   UVersionInfo ver;
   u_getVersion(ver);
   char ver_str[U_MAX_VERSION_STRING_LENGTH];
   u_versionToString(ver, ver_str);
+  printf("clux 0.1.0\n");
   printf("ICU version: %s\n", ver_str);
-
-  /* Smoke test of the embedded common data: count available converters. */
-  printf("available converters: %d\n", ucnv_countAvailable());
-
-  printf("\nGrapheme cluster (emoji) segmentation:\n");
-
-  /* Single base emoji: 1 cluster, 2 UTF-16 units (surrogate pair). */
-  printf("Waving hand:\n");
-  demo_grapheme("\xF0\x9F\x91\x8B"); /* U+1F44B */
-
-  /* Base + skin-tone modifier: 1 cluster (4 UTF-16 units). */
-  printf("Waving hand + dark skin tone:\n");
-  demo_grapheme("\xF0\x9F\x91\x8B\xF0\x9F\x8F\xBF"); /* U+1F44B U+1F3FF */
-
-  /* Regional indicators: 1 flag cluster (4 UTF-16 units). */
-  printf("Flag (US):\n");
-  demo_grapheme("\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8"); /* U+1F1FA U+1F1F8 */
-
-  /* ZWJ family: 1 cluster of 5 astral chars (10 UTF-16 units). */
-  printf("Family (adult+adult+girl), ZWJ sequence:\n");
-  demo_grapheme("\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7"); /* U+1F468 U+200D U+1F469 U+200D U+1F467 */
-
-  /* Three base emoji separated by spaces: 3 clusters. */
-  printf("Three separate emoji:\n");
-  demo_grapheme("\xF0\x9F\x98\x80\x20\xF0\x9F\x98\x81\x20\xF0\x9F\x98\x82"); /* 😀 😁 😂 */
-
-  printf("\nHello world\n");
   return 0;
+}
+
+/* ---- Command table ---- */
+
+static const cmd_t g_cmds[] = {
+    {
+        .name = "format",
+        .usage = "clux format [options]",
+        .help = "Format source code.",
+        .handler = cmd_format,
+    },
+    {
+        .name = "build",
+        .usage = "clux build [options]",
+        .help = "Build the project.",
+        .handler = cmd_build,
+    },
+    {
+        .name = "run",
+        .usage = "clux run [options]",
+        .help = "Run the project.",
+        .handler = cmd_run,
+    },
+    {
+        .name = "test",
+        .usage = "clux test [options]",
+        .help = "Run tests.",
+        .handler = cmd_test,
+    },
+    {
+        .name = "version",
+        .usage = "clux version",
+        .help = "Print version information.",
+        .handler = cmd_version,
+    },
+};
+
+#define NUM_CMDS (sizeof(g_cmds) / sizeof(g_cmds[0]))
+
+/* ---- main ---- */
+
+int main(int argc, char *argv[]) {
+  return cmd_dispatch(g_cmds, NUM_CMDS, argc, argv);
 }
