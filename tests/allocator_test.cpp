@@ -711,3 +711,81 @@ TEST(OwnershipChain, NestedAllocation) {
   EXPECT_EQ(box, nullptr);
   delete_allocator(&a);
 }
+
+/* ==== Leak Detection ==== */
+
+TEST(LeakDetection, NoLeakCleanDelete) {
+  /* All objects freed before delete_allocator — no leak output */
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  void *p1 = allocator_new(a, &int_class, 1);
+  void *p2 = allocator_new(a, &int_class, 1);
+  allocator_free(a, &p1);
+  allocator_free(a, &p2);
+  /* delete_allocator should not print any leak warnings */
+  delete_allocator(&a);
+  EXPECT_EQ(a, nullptr);
+}
+
+TEST(LeakDetection, LeakReportedOnDelete) {
+  /* Intentionally leak an allocation and capture stderr */
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  void *leaked = allocator_new(a, &int_class, 3);
+
+  /* Redirect stderr to a temp file to capture leak output */
+  char tmp_path[L_tmpnam];
+  tmpnam(tmp_path);
+  FILE *tmp = freopen(tmp_path, "w", stderr);
+  ASSERT_NE(tmp, nullptr);
+
+  delete_allocator(&a);
+
+  fflush(stderr);
+  freopen("CON", "w", stderr); /* restore stderr on Windows */
+  EXPECT_EQ(a, nullptr);
+
+  /* Read back the captured output */
+  FILE *rf = fopen(tmp_path, "r");
+  ASSERT_NE(rf, nullptr);
+  char buf[1024] = {};
+  size_t n = fread(buf, 1, sizeof(buf) - 1, rf);
+  fclose(rf);
+  remove(tmp_path);
+  buf[n] = '\0';
+
+  EXPECT_NE(std::string(buf).find("memory leak detected"), std::string::npos);
+  EXPECT_NE(std::string(buf).find("int"), std::string::npos);
+  EXPECT_NE(std::string(buf).find("count=3"), std::string::npos);
+
+  /* Clean up the leaked memory manually — not via allocator_free (it's gone) */
+  /* We saved `leaked` which points to user data; header is just before it */
+  /* The header+data was allocated by test_alloc (= malloc), so free the raw ptr */
+  free((char *)leaked - sizeof(void *) * 5 /* approx header with prev/next */);
+}
+
+TEST(LeakDetection, MultipleLeaksReported) {
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  allocator_new(a, &int_class, 1);
+  allocator_new(a, &byte_class, 10);
+
+  char tmp_path[L_tmpnam];
+  tmpnam(tmp_path);
+  FILE *tmp = freopen(tmp_path, "w", stderr);
+  ASSERT_NE(tmp, nullptr);
+
+  delete_allocator(&a);
+
+  fflush(stderr);
+  freopen("CON", "w", stderr);
+
+  FILE *rf = fopen(tmp_path, "r");
+  ASSERT_NE(rf, nullptr);
+  char buf[2048] = {};
+  size_t n = fread(buf, 1, sizeof(buf) - 1, rf);
+  fclose(rf);
+  remove(tmp_path);
+  buf[n] = '\0';
+
+  std::string output(buf);
+  EXPECT_NE(output.find("int"), std::string::npos);
+  EXPECT_NE(output.find("byte"), std::string::npos);
+}

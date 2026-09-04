@@ -9,12 +9,13 @@
 
 ### 1.1 allocator_t
 
-不透明类型，持有用户提供的 `alloc_fn` 和 `free_fn` 函数指针。
+不透明类型，持有用户提供的 `alloc_fn` 和 `free_fn` 函数指针，以及活体分配链表头指针。
 
 ```
 struct _allocator_t {          // 定义在 allocator.c 内部，不暴露
     alloc_fn_t *alloc_fn;      // 分配函数（如 malloc）
     free_fn_t  *free_fn;       // 释放函数（如 free）
+    struct _alloc_header_t *head; // 活体分配双向链表头
 };
 ```
 
@@ -22,6 +23,7 @@ struct _allocator_t {          // 定义在 allocator.c 内部，不暴露
 - `allocator_t` 的定义不暴露在头文件中，外部只能通过指针操作。
 - 一个 `allocator_t` 实例创建后，其 `alloc_fn`/`free_fn` 不可更改。
 - `delete_allocator` 不释放通过该 allocator 分配的对象——调用方须先释放所有对象。
+- `delete_allocator` 在销毁前检查 `head` 是否为 NULL，若仍有活体分配则逐个打印泄露信息（不兜底释放）。
 
 ### 1.2 class_t（运行时类型描述符）
 
@@ -56,6 +58,8 @@ struct _class_t {
 │  clazz       │ obj[0]  obj[1]  ...  obj[count-1]        │
 │  count       │                                          │
 │  owns_clazz  │                                          │
+│  prev        │                                          │
+│  next        │                                          │
 └──────────────┴──────────────────────────────────────────┘
                  ^
                  │
@@ -69,6 +73,8 @@ typedef struct _alloc_header_t {
     class_t *clazz;       // 指向类型描述符
     size_t   count;       // 对象数量
     bool     owns_clazz;  // true 表示 clazz 由 allocator_new_ex 堆分配，free 时需释放
+    struct _alloc_header_t *prev;  // 双向链表：前一个分配
+    struct _alloc_header_t *next;  // 双向链表：后一个分配
 } alloc_header_t;
 ```
 
@@ -287,3 +293,33 @@ void my_dispose(void *self, allocator_t *allocator) {
 - 所有内存操作可被追踪和替换（通过自定义 `alloc_fn`/`free_fn`）。
 - 内存统计、调试分配器、arena 分配器等可无缝接入。
 - 不存在绕过 allocator 的内存泄漏。
+
+---
+
+## 10. 内存泄露检测
+
+### 10.1 机制
+
+每个 `alloc_header_t` 包含 `prev`/`next` 指针，与 `allocator_t` 的 `head` 指针共同构成双向链表，追踪所有活体分配。
+
+- `allocator_new`：将新 header 插入链表头部
+- `allocator_free`：将 header 从链表移除
+- `delete_allocator`：检查 `head` 是否为 NULL
+
+### 10.2 泄露报告
+
+当 `delete_allocator` 发现仍有活体分配时，向 `stderr` 输出泄露信息：
+
+```
+memory leak detected: allocator 0x... has live allocations:
+  leak: 12 bytes at 0x... (type='int', count=3)
+  leak: 10 bytes at 0x... (type='byte', count=10)
+```
+
+每条记录包含：用户数据大小、用户数据地址、类型名、对象数量。
+
+**约束：** `delete_allocator` **不兜底释放**泄露的内存。泄露的内存仍由调用方负责释放（但 allocator 已销毁，无法再通过 `allocator_free` 操作——这意味着存在泄露本身就是编程错误，应在 `delete_allocator` 之前修复）。
+
+### 10.3 对 allocator_move 的影响
+
+`allocator_move` 内部调用 `allocator_new`（新对象自动入链表）和 `allocator_free`（旧对象自动出链表），链表维护透明，无需额外处理。
