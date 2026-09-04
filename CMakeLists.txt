@@ -9,7 +9,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_subdirectory(third_party/icu)
 
 add_executable(clux src/main.c)
+
+# ---------------------------------------------------------------------------
+# Core library (allocator + runtime support)
+# ---------------------------------------------------------------------------
+add_library(clux_core STATIC src/core/allocator.c src/core/panic.c)
+target_include_directories(clux_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
 target_link_libraries(clux PRIVATE
+    clux_core
     ICU::i18n
     ICU::uc
     ICU::data
@@ -36,8 +44,7 @@ if(BUILD_TESTS)
   file(GLOB TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp")
 
   add_executable(clux_test ${TEST_SOURCES})
-  target_link_libraries(clux_test PRIVATE GTest::gtest)
-  target_include_directories(clux_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  target_link_libraries(clux_test PRIVATE clux_core GTest::gtest)
 
   include(GoogleTest)
   gtest_discover_tests(clux_test)
