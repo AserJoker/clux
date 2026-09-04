@@ -302,14 +302,13 @@ static void vec_clone_cb(void *self, allocator_t *allocator, void *another) {
     dst->data = new_data;
     dst->cap = src->len;
 
-    if (src->owns_element) {
-      for (size_t i = 0; i < src->len; i++) {
+    for (size_t i = 0; i < src->len; i++) {
+      if (src->owns_element) {
         void *elem = src->data[i];
-        void *clone = allocator_clone(allocator, &elem);
-        new_data[i] = clone;
+        new_data[i] = allocator_clone(allocator, &elem);
+      } else {
+        new_data[i] = src->data[i];
       }
-    } else {
-      memcpy(new_data, src->data, src->len * sizeof(void *));
     }
     dst->len = src->len;
   }

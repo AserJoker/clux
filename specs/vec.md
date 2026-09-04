@@ -119,9 +119,9 @@ vec_t 作为 allocator 管理的对象，必须提供 `dispose_fn`、`move_fn`�
 1. 转移 `owns_element`
 2. 分配新的 `data` 数组（容量 = `another->len`）
 3. 若 `owns_element`：对每个元素调用 `allocator_clone`（深拷贝）
-4. 若 `!owns_element`：`memcpy` 指针（浅拷贝）
+4. 若 `!owns_element`：直接复制元素指针（浅拷贝，与源共享元素）
 
-**约束：** `owns_element=true` 时，若某个元素的 `clone_fn` 为 NULL，`allocator_clone` 会 panic。
+**约束：** 不使用 `memcpy` 复制指针——所有元素通过 API 语义操作。`owns_element=true` 时，若某个元素的 `clone_fn` 为 NULL，`allocator_clone` 会 panic。
 
 ### 4.2 ptr_class
 
