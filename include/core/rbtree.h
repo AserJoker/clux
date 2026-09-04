@@ -101,6 +101,20 @@ void *rbtree_max(const rbtree_t *tree);
  */
 bool rbtree_owns_element(const rbtree_t *tree);
 
+/* ---- Traversal ---- */
+
+/**
+ * Visitor callback for rbtree_foreach. Called for each element in sorted order.
+ * `element` is the stored pointer; `ctx` is the user-provided context.
+ */
+typedef void (*rbtree_visit_fn_t)(void *element, void *ctx);
+
+/**
+ * Visit every element in the tree in sorted (in-order) order.
+ * No-op if `tree` or `visit` is NULL.
+ */
+void rbtree_foreach(const rbtree_t *tree, rbtree_visit_fn_t visit, void *ctx);
+
 #ifdef __cplusplus
 }
 #endif

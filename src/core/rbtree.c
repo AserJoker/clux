@@ -453,6 +453,24 @@ bool rbtree_owns_element(const rbtree_t *tree) {
   return tree->owns_element;
 }
 
+/* ---- Traversal ---- */
+
+static void foreach_node(rb_node_t *node, rbtree_visit_fn_t visit,
+                         void *ctx) {
+  if (!node)
+    return;
+  foreach_node(node->left, visit, ctx);
+  visit(node->element, ctx);
+  foreach_node(node->right, visit, ctx);
+}
+
+void rbtree_foreach(const rbtree_t *tree, rbtree_visit_fn_t visit,
+                    void *ctx) {
+  if (!tree || !visit)
+    return;
+  foreach_node(tree->root, visit, ctx);
+}
+
 /* ---- Callbacks for rbtree_class ---- */
 
 static void rbtree_dispose(void *self, allocator_t *allocator) {
