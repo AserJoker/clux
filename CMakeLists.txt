@@ -13,8 +13,9 @@ add_executable(clux src/main.c)
 # ---------------------------------------------------------------------------
 # Core library (allocator + runtime support)
 # ---------------------------------------------------------------------------
-add_library(clux_core STATIC src/core/allocator.c src/core/panic.c src/core/vec.c src/core/rbtree.c src/core/omap.c src/core/strmap.c)
+add_library(clux_core STATIC src/core/allocator.c src/core/panic.c src/core/vec.c src/core/rbtree.c src/core/omap.c src/core/strmap.c src/core/stream.c)
 target_include_directories(clux_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(clux_core PUBLIC ICU::uc ICU::i18n)
 
 # ---------------------------------------------------------------------------
 # Command library (subcommand dispatch framework)
@@ -28,7 +29,7 @@ add_library(clux_cmd STATIC
     src/cmd/version.c
 )
 target_include_directories(clux_cmd PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(clux_cmd PUBLIC ICU::uc ICU::i18n icu_data_init)
+target_link_libraries(clux_cmd PUBLIC ICU::uc icu_data_init)
 
 target_link_libraries(clux PRIVATE
     clux_cmd
@@ -56,7 +57,7 @@ if(BUILD_TESTS)
   file(GLOB TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp")
 
   add_executable(clux_test ${TEST_SOURCES})
-  target_link_libraries(clux_test PRIVATE clux_core GTest::gtest)
+  target_link_libraries(clux_test PRIVATE clux_core icu_data_init ICU::data GTest::gtest)
 
   include(GoogleTest)
   gtest_discover_tests(clux_test)
