@@ -13,7 +13,7 @@ add_executable(clux src/main.c)
 # ---------------------------------------------------------------------------
 # Core library (allocator + runtime support)
 # ---------------------------------------------------------------------------
-add_library(clux_core STATIC src/core/allocator.c src/core/panic.c)
+add_library(clux_core STATIC src/core/allocator.c src/core/panic.c src/core/vec.c)
 target_include_directories(clux_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 target_link_libraries(clux PRIVATE
