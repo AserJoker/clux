@@ -4,11 +4,13 @@
 
 /* ---- cmd_args implementation ---- */
 
-size_t cmd_args_parse(int argc, char **argv, cmd_opt_t *opt_buf,
-                      size_t opt_buf_len, cmd_args_t *out) {
+size_t cmd_args_parse(int argc,
+                      char **argv,
+                      cmd_opt_t *opt_buf,
+                      size_t opt_buf_len,
+                      cmd_args_t *out) {
   if (!out) {
-    if (opt_buf && opt_buf_len > 0)
-      opt_buf[0].key = NULL;
+    if (opt_buf && opt_buf_len > 0) opt_buf[0].key = NULL;
     return 0;
   }
 
@@ -26,8 +28,7 @@ size_t cmd_args_parse(int argc, char **argv, cmd_opt_t *opt_buf,
 
     if (arg[0] == '-' && arg[1] == '-') {
       const char *key_start = arg + 2;
-      if (*key_start == '\0')
-        continue; /* bare "--", skip */
+      if (*key_start == '\0') continue; /* bare "--", skip */
 
       if (out->optc < opt_buf_len) {
         const char *eq = strchr(key_start, '=');
@@ -45,8 +46,7 @@ size_t cmd_args_parse(int argc, char **argv, cmd_opt_t *opt_buf,
       }
     } else {
       /* Positional argument: record its position */
-      if (pos_start == 0 && out->posc == 0)
-        pos_start = (size_t)i;
+      if (pos_start == 0 && out->posc == 0) pos_start = (size_t)i;
       out->posc++;
     }
   }
@@ -71,28 +71,23 @@ size_t cmd_args_parse(int argc, char **argv, cmd_opt_t *opt_buf,
 }
 
 const char *cmd_args_get(const cmd_args_t *args, const char *key) {
-  if (!args || !key)
-    return NULL;
+  if (!args || !key) return NULL;
   for (size_t i = 0; i < args->optc; i++) {
-    if (strcmp(args->opts[i].key, key) == 0)
-      return args->opts[i].value;
+    if (strcmp(args->opts[i].key, key) == 0) return args->opts[i].value;
   }
   return NULL;
 }
 
 bool cmd_args_has(const cmd_args_t *args, const char *key) {
-  if (!args || !key)
-    return false;
+  if (!args || !key) return false;
   for (size_t i = 0; i < args->optc; i++) {
-    if (strcmp(args->opts[i].key, key) == 0)
-      return true;
+    if (strcmp(args->opts[i].key, key) == 0) return true;
   }
   return false;
 }
 
 const char *cmd_args_pos(const cmd_args_t *args, size_t i) {
-  if (!args || i >= args->posc)
-    return NULL;
+  if (!args || i >= args->posc) return NULL;
   return args->posargs[i];
 }
 

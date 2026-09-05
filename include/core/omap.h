@@ -34,8 +34,10 @@ typedef int (*omap_cmp_fn_t)(const void *a, const void *b);
  * `owns_value`: if true, values are freed/cloned similarly.
  * Panics on out-of-memory. Returns NULL for invalid arguments.
  */
-omap_t *omap_new(allocator_t *allocator, omap_cmp_fn_t cmp_fn,
-                 bool owns_key, bool owns_value);
+omap_t *omap_new(allocator_t *allocator,
+                 omap_cmp_fn_t cmp_fn,
+                 bool owns_key,
+                 bool owns_value);
 
 /**
  * Free the ordered map and nullify the caller's pointer.
@@ -53,8 +55,7 @@ void omap_free(allocator_t *allocator, omap_t **map);
  * Returns the old value if key existed, NULL otherwise.
  * Panics on out-of-memory. No-op if `map` or `key` is NULL.
  */
-void *omap_insert(omap_t *map, allocator_t *allocator, void *key,
-                  void *value);
+void *omap_insert(omap_t *map, allocator_t *allocator, void *key, void *value);
 
 /**
  * Remove the entry with the given key. Returns the removed value,

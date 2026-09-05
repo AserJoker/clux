@@ -8,15 +8,16 @@
 /* ---- Internal: entry stored in the rbtree ---- */
 
 typedef struct {
-  char *key;    /* owned copy */
+  char *key; /* owned copy */
   void *value;
 } strmap_entry_t;
 
 /* ---- Internal: strmap_t definition ---- */
 
 struct _strmap_t {
-  rbtree_t *tree;          /* stores strmap_entry_t*, owns_element=false */
-  vec_t *key_vec;          /* stores char* (same ptrs as entry->key), owns_element=false */
+  rbtree_t *tree; /* stores strmap_entry_t*, owns_element=false */
+  vec_t
+      *key_vec; /* stores char* (same ptrs as entry->key), owns_element=false */
   bool owns_value;
   allocator_t *allocator;
 };
@@ -122,8 +123,7 @@ static void clone_entry(void *element, void *ctx) {
 /* ---- Construction / destruction ---- */
 
 strmap_t *strmap_new(allocator_t *allocator, bool owns_value) {
-  if (!allocator)
-    return NULL;
+  if (!allocator) return NULL;
 
   strmap_t *map = (strmap_t *)allocator_new(allocator, &strmap_class, 1);
   map->owns_value = owns_value;
@@ -136,17 +136,17 @@ strmap_t *strmap_new(allocator_t *allocator, bool owns_value) {
 }
 
 void strmap_free(allocator_t *allocator, strmap_t **map) {
-  if (!allocator || !map || !*map)
-    return;
+  if (!allocator || !map || !*map) return;
   allocator_free(allocator, (void **)map);
 }
 
 /* ---- Insertion ---- */
 
-void *strmap_insert(strmap_t *map, allocator_t *allocator, const char *key,
+void *strmap_insert(strmap_t *map,
+                    allocator_t *allocator,
+                    const char *key,
                     void *value) {
-  if (!map || !key)
-    return NULL;
+  if (!map || !key) return NULL;
 
   /* Duplicate the key for the new entry */
   char *key_copy = key_dup(allocator, key);
@@ -197,8 +197,7 @@ static void remove_key_from_vec(strmap_t *map, const char *key) {
 }
 
 void *strmap_remove(strmap_t *map, const char *key) {
-  if (!map || !key)
-    return NULL;
+  if (!map || !key) return NULL;
 
   /* Create a temporary search entry */
   strmap_entry_t search;
@@ -207,17 +206,14 @@ void *strmap_remove(strmap_t *map, const char *key) {
 
   /* Find the actual entry first to get the stored key pointer */
   strmap_entry_t *found = (strmap_entry_t *)rbtree_find(map->tree, &search);
-  if (!found)
-    return NULL;
+  if (!found) return NULL;
 
   char *actual_key = found->key;
   void *old_value = found->value;
 
   /* Remove from rbtree */
-  strmap_entry_t *removed =
-      (strmap_entry_t *)rbtree_remove(map->tree, &search);
-  if (!removed)
-    return NULL;
+  strmap_entry_t *removed = (strmap_entry_t *)rbtree_remove(map->tree, &search);
+  if (!removed) return NULL;
 
   /* Remove from key_vec by pointer identity */
   remove_key_from_vec(map, actual_key);
@@ -235,8 +231,7 @@ void *strmap_remove(strmap_t *map, const char *key) {
 /* ---- Lookup ---- */
 
 void *strmap_get(const strmap_t *map, const char *key) {
-  if (!map || !key)
-    return NULL;
+  if (!map || !key) return NULL;
 
   strmap_entry_t search;
   search.key = (char *)key;
@@ -247,8 +242,7 @@ void *strmap_get(const strmap_t *map, const char *key) {
 }
 
 bool strmap_contains(const strmap_t *map, const char *key) {
-  if (!map || !key)
-    return false;
+  if (!map || !key) return false;
 
   strmap_entry_t search;
   search.key = (char *)key;
@@ -260,28 +254,24 @@ bool strmap_contains(const strmap_t *map, const char *key) {
 /* ---- Properties ---- */
 
 size_t strmap_size(const strmap_t *map) {
-  if (!map)
-    return 0;
+  if (!map) return 0;
   return rbtree_size(map->tree);
 }
 
 bool strmap_is_empty(const strmap_t *map) {
-  if (!map)
-    return true;
+  if (!map) return true;
   return rbtree_is_empty(map->tree);
 }
 
 const vec_t *strmap_keys(const strmap_t *map) {
-  if (!map)
-    return NULL;
+  if (!map) return NULL;
   return map->key_vec;
 }
 
 /* ---- Ownership query ---- */
 
 bool strmap_owns_value(const strmap_t *map) {
-  if (!map)
-    return false;
+  if (!map) return false;
   return map->owns_value;
 }
 
@@ -289,8 +279,7 @@ bool strmap_owns_value(const strmap_t *map) {
 
 static void strmap_dispose(void *self, allocator_t *allocator) {
   strmap_t *map = (strmap_t *)self;
-  if (!map)
-    return;
+  if (!map) return;
 
   /* Free all entries (and their keys/values) via rbtree_foreach */
   dispose_ctx_t dctx = {
@@ -310,8 +299,7 @@ static void strmap_move_cb(void *self, allocator_t *allocator, void *another) {
   (void)allocator;
   strmap_t *dst = (strmap_t *)self;
   strmap_t *src = (strmap_t *)another;
-  if (!dst || !src)
-    return;
+  if (!dst || !src) return;
 
   dst->tree = src->tree;
   dst->key_vec = src->key_vec;
@@ -326,8 +314,7 @@ static void strmap_move_cb(void *self, allocator_t *allocator, void *another) {
 static void strmap_clone_cb(void *self, allocator_t *allocator, void *another) {
   strmap_t *dst = (strmap_t *)self;
   strmap_t *src = (strmap_t *)another;
-  if (!dst || !src)
-    return;
+  if (!dst || !src) return;
 
   dst->owns_value = src->owns_value;
   dst->allocator = allocator;

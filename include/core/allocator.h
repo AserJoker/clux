@@ -44,11 +44,15 @@ typedef void (*clone_fn_t)(void *self, allocator_t *allocator, void *another);
 typedef struct _class_t class_t;
 
 struct _class_t {
-  const char *name;       /**< Human-readable type name (must outlive all allocations of this class). */
-  size_t size;            /**< Size in bytes of a single object. */
-  move_fn_t move_fn;      /**< Move callback, or NULL if the type does not support move. */
-  clone_fn_t clone_fn;    /**< Clone callback, or NULL if the type does not support clone. */
-  dispose_fn_t dispose_fn;/**< Dispose callback, or NULL if no cleanup is needed. */
+  const char *
+      name; /**< Human-readable type name (must outlive all allocations of this class). */
+  size_t size; /**< Size in bytes of a single object. */
+  move_fn_t
+      move_fn; /**< Move callback, or NULL if the type does not support move. */
+  clone_fn_t
+      clone_fn; /**< Clone callback, or NULL if the type does not support clone. */
+  dispose_fn_t
+      dispose_fn; /**< Dispose callback, or NULL if no cleanup is needed. */
 };
 
 /* ---- Allocator lifetime ---- */
@@ -82,9 +86,13 @@ void *allocator_new(allocator_t *allocator, class_t *clazz, size_t count);
  * given parameters. Useful for one-off types without a static class.
  * Panics on out-of-memory. Returns NULL for invalid arguments.
  */
-void *allocator_new_ex(allocator_t *allocator, const char *name, size_t size,
-                       move_fn_t move_fn, clone_fn_t clone_fn,
-                       dispose_fn_t dispose_fn, size_t count);
+void *allocator_new_ex(allocator_t *allocator,
+                       const char *name,
+                       size_t size,
+                       move_fn_t move_fn,
+                       clone_fn_t clone_fn,
+                       dispose_fn_t dispose_fn,
+                       size_t count);
 
 /**
  * Free an allocation previously returned by allocator_new / new_ex /

@@ -20,17 +20,18 @@ static istream_t *make_istream(allocator_t *a, const char *text) {
   return istream_open(a, src);
 }
 
-static lexer_t *make_lexer(allocator_t *a, const char *text,
-                           const char *filename) {
+static lexer_t *
+make_lexer(allocator_t *a, const char *text, const char *filename) {
   return lexer_create(a, make_istream(a, text), filename);
 }
 
-static token_t *take(allocator_t *a, lexer_t *lx, token_kind_t expected,
+static token_t *take(allocator_t *a,
+                     lexer_t *lx,
+                     token_kind_t expected,
                      const char *expected_text) {
   token_t *t = lexer_next(lx);
   EXPECT_NE(t, nullptr);
-  if (!t)
-    return nullptr;
+  if (!t) return nullptr;
   EXPECT_EQ(token_get_kind(t), expected);
   size_t len = 0;
   const char *text = token_get_text(t, lx, &len);
@@ -99,10 +100,10 @@ TEST(Lexer, EofIdempotent) {
 
 TEST(Lexer, AllKeywords) {
   const char *kws[] = {
-      "as",       "bool", "break", "const", "continue", "else", "f32",
-      "f64",      "false", "for",  "func",  "i16",      "i32",  "i64",
-      "i8",       "if",   "return", "str",  "true",     "u16",  "u32",
-      "u64",      "u8",   "undefined", "var", "void",    "while",
+      "as",  "bool",  "break",     "const", "continue", "else",  "f32",
+      "f64", "false", "for",       "func",  "i16",      "i32",   "i64",
+      "i8",  "if",    "return",    "str",   "true",     "u16",   "u32",
+      "u64", "u8",    "undefined", "var",   "void",     "while",
   };
   allocator_t *a = create_allocator(test_alloc, test_free);
   for (size_t i = 0; i < sizeof(kws) / sizeof(kws[0]); i++) {

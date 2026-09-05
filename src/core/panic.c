@@ -8,13 +8,10 @@
 static panic_handler_t g_panic_handler = panic_handler_abort;
 
 void set_panic_handler(panic_handler_t handler) {
-  if (handler)
-    g_panic_handler = handler;
+  if (handler) g_panic_handler = handler;
 }
 
-panic_handler_t get_panic_handler(void) {
-  return g_panic_handler;
-}
+panic_handler_t get_panic_handler(void) { return g_panic_handler; }
 
 /* ---- Default handler ---- */
 

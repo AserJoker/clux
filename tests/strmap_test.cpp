@@ -14,12 +14,8 @@ static allocator_t *g_alloc = nullptr;
 
 class StrmapTest : public ::testing::Test {
 protected:
-  void SetUp() override {
-    g_alloc = create_allocator(malloc, free);
-  }
-  void TearDown() override {
-    delete_allocator(&g_alloc);
-  }
+  void SetUp() override { g_alloc = create_allocator(malloc, free); }
+  void TearDown() override { delete_allocator(&g_alloc); }
 };
 
 /* A simple boxed value for owns_value testing */

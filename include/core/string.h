@@ -35,7 +35,8 @@ string_t *string_from_cstr(allocator_t *allocator, const char *cstr);
  * NUL-terminated, but embedded NUL bytes are preserved.
  * Panics on out-of-memory. Returns NULL for invalid arguments.
  */
-string_t *string_from_bytes(allocator_t *allocator, const char *data, size_t len);
+string_t *
+string_from_bytes(allocator_t *allocator, const char *data, size_t len);
 
 /**
  * Create an independent copy of `other`.
@@ -161,15 +162,17 @@ bool string_equals(const string_t *a, const string_t *b);
  * `len` is clamped to the available bytes. Returns NULL if out of bounds
  * or on invalid arguments.
  */
-string_t *string_substring(allocator_t *allocator, const string_t *str,
-                           size_t start, size_t len);
+string_t *string_substring(allocator_t *allocator,
+                           const string_t *str,
+                           size_t start,
+                           size_t len);
 
 /**
  * Return a new string that is the concatenation of `a` and `b`.
  * Panics on length overflow / out-of-memory. Returns NULL for invalid args.
  */
-string_t *string_concat(allocator_t *allocator, const string_t *a,
-                        const string_t *b);
+string_t *
+string_concat(allocator_t *allocator, const string_t *a, const string_t *b);
 
 /**
  * Return a new string with the first occurrence of `needle` replaced by
@@ -178,8 +181,10 @@ string_t *string_concat(allocator_t *allocator, const string_t *a,
  * Returns NULL for invalid arguments (allocator/str/needle NULL).
  * Panics on length overflow / out-of-memory.
  */
-string_t *string_replace(allocator_t *allocator, const string_t *str,
-                         const char *needle, const char *replacement);
+string_t *string_replace(allocator_t *allocator,
+                         const string_t *str,
+                         const char *needle,
+                         const char *replacement);
 
 /**
  * Return a new string with every occurrence of `needle` replaced by
@@ -188,8 +193,10 @@ string_t *string_replace(allocator_t *allocator, const string_t *str,
  * Returns NULL for invalid arguments (allocator/str/needle NULL).
  * Panics on length overflow / out-of-memory.
  */
-string_t *string_replace_all(allocator_t *allocator, const string_t *str,
-                             const char *needle, const char *replacement);
+string_t *string_replace_all(allocator_t *allocator,
+                             const string_t *str,
+                             const char *needle,
+                             const char *replacement);
 
 #ifdef __cplusplus
 }

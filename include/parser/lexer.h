@@ -10,16 +10,16 @@ extern "C" {
 /* ---- Token kinds ---- */
 
 typedef enum {
-  TOKEN_TYPE_ERROR,            /* lexer error: unrecognized input */
+  TOKEN_TYPE_ERROR, /* lexer error: unrecognized input */
   TOKEN_TYPE_IDENTIFIER,
-  TOKEN_TYPE_CHARACTER,        /* character literal, e.g. 'a' (value type: u8) */
-  TOKEN_TYPE_STRING,           /* string literal, e.g. "abc" */
-  TOKEN_TYPE_NUMERIC,          /* integer/float literal; value parsed later */
+  TOKEN_TYPE_CHARACTER, /* character literal, e.g. 'a' (value type: u8) */
+  TOKEN_TYPE_STRING,    /* string literal, e.g. "abc" */
+  TOKEN_TYPE_NUMERIC,   /* integer/float literal; value parsed later */
   TOKEN_TYPE_KEYWORD,
   TOKEN_TYPE_SYMBOL,
-  TOKEN_TYPE_COMMENT,          /* line comment: // ... */
-  TOKEN_TYPE_MULTILINE_COMMENT,/* block comment: slash-star ... star-slash */
-  TOKEN_TYPE_WHITESPACE,       /* one merged run of whitespace */
+  TOKEN_TYPE_COMMENT,           /* line comment: // ... */
+  TOKEN_TYPE_MULTILINE_COMMENT, /* block comment: slash-star ... star-slash */
+  TOKEN_TYPE_WHITESPACE,        /* one merged run of whitespace */
   TOKEN_TYPE_EOF,
 } token_kind_t;
 
@@ -42,8 +42,8 @@ typedef struct _lexer_t lexer_t;
  * Returns NULL for invalid arguments or non-direct-access sources.
  * Panics on out-of-memory.
  */
-lexer_t *lexer_create(allocator_t *allocator, istream_t *stream,
-                      const char *filename);
+lexer_t *
+lexer_create(allocator_t *allocator, istream_t *stream, const char *filename);
 
 /**
  * Close the lexer (closing the underlying istream) and nullify the
@@ -88,8 +88,8 @@ const location_t *token_get_location(const token_t *self);
  * `*out_len`. The pointer is valid as long as the lexer is alive.
  * Returns NULL (and *out_len = 0) on invalid arguments.
  */
-const char *token_get_text(const token_t *self, const lexer_t *lexer,
-                           size_t *out_len);
+const char *
+token_get_text(const token_t *self, const lexer_t *lexer, size_t *out_len);
 
 /** Return true if the token text equals `str` (byte-exact). */
 bool token_is(const token_t *self, const lexer_t *lexer, const char *str);
@@ -100,8 +100,8 @@ bool token_is(const token_t *self, const lexer_t *lexer, const char *str);
  * Create a standalone token (mainly used internally by the lexer and
  * by tests). Panics on out-of-memory. Returns NULL for invalid args.
  */
-token_t *create_token(allocator_t *allocator, token_kind_t kind,
-                      location_t location);
+token_t *
+create_token(allocator_t *allocator, token_kind_t kind, location_t location);
 
 /** Free a token and nullify the caller's pointer. No-op if NULL. */
 void token_free(allocator_t *allocator, token_t **token);

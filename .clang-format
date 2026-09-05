@@ -1,0 +1,78 @@
+---
+# clux code-formatting configuration.
+#
+# Style is derived from LLVM (2-space indent, attach braces) and tuned to
+# match the hand-written convention already present in the codebase:
+#   * 2-space indentation, spaces only (no tabs)
+#   * opening brace on the same line (functions, control flow, structs)
+#   * pointer/reference asterisks hug the identifier:  T *p
+#   * no space after a C-style cast:  (char)c
+#   * a single space before control-statement parentheses:  if (x)
+#   * includes are kept in their current (manually grouped) order
+#
+# clang-format auto-detects C vs C++ by file extension; the Standard below
+# (a C++-style enum, the only kind clang-format understands) is applied to
+# both, which is harmless for the C11 core sources.
+BasedOnStyle: LLVM
+
+# ---- Language standard ----------------------------------------------------
+Standard: c++20
+
+# ---- Indentation ----------------------------------------------------------
+IndentWidth: 2
+TabWidth: 2
+UseTab: Never
+ContinuationIndentWidth: 4
+
+# ---- Braces & spacing -----------------------------------------------------
+BreakBeforeBraces: Attach
+IndentWrappedFunctionNames: false
+SpaceAfterCStyleCast: false
+SpaceBeforeParens: ControlStatements
+SpacesInParentheses: false
+IndentCaseLabels: false
+
+# ---- Alignment ------------------------------------------------------------
+AlignAfterOpenBracket: Align
+PointerAlignment: Right
+DerivePointerAlignment: false
+# Bin packing must be disabled for InsertTrailingCommas (below) to be allowed:
+# with it off, multi-argument calls/parameters break one-per-line and gain a
+# trailing comma when they cannot fit on a single line.
+BinPackArguments: false
+BinPackParameters: false
+
+# ---- Short statements -----------------------------------------------------
+AllowShortFunctionsOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: false
+
+# ---- Comments & blank lines ----------------------------------------------
+ReflowComments: false # preserve hand-aligned trailing comments
+
+# ---- Trailing commas & initializer-list wrapping -------------------------
+# (BinPackArguments / BinPackParameters are disabled above; that is what makes
+# trailing-comma insertion possible and breaks long lists one element per line.)
+#
+# Append a trailing comma to a brace-initializer list that is *wrapped* onto
+# multiple lines (valid in C since C99 / C++ since C++11), e.g. {1, 2, 3,}.
+# NOTE (verified against clang-format 22.x): InsertTrailingCommas only fires
+# for lists that would otherwise be collapsed to a single line -- i.e. it keeps
+# a marginally-too-long list broken. Lists whose single-line form already
+# overflows ColumnLimit are broken anyway but do NOT get a trailing comma in
+# this version, and there is no option to *force* every element onto its own
+# line. To make breaking (and thus trailing commas) kick in sooner, lower
+# ColumnLimit above.
+InsertTrailingCommas: Wrapped
+#
+# Enum enumerator lists reliably get a trailing comma (clang-format 21+):
+#   enum { Red, Green, Blue, };
+EnumTrailingComma: Insert
+
+# ---- Includes -------------------------------------------------------------
+# The project orders includes deliberately (local "" first, then <system>,
+# then ICU <unicode/...>); do not let clang-format reorder them.
+SortIncludes: false
+
+# ---- Line width -----------------------------------------------------------
+ColumnLimit: 80

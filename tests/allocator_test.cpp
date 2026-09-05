@@ -273,8 +273,8 @@ TEST(AllocatorNew, GetCountNullData) {
 
 TEST(AllocatorNewEx, Basic) {
   allocator_t *a = create_allocator(test_alloc, test_free);
-  void *data = allocator_new_ex(a, "point", sizeof(double), default_move,
-                                default_clone, nullptr, 1);
+  void *data = allocator_new_ex(
+      a, "point", sizeof(double), default_move, default_clone, nullptr, 1);
   ASSERT_NE(data, nullptr);
 
   double *p = static_cast<double *>(data);
@@ -289,8 +289,8 @@ TEST(AllocatorNewEx, Basic) {
 
 TEST(AllocatorNewEx, GetClassInfo) {
   allocator_t *a = create_allocator(test_alloc, test_free);
-  void *data = allocator_new_ex(a, "point", sizeof(double), default_move,
-                                default_clone, nullptr, 2);
+  void *data = allocator_new_ex(
+      a, "point", sizeof(double), default_move, default_clone, nullptr, 2);
   ASSERT_NE(data, nullptr);
 
   const class_t *clazz = allocator_get_class(data);
@@ -308,8 +308,8 @@ TEST(AllocatorNewEx, GetClassInfo) {
 
 TEST(AllocatorNewEx, NullMoveCloneDispose) {
   allocator_t *a = create_allocator(test_alloc, test_free);
-  void *data = allocator_new_ex(a, "raw", sizeof(int), nullptr, nullptr,
-                                nullptr, 1);
+  void *data =
+      allocator_new_ex(a, "raw", sizeof(int), nullptr, nullptr, nullptr, 1);
   ASSERT_NE(data, nullptr);
 
   const class_t *clazz = allocator_get_class(data);
@@ -331,15 +331,15 @@ TEST(AllocatorNewEx, ZeroSize) {
 
 TEST(AllocatorNewEx, ZeroCount) {
   allocator_t *a = create_allocator(test_alloc, test_free);
-  EXPECT_EQ(allocator_new_ex(a, "zero", sizeof(int), nullptr, nullptr, nullptr,
-                             0),
-            nullptr);
+  EXPECT_EQ(
+      allocator_new_ex(a, "zero", sizeof(int), nullptr, nullptr, nullptr, 0),
+      nullptr);
   delete_allocator(&a);
 }
 
 TEST(AllocatorNewEx, NullAllocator) {
-  EXPECT_EQ(allocator_new_ex(nullptr, "zero", sizeof(int), nullptr, nullptr,
-                             nullptr, 1),
+  EXPECT_EQ(allocator_new_ex(
+                nullptr, "zero", sizeof(int), nullptr, nullptr, nullptr, 1),
             nullptr);
 }
 
@@ -583,8 +583,8 @@ TEST_F(AllocatorPanicTest, OomInNewExPanics) {
   allocator_t *a = create_allocator(oom_alloc, oom_free);
 
   try {
-    allocator_new_ex(a, "point", sizeof(double), default_move, default_clone,
-                    nullptr, 1);
+    allocator_new_ex(
+        a, "point", sizeof(double), default_move, default_clone, nullptr, 1);
     FAIL() << "allocator_new_ex should panic on OOM";
   } catch (const std::runtime_error &e) {
     std::string msg = e.what();

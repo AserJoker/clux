@@ -45,40 +45,38 @@ static class_t ostream_class = {
 /* ---- Line break detection ---- */
 
 static bool is_line_break(UChar32 cp) {
-  return cp == 0x000A /* LF */
-         || cp == 0x000D /* CR */
-         || cp == 0x2028 /* Line Separator */
+  return cp == 0x000A     /* LF */
+         || cp == 0x000D  /* CR */
+         || cp == 0x2028  /* Line Separator */
          || cp == 0x2029; /* Paragraph Separator */
 }
 
 /* ---- Compute cluster_col for current line using ICU break iterator ---- */
 
-static size_t compute_cluster_col(const char *line_start, size_t line_len,
+static size_t compute_cluster_col(const char *line_start,
+                                  size_t line_len,
                                   size_t pos_offset) {
-  if (pos_offset == 0)
-    return 1;
+  if (pos_offset == 0) return 1;
 
   UErrorCode status = U_ZERO_ERROR;
   int32_t u16_len = 0;
   u_strFromUTF8(NULL, 0, &u16_len, line_start, (int32_t)pos_offset, &status);
-  if (U_FAILURE(status) && status != U_BUFFER_OVERFLOW_ERROR)
-    return 1;
+  if (U_FAILURE(status) && status != U_BUFFER_OVERFLOW_ERROR) return 1;
 
-  if (u16_len == 0)
-    return 1;
+  if (u16_len == 0) return 1;
 
   status = U_ZERO_ERROR;
   UChar *u16_buf = (UChar *)malloc(sizeof(UChar) * (u16_len + 1));
-  if (!u16_buf)
-    return 1;
-  u_strFromUTF8(u16_buf, u16_len + 1, NULL, line_start, (int32_t)pos_offset,
-                &status);
+  if (!u16_buf) return 1;
+  u_strFromUTF8(
+      u16_buf, u16_len + 1, NULL, line_start, (int32_t)pos_offset, &status);
   if (U_FAILURE(status)) {
     free(u16_buf);
     return 1;
   }
 
-  UBreakIterator *bi = ubrk_open(UBRK_CHARACTER, NULL, u16_buf, u16_len, &status);
+  UBreakIterator *bi =
+      ubrk_open(UBRK_CHARACTER, NULL, u16_buf, u16_len, &status);
   if (U_FAILURE(status)) {
     free(u16_buf);
     return 1;
@@ -87,10 +85,8 @@ static size_t compute_cluster_col(const char *line_start, size_t line_len,
   size_t cluster_count = 1;
   int32_t boundary = ubrk_first(bi);
   while (boundary != UBRK_DONE) {
-    if (boundary > 0 && boundary <= u16_len)
-      cluster_count++;
-    if (boundary >= u16_len)
-      break;
+    if (boundary > 0 && boundary <= u16_len) cluster_count++;
+    if (boundary >= u16_len) break;
     boundary = ubrk_next(bi);
   }
 
@@ -107,16 +103,16 @@ static size_t compute_cluster_col(const char *line_start, size_t line_len,
  * Sets `out_cp_bytes` to the number of bytes consumed.
  * Returns the decoded codepoint, or -1 on EOF.
  */
-static UChar32 source_read_cp(stream_source_t *src, size_t offset,
-                               char seq[4], size_t *out_cp_bytes) {
+static UChar32 source_read_cp(stream_source_t *src,
+                              size_t offset,
+                              char seq[4],
+                              size_t *out_cp_bytes) {
   /* Seek to the offset */
-  if (src->seek(src->ctx, offset) != 0)
-    return -1;
+  if (src->seek(src->ctx, offset) != 0) return -1;
 
   /* Read lead byte */
   size_t n = src->read(src->ctx, seq, 1);
-  if (n == 0)
-    return -1;
+  if (n == 0) return -1;
 
   /* Determine sequence length */
   int seq_len = 1;
@@ -131,8 +127,7 @@ static UChar32 source_read_cp(stream_source_t *src, size_t offset,
   /* Read continuation bytes */
   if (seq_len > 1) {
     size_t got = src->read(src->ctx, seq + 1, (size_t)(seq_len - 1));
-    if (got < (size_t)(seq_len - 1))
-      seq_len = 1 + (int)got; /* truncated */
+    if (got < (size_t)(seq_len - 1)) seq_len = 1 + (int)got; /* truncated */
   }
 
   /* Decode */
@@ -158,8 +153,7 @@ typedef struct {
 static size_t mem_source_read(void *ctx, void *buf, size_t len) {
   mem_source_ctx_t *c = (mem_source_ctx_t *)ctx;
   size_t avail = c->len - c->pos;
-  if (len > avail)
-    len = avail;
+  if (len > avail) len = avail;
   if (len > 0) {
     memcpy(buf, c->data + c->pos, len);
     c->pos += len;
@@ -169,8 +163,7 @@ static size_t mem_source_read(void *ctx, void *buf, size_t len) {
 
 static int mem_source_seek(void *ctx, size_t offset) {
   mem_source_ctx_t *c = (mem_source_ctx_t *)ctx;
-  if (offset > c->len)
-    offset = c->len;
+  if (offset > c->len) offset = c->len;
   c->pos = offset;
   return 0;
 }
@@ -188,8 +181,7 @@ static size_t mem_source_size(const void *ctx) {
 }
 
 static void mem_source_close(void *ctx) {
-  if (!ctx)
-    return;
+  if (!ctx) return;
   mem_source_ctx_t *c = (mem_source_ctx_t *)ctx;
   allocator_t *alloc = c->alloc;
   if (c->owns_data) {
@@ -199,16 +191,15 @@ static void mem_source_close(void *ctx) {
   allocator_free(alloc, &ctx);
 }
 
-stream_source_t stream_source_mem(allocator_t *allocator, const char *data,
-                                  size_t len, bool owns_data) {
-  if (!allocator || !data)
-    return (stream_source_t){0};
+stream_source_t stream_source_mem(allocator_t *allocator,
+                                  const char *data,
+                                  size_t len,
+                                  bool owns_data) {
+  if (!allocator || !data) return (stream_source_t){0};
 
-  mem_source_ctx_t *ctx =
-      (mem_source_ctx_t *)allocator_new(allocator, &buf_class,
-                                         sizeof(mem_source_ctx_t));
-  if (!ctx)
-    return (stream_source_t){0};
+  mem_source_ctx_t *ctx = (mem_source_ctx_t *)allocator_new(
+      allocator, &buf_class, sizeof(mem_source_ctx_t));
+  if (!ctx) return (stream_source_t){0};
 
   ctx->data = data;
   ctx->len = len;
@@ -246,10 +237,8 @@ static size_t mem_sink_write(void *ctx, const void *data, size_t len) {
     while (new_cap < c->len + len)
       new_cap *= 2;
     char *new_buf = (char *)allocator_new(c->alloc, &buf_class, new_cap);
-    if (c->buf)
-      memcpy(new_buf, c->buf, c->len);
-    if (c->buf)
-      allocator_free(c->alloc, (void **)&c->buf);
+    if (c->buf) memcpy(new_buf, c->buf, c->len);
+    if (c->buf) allocator_free(c->alloc, (void **)&c->buf);
     c->buf = new_buf;
     c->cap = new_cap;
   }
@@ -260,8 +249,7 @@ static size_t mem_sink_write(void *ctx, const void *data, size_t len) {
 
 static int mem_sink_seek(void *ctx, size_t offset) {
   mem_sink_ctx_t *c = (mem_sink_ctx_t *)ctx;
-  if (offset > c->len)
-    return -1;
+  if (offset > c->len) return -1;
   c->len = offset;
   return 0;
 }
@@ -280,24 +268,19 @@ static void mem_sink_reset(void *ctx) {
 }
 
 static void mem_sink_close(void *ctx) {
-  if (!ctx)
-    return;
+  if (!ctx) return;
   mem_sink_ctx_t *c = (mem_sink_ctx_t *)ctx;
   allocator_t *alloc = c->alloc;
-  if (c->buf)
-    allocator_free(alloc, (void **)&c->buf);
+  if (c->buf) allocator_free(alloc, (void **)&c->buf);
   allocator_free(alloc, &ctx);
 }
 
 stream_sink_t stream_sink_mem(allocator_t *allocator) {
-  if (!allocator)
-    return (stream_sink_t){0};
+  if (!allocator) return (stream_sink_t){0};
 
-  mem_sink_ctx_t *ctx =
-      (mem_sink_ctx_t *)allocator_new(allocator, &buf_class,
-                                       sizeof(mem_sink_ctx_t));
-  if (!ctx)
-    return (stream_sink_t){0};
+  mem_sink_ctx_t *ctx = (mem_sink_ctx_t *)allocator_new(
+      allocator, &buf_class, sizeof(mem_sink_ctx_t));
+  if (!ctx) return (stream_sink_t){0};
 
   ctx->buf = NULL;
   ctx->len = 0;
@@ -316,14 +299,12 @@ stream_sink_t stream_sink_mem(allocator_t *allocator) {
 }
 
 const char *stream_sink_mem_data(const stream_sink_t *sink) {
-  if (!sink || !sink->ctx || !sink->data)
-    return NULL;
+  if (!sink || !sink->ctx || !sink->data) return NULL;
   return sink->data(sink->ctx);
 }
 
 size_t stream_sink_mem_size(const stream_sink_t *sink) {
-  if (!sink || !sink->ctx || !sink->tell)
-    return 0;
+  if (!sink || !sink->ctx || !sink->tell) return 0;
   return sink->tell(sink->ctx);
 }
 
@@ -345,8 +326,7 @@ static size_t file_source_read(void *ctx, void *buf, size_t len) {
 
 static int file_source_seek(void *ctx, size_t offset) {
   file_source_ctx_t *c = (file_source_ctx_t *)ctx;
-  if (fseek(c->fp, (long)offset, SEEK_SET) != 0)
-    return -1;
+  if (fseek(c->fp, (long)offset, SEEK_SET) != 0) return -1;
   return 0;
 }
 
@@ -365,23 +345,19 @@ static size_t file_source_size(const void *ctx) {
 }
 
 static void file_source_close(void *ctx) {
-  if (!ctx)
-    return;
+  if (!ctx) return;
   file_source_ctx_t *c = (file_source_ctx_t *)ctx;
   allocator_t *alloc = c->alloc;
-  if (c->owns_fp && c->fp)
-    fclose(c->fp);
+  if (c->owns_fp && c->fp) fclose(c->fp);
   allocator_free(alloc, &ctx);
 }
 
-static stream_source_t file_source_make(allocator_t *allocator, FILE *fp,
-                                        bool owns_fp) {
-  file_source_ctx_t *ctx =
-      (file_source_ctx_t *)allocator_new(allocator, &buf_class,
-                                         sizeof(file_source_ctx_t));
+static stream_source_t
+file_source_make(allocator_t *allocator, FILE *fp, bool owns_fp) {
+  file_source_ctx_t *ctx = (file_source_ctx_t *)allocator_new(
+      allocator, &buf_class, sizeof(file_source_ctx_t));
   if (!ctx) {
-    if (owns_fp && fp)
-      fclose(fp);
+    if (owns_fp && fp) fclose(fp);
     return (stream_source_t){0};
   }
 
@@ -390,8 +366,7 @@ static stream_source_t file_source_make(allocator_t *allocator, FILE *fp,
   size_t fsize = 0;
   if (fseek(fp, 0, SEEK_END) == 0) {
     long end = ftell(fp);
-    if (end >= 0)
-      fsize = (size_t)end;
+    if (end >= 0) fsize = (size_t)end;
     fseek(fp, saved_pos, SEEK_SET);
   }
 
@@ -412,20 +387,17 @@ static stream_source_t file_source_make(allocator_t *allocator, FILE *fp,
 }
 
 stream_source_t stream_source_file(allocator_t *allocator, const char *path) {
-  if (!allocator || !path)
-    return (stream_source_t){0};
+  if (!allocator || !path) return (stream_source_t){0};
 
   FILE *fp = fopen(path, "rb");
-  if (!fp)
-    return (stream_source_t){0};
+  if (!fp) return (stream_source_t){0};
 
   return file_source_make(allocator, fp, true);
 }
 
-stream_source_t stream_source_file_fp(allocator_t *allocator, FILE *fp,
-                                      bool owns_fp) {
-  if (!allocator || !fp)
-    return (stream_source_t){0};
+stream_source_t
+stream_source_file_fp(allocator_t *allocator, FILE *fp, bool owns_fp) {
+  if (!allocator || !fp) return (stream_source_t){0};
   return file_source_make(allocator, fp, owns_fp);
 }
 
@@ -446,8 +418,7 @@ static size_t file_sink_write(void *ctx, const void *data, size_t len) {
 
 static int file_sink_seek(void *ctx, size_t offset) {
   file_sink_ctx_t *c = (file_sink_ctx_t *)ctx;
-  if (fseek(c->fp, (long)offset, SEEK_SET) != 0)
-    return -1;
+  if (fseek(c->fp, (long)offset, SEEK_SET) != 0) return -1;
   return 0;
 }
 
@@ -470,23 +441,19 @@ static void file_sink_reset(void *ctx) {
 }
 
 static void file_sink_close(void *ctx) {
-  if (!ctx)
-    return;
+  if (!ctx) return;
   file_sink_ctx_t *c = (file_sink_ctx_t *)ctx;
   allocator_t *alloc = c->alloc;
-  if (c->owns_fp && c->fp)
-    fclose(c->fp);
+  if (c->owns_fp && c->fp) fclose(c->fp);
   allocator_free(alloc, &ctx);
 }
 
-static stream_sink_t file_sink_make(allocator_t *allocator, FILE *fp,
-                                    bool owns_fp) {
-  file_sink_ctx_t *ctx =
-      (file_sink_ctx_t *)allocator_new(allocator, &buf_class,
-                                       sizeof(file_sink_ctx_t));
+static stream_sink_t
+file_sink_make(allocator_t *allocator, FILE *fp, bool owns_fp) {
+  file_sink_ctx_t *ctx = (file_sink_ctx_t *)allocator_new(
+      allocator, &buf_class, sizeof(file_sink_ctx_t));
   if (!ctx) {
-    if (owns_fp && fp)
-      fclose(fp);
+    if (owns_fp && fp) fclose(fp);
     return (stream_sink_t){0};
   }
 
@@ -506,20 +473,17 @@ static stream_sink_t file_sink_make(allocator_t *allocator, FILE *fp,
 }
 
 stream_sink_t stream_sink_file(allocator_t *allocator, const char *path) {
-  if (!allocator || !path)
-    return (stream_sink_t){0};
+  if (!allocator || !path) return (stream_sink_t){0};
 
   FILE *fp = fopen(path, "wb");
-  if (!fp)
-    return (stream_sink_t){0};
+  if (!fp) return (stream_sink_t){0};
 
   return file_sink_make(allocator, fp, true);
 }
 
-stream_sink_t stream_sink_file_fp(allocator_t *allocator, FILE *fp,
-                                  bool owns_fp) {
-  if (!allocator || !fp)
-    return (stream_sink_t){0};
+stream_sink_t
+stream_sink_file_fp(allocator_t *allocator, FILE *fp, bool owns_fp) {
+  if (!allocator || !fp) return (stream_sink_t){0};
   return file_sink_make(allocator, fp, owns_fp);
 }
 
@@ -547,23 +511,19 @@ struct _istream_t {
 /* ---- Ensure line buffer capacity ---- */
 
 static void istream_ensure_line_buf(istream_t *s, size_t extra) {
-  if (s->line_buf_len + extra <= s->line_buf_cap)
-    return;
+  if (s->line_buf_len + extra <= s->line_buf_cap) return;
   size_t new_cap = s->line_buf_cap ? s->line_buf_cap * 2 : 64;
   while (new_cap < s->line_buf_len + extra)
     new_cap *= 2;
   char *new_buf = (char *)allocator_new(s->allocator, &buf_class, new_cap);
-  if (s->line_buf)
-    memcpy(new_buf, s->line_buf, s->line_buf_len);
-  if (s->line_buf)
-    allocator_free(s->allocator, (void **)&s->line_buf);
+  if (s->line_buf) memcpy(new_buf, s->line_buf, s->line_buf_len);
+  if (s->line_buf) allocator_free(s->allocator, (void **)&s->line_buf);
   s->line_buf = new_buf;
   s->line_buf_cap = new_cap;
 }
 
 istream_t *istream_open(allocator_t *allocator, stream_source_t source) {
-  if (!allocator || !source.ctx)
-    return NULL;
+  if (!allocator || !source.ctx) return NULL;
 
   istream_class.size = sizeof(istream_t);
   istream_t *s = (istream_t *)allocator_new(allocator, &istream_class, 1);
@@ -580,32 +540,27 @@ istream_t *istream_open(allocator_t *allocator, stream_source_t source) {
 }
 
 void istream_close(istream_t **stream) {
-  if (!stream || !*stream)
-    return;
+  if (!stream || !*stream) return;
   istream_t *s = *stream;
   allocator_t *alloc = s->allocator;
 
   /* Close the source backend */
-  if (s->source.close)
-    s->source.close(s->source.ctx);
+  if (s->source.close) s->source.close(s->source.ctx);
 
   /* Free line buffer */
-  if (s->line_buf)
-    allocator_free(alloc, (void **)&s->line_buf);
+  if (s->line_buf) allocator_free(alloc, (void **)&s->line_buf);
 
   allocator_free(alloc, (void **)stream);
 }
 
 UChar32 istream_read_cp(istream_t *stream) {
-  if (!stream)
-    return -1;
+  if (!stream) return -1;
 
   /* Read codepoint from source */
   char seq[4] = {0};
   size_t cp_bytes = 0;
   UChar32 cp = source_read_cp(&stream->source, stream->pos, seq, &cp_bytes);
-  if (cp == -1)
-    return -1;
+  if (cp == -1) return -1;
 
   /* Append to line buffer */
   istream_ensure_line_buf(stream, cp_bytes);
@@ -620,9 +575,8 @@ UChar32 istream_read_cp(istream_t *stream) {
     if (cp == 0x000D) {
       char next_seq[4] = {0};
       size_t next_bytes = 0;
-      UChar32 next_cp = source_read_cp(&stream->source,
-                                        stream->pos + cp_bytes,
-                                        next_seq, &next_bytes);
+      UChar32 next_cp = source_read_cp(
+          &stream->source, stream->pos + cp_bytes, next_seq, &next_bytes);
       if (next_cp == 0x000A) {
         /* Consume the LF as well */
         cp_bytes += next_bytes;
@@ -643,32 +597,28 @@ UChar32 istream_read_cp(istream_t *stream) {
 }
 
 UChar32 istream_peek_cp(istream_t *stream) {
-  if (!stream)
-    return -1;
+  if (!stream) return -1;
 
   char seq[4] = {0};
   size_t cp_bytes = 0;
   UChar32 cp = source_read_cp(&stream->source, stream->pos, seq, &cp_bytes);
 
   /* Restore source position */
-  if (cp_bytes > 0)
-    stream->source.seek(stream->source.ctx, stream->pos);
+  if (cp_bytes > 0) stream->source.seek(stream->source.ctx, stream->pos);
 
   return cp;
 }
 
 stream_pos_t istream_tell(const istream_t *stream) {
   stream_pos_t pos = {0, 1, 1, 1};
-  if (!stream)
-    return pos;
+  if (!stream) return pos;
   pos.byte_offset = stream->pos;
   pos.line = stream->line;
   pos.col = stream->col;
   /* Compute cluster_col from line buffer */
   if (stream->line_buf && stream->line_buf_len > 0) {
-    pos.cluster_col = compute_cluster_col(stream->line_buf,
-                                          stream->line_buf_len,
-                                          stream->line_buf_len);
+    pos.cluster_col = compute_cluster_col(
+        stream->line_buf, stream->line_buf_len, stream->line_buf_len);
   }
   return pos;
 }
@@ -684,20 +634,17 @@ typedef struct {
 static pos_info_t scan_position(stream_source_t *src, size_t target_offset) {
   pos_info_t info = {1, 1, 0};
 
-  if (target_offset == 0)
-    return info;
+  if (target_offset == 0) return info;
 
   /* Seek to beginning */
-  if (src->seek(src->ctx, 0) != 0)
-    return info;
+  if (src->seek(src->ctx, 0) != 0) return info;
 
   size_t byte_pos = 0;
   while (byte_pos < target_offset) {
     char seq[4] = {0};
     size_t cp_bytes = 0;
     UChar32 cp = source_read_cp(src, byte_pos, seq, &cp_bytes);
-    if (cp == -1 || cp_bytes == 0)
-      break;
+    if (cp == -1 || cp_bytes == 0) break;
 
     if (is_line_break(cp)) {
       info.line++;
@@ -724,14 +671,11 @@ static pos_info_t scan_position(stream_source_t *src, size_t target_offset) {
 }
 
 void istream_seek(istream_t *stream, size_t byte_offset) {
-  if (!stream)
-    return;
+  if (!stream) return;
 
   size_t total = 0;
-  if (stream->source.size)
-    total = stream->source.size(stream->source.ctx);
-  if (byte_offset > total)
-    byte_offset = total;
+  if (stream->source.size) total = stream->source.size(stream->source.ctx);
+  if (byte_offset > total) byte_offset = total;
 
   if (byte_offset == 0) {
     stream->pos = 0;
@@ -754,8 +698,8 @@ void istream_seek(istream_t *stream, size_t byte_offset) {
   if (line_len > 0) {
     istream_ensure_line_buf(stream, line_len);
     stream->source.seek(stream->source.ctx, info.line_start);
-    size_t n = stream->source.read(stream->source.ctx, stream->line_buf,
-                                    line_len);
+    size_t n =
+        stream->source.read(stream->source.ctx, stream->line_buf, line_len);
     stream->line_buf_len = n;
   } else {
     stream->line_buf_len = 0;
@@ -766,13 +710,12 @@ void istream_seek(istream_t *stream, size_t byte_offset) {
 }
 
 int istream_scanf(istream_t *stream, const char *fmt, ...) {
-  if (!stream || !fmt)
-    return EOF;
+  if (!stream || !fmt) return EOF;
 
-  size_t total = stream->source.size ? stream->source.size(stream->source.ctx) : 0;
+  size_t total =
+      stream->source.size ? stream->source.size(stream->source.ctx) : 0;
   size_t remaining = (stream->pos < total) ? total - stream->pos : 0;
-  if (remaining == 0)
-    return EOF;
+  if (remaining == 0) return EOF;
 
   /* Try direct access first (memory source) */
   const char *start = NULL;
@@ -780,16 +723,14 @@ int istream_scanf(istream_t *stream, const char *fmt, ...) {
 
   if (stream->source.data) {
     const char *src_data = stream->source.data(stream->source.ctx);
-    if (src_data)
-      start = src_data + stream->pos;
+    if (src_data) start = src_data + stream->pos;
   }
 
   if (!start) {
     /* Fall back: read remaining data into a temp buffer */
-    char *tmp = (char *)allocator_new(stream->allocator, &buf_class,
-                                       remaining + 1);
-    if (!tmp)
-      return EOF;
+    char *tmp =
+        (char *)allocator_new(stream->allocator, &buf_class, remaining + 1);
+    if (!tmp) return EOF;
     stream->source.seek(stream->source.ctx, stream->pos);
     size_t n = stream->source.read(stream->source.ctx, tmp, remaining);
     tmp[n] = '\0';
@@ -811,28 +752,26 @@ int istream_scanf(istream_t *stream, const char *fmt, ...) {
 }
 
 const char *istream_data(const istream_t *stream) {
-  if (!stream || !stream->source.data)
-    return NULL;
+  if (!stream || !stream->source.data) return NULL;
   return stream->source.data(stream->source.ctx);
 }
 
 size_t istream_size(const istream_t *stream) {
-  if (!stream || !stream->source.size)
-    return 0;
+  if (!stream || !stream->source.size) return 0;
   return stream->source.size(stream->source.ctx);
 }
 
 size_t istream_remaining(const istream_t *stream) {
-  if (!stream)
-    return 0;
-  size_t total = stream->source.size ? stream->source.size(stream->source.ctx) : 0;
+  if (!stream) return 0;
+  size_t total =
+      stream->source.size ? stream->source.size(stream->source.ctx) : 0;
   return (stream->pos < total) ? total - stream->pos : 0;
 }
 
 bool istream_at_end(const istream_t *stream) {
-  if (!stream)
-    return true;
-  size_t total = stream->source.size ? stream->source.size(stream->source.ctx) : 0;
+  if (!stream) return true;
+  size_t total =
+      stream->source.size ? stream->source.size(stream->source.ctx) : 0;
   return stream->pos >= total;
 }
 
@@ -858,24 +797,23 @@ struct _ostream_t {
 /* ---- Ensure line buffer capacity ---- */
 
 static void ostream_ensure_line_buf(ostream_t *s, size_t extra) {
-  if (s->line_buf_len + extra <= s->line_buf_cap)
-    return;
+  if (s->line_buf_len + extra <= s->line_buf_cap) return;
   size_t new_cap = s->line_buf_cap ? s->line_buf_cap * 2 : 64;
   while (new_cap < s->line_buf_len + extra)
     new_cap *= 2;
   char *new_buf = (char *)allocator_new(s->allocator, &buf_class, new_cap);
-  if (s->line_buf)
-    memcpy(new_buf, s->line_buf, s->line_buf_len);
-  if (s->line_buf)
-    allocator_free(s->allocator, (void **)&s->line_buf);
+  if (s->line_buf) memcpy(new_buf, s->line_buf, s->line_buf_len);
+  if (s->line_buf) allocator_free(s->allocator, (void **)&s->line_buf);
   s->line_buf = new_buf;
   s->line_buf_cap = new_cap;
 }
 
 /* ---- Update position tracking after writing data ---- */
 
-static void ostream_update_pos(ostream_t *s, const char *data, size_t len,
-                                size_t write_start) {
+static void ostream_update_pos(ostream_t *s,
+                               const char *data,
+                               size_t len,
+                               size_t write_start) {
   /* Track the offset of the last line break within this write chunk.
      Bytes after the last line break belong to the current line and
      should be in the line buffer. */
@@ -931,8 +869,7 @@ static void ostream_update_pos(ostream_t *s, const char *data, size_t len,
 }
 
 ostream_t *ostream_open(allocator_t *allocator, stream_sink_t sink) {
-  if (!allocator || !sink.ctx)
-    return NULL;
+  if (!allocator || !sink.ctx) return NULL;
 
   ostream_class.size = sizeof(ostream_t);
   ostream_t *s = (ostream_t *)allocator_new(allocator, &ostream_class, 1);
@@ -948,30 +885,25 @@ ostream_t *ostream_open(allocator_t *allocator, stream_sink_t sink) {
 }
 
 void ostream_close(ostream_t **stream) {
-  if (!stream || !*stream)
-    return;
+  if (!stream || !*stream) return;
   ostream_t *s = *stream;
   allocator_t *alloc = s->allocator;
 
-  if (s->sink.close)
-    s->sink.close(s->sink.ctx);
+  if (s->sink.close) s->sink.close(s->sink.ctx);
 
-  if (s->line_buf)
-    allocator_free(alloc, (void **)&s->line_buf);
+  if (s->line_buf) allocator_free(alloc, (void **)&s->line_buf);
 
   allocator_free(alloc, (void **)stream);
 }
 
 void ostream_write_cp(ostream_t *stream, UChar32 cp) {
-  if (!stream)
-    return;
+  if (!stream) return;
 
   char buf[4];
   int32_t pos32 = 0;
   UBool isError = false;
   U8_APPEND(buf, pos32, 4, cp, isError);
-  if (isError)
-    return;
+  if (isError) return;
 
   size_t cp_bytes = (size_t)pos32;
   size_t write_start = stream->sink.tell(stream->sink.ctx);
@@ -993,8 +925,7 @@ void ostream_write_cp(ostream_t *stream, UChar32 cp) {
 }
 
 void ostream_write(ostream_t *stream, const char *data, size_t len) {
-  if (!stream || !data || len == 0)
-    return;
+  if (!stream || !data || len == 0) return;
 
   size_t write_start = stream->sink.tell(stream->sink.ctx);
   stream->sink.write(stream->sink.ctx, data, len);
@@ -1003,35 +934,30 @@ void ostream_write(ostream_t *stream, const char *data, size_t len) {
 
 stream_pos_t ostream_tell(const ostream_t *stream) {
   stream_pos_t pos = {0, 1, 1, 1};
-  if (!stream)
-    return pos;
+  if (!stream) return pos;
   pos.byte_offset = stream->sink.tell(stream->sink.ctx);
   pos.line = stream->line;
   pos.col = stream->col;
   if (stream->line_buf && stream->line_buf_len > 0) {
-    pos.cluster_col = compute_cluster_col(stream->line_buf,
-                                          stream->line_buf_len,
-                                          stream->line_buf_len);
+    pos.cluster_col = compute_cluster_col(
+        stream->line_buf, stream->line_buf_len, stream->line_buf_len);
   }
   return pos;
 }
 
 int ostream_printf(ostream_t *stream, const char *fmt, ...) {
-  if (!stream || !fmt)
-    return 0;
+  if (!stream || !fmt) return 0;
 
   va_list ap;
   va_start(ap, fmt);
   int needed = vsnprintf(NULL, 0, fmt, ap);
   va_end(ap);
 
-  if (needed <= 0)
-    return 0;
+  if (needed <= 0) return 0;
 
-  char *tmp = (char *)allocator_new(stream->allocator, &buf_class,
-                                     (size_t)needed + 1);
-  if (!tmp)
-    return 0;
+  char *tmp =
+      (char *)allocator_new(stream->allocator, &buf_class, (size_t)needed + 1);
+  if (!tmp) return 0;
 
   va_start(ap, fmt);
   int written = vsnprintf(tmp, (size_t)needed + 1, fmt, ap);
@@ -1049,22 +975,18 @@ int ostream_printf(ostream_t *stream, const char *fmt, ...) {
 }
 
 const char *ostream_data(const ostream_t *stream) {
-  if (!stream || !stream->sink.data)
-    return NULL;
+  if (!stream || !stream->sink.data) return NULL;
   return stream->sink.data(stream->sink.ctx);
 }
 
 size_t ostream_size(const ostream_t *stream) {
-  if (!stream)
-    return 0;
+  if (!stream) return 0;
   return stream->sink.tell(stream->sink.ctx);
 }
 
 void ostream_reset(ostream_t *stream) {
-  if (!stream)
-    return;
-  if (stream->sink.reset)
-    stream->sink.reset(stream->sink.ctx);
+  if (!stream) return;
+  if (stream->sink.reset) stream->sink.reset(stream->sink.ctx);
   stream->line = 1;
   stream->col = 1;
   stream->line_start = 0;

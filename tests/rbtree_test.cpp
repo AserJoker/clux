@@ -26,7 +26,9 @@ static int cmp_int(const void *a, const void *b) {
 
 /* ---- Simple int class for owned-element tests ---- */
 
-typedef struct { int value; } int_box_t;
+typedef struct {
+  int value;
+} int_box_t;
 
 static class_t int_box_class = {
     .name = "int_box",
@@ -52,7 +54,9 @@ static class_t byte_class = {
     .dispose_fn = NULL,
 };
 
-typedef struct { char *str; } str_box_t;
+typedef struct {
+  char *str;
+} str_box_t;
 
 static void str_box_clone(void *self, allocator_t *allocator, void *another) {
   str_box_t *dst = (str_box_t *)self;

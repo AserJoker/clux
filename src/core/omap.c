@@ -16,8 +16,8 @@ typedef struct {
 /* ---- Internal: omap_t definition ---- */
 
 struct _omap_t {
-  rbtree_t *tree;          /* stores omap_entry_t*, owns_element=false */
-  vec_t *key_vec;          /* stores key*, owns_element=false, preserves order */
+  rbtree_t *tree; /* stores omap_entry_t*, owns_element=false */
+  vec_t *key_vec; /* stores key*, owns_element=false, preserves order */
   omap_cmp_fn_t cmp_fn;
   bool owns_key;
   bool owns_value;
@@ -119,10 +119,11 @@ static void clone_entry(void *element, void *ctx) {
 
 /* ---- Construction / destruction ---- */
 
-omap_t *omap_new(allocator_t *allocator, omap_cmp_fn_t cmp_fn,
-                 bool owns_key, bool owns_value) {
-  if (!allocator || !cmp_fn)
-    return NULL;
+omap_t *omap_new(allocator_t *allocator,
+                 omap_cmp_fn_t cmp_fn,
+                 bool owns_key,
+                 bool owns_value) {
+  if (!allocator || !cmp_fn) return NULL;
 
   omap_t *map = (omap_t *)allocator_new(allocator, &omap_class, 1);
   map->cmp_fn = cmp_fn;
@@ -138,17 +139,14 @@ omap_t *omap_new(allocator_t *allocator, omap_cmp_fn_t cmp_fn,
 }
 
 void omap_free(allocator_t *allocator, omap_t **map) {
-  if (!allocator || !map || !*map)
-    return;
+  if (!allocator || !map || !*map) return;
   allocator_free(allocator, (void **)map);
 }
 
 /* ---- Insertion ---- */
 
-void *omap_insert(omap_t *map, allocator_t *allocator, void *key,
-                  void *value) {
-  if (!map || !key)
-    return NULL;
+void *omap_insert(omap_t *map, allocator_t *allocator, void *key, void *value) {
+  if (!map || !key) return NULL;
 
   /* Create an entry for insertion/search */
   omap_entry_t *entry =
@@ -209,8 +207,7 @@ static void remove_key_from_vec(omap_t *map, const void *key) {
 }
 
 void *omap_remove(omap_t *map, const void *key) {
-  if (!map || !key)
-    return NULL;
+  if (!map || !key) return NULL;
 
   /* Create a temporary search entry */
   omap_entry_t search;
@@ -226,8 +223,7 @@ void *omap_remove(omap_t *map, const void *key) {
      rbtree_remove with the entry's key (which is the actual key ptr). */
 
   void *found = rbtree_find(map->tree, &search);
-  if (!found)
-    return NULL;
+  if (!found) return NULL;
 
   omap_entry_t *entry = (omap_entry_t *)found;
   void *actual_key = entry->key;
@@ -241,8 +237,7 @@ void *omap_remove(omap_t *map, const void *key) {
      So we pass &search again. */
   g_omap_cmp = map->cmp_fn;
   void *removed_entry = rbtree_remove(map->tree, &search);
-  if (!removed_entry)
-    return NULL;
+  if (!removed_entry) return NULL;
 
   entry = (omap_entry_t *)removed_entry;
 
@@ -266,8 +261,7 @@ void *omap_remove(omap_t *map, const void *key) {
 /* ---- Lookup ---- */
 
 void *omap_get(const omap_t *map, const void *key) {
-  if (!map || !key)
-    return NULL;
+  if (!map || !key) return NULL;
 
   omap_entry_t search;
   search.key = (void *)key;
@@ -279,8 +273,7 @@ void *omap_get(const omap_t *map, const void *key) {
 }
 
 bool omap_contains(const omap_t *map, const void *key) {
-  if (!map || !key)
-    return false;
+  if (!map || !key) return false;
 
   omap_entry_t search;
   search.key = (void *)key;
@@ -293,34 +286,29 @@ bool omap_contains(const omap_t *map, const void *key) {
 /* ---- Properties ---- */
 
 size_t omap_size(const omap_t *map) {
-  if (!map)
-    return 0;
+  if (!map) return 0;
   return rbtree_size(map->tree);
 }
 
 bool omap_is_empty(const omap_t *map) {
-  if (!map)
-    return true;
+  if (!map) return true;
   return rbtree_is_empty(map->tree);
 }
 
 const vec_t *omap_keys(const omap_t *map) {
-  if (!map)
-    return NULL;
+  if (!map) return NULL;
   return map->key_vec;
 }
 
 /* ---- Ownership query ---- */
 
 bool omap_owns_key(const omap_t *map) {
-  if (!map)
-    return false;
+  if (!map) return false;
   return map->owns_key;
 }
 
 bool omap_owns_value(const omap_t *map) {
-  if (!map)
-    return false;
+  if (!map) return false;
   return map->owns_value;
 }
 
@@ -328,8 +316,7 @@ bool omap_owns_value(const omap_t *map) {
 
 static void omap_dispose(void *self, allocator_t *allocator) {
   omap_t *map = (omap_t *)self;
-  if (!map)
-    return;
+  if (!map) return;
 
   /* Free all entries (and their key/value) via rbtree_foreach */
   dispose_ctx_t dctx = {
@@ -351,8 +338,7 @@ static void omap_move_cb(void *self, allocator_t *allocator, void *another) {
   (void)allocator;
   omap_t *dst = (omap_t *)self;
   omap_t *src = (omap_t *)another;
-  if (!dst || !src)
-    return;
+  if (!dst || !src) return;
 
   dst->tree = src->tree;
   dst->key_vec = src->key_vec;
@@ -369,8 +355,7 @@ static void omap_move_cb(void *self, allocator_t *allocator, void *another) {
 static void omap_clone_cb(void *self, allocator_t *allocator, void *another) {
   omap_t *dst = (omap_t *)self;
   omap_t *src = (omap_t *)another;
-  if (!dst || !src)
-    return;
+  if (!dst || !src) return;
 
   dst->cmp_fn = src->cmp_fn;
   dst->owns_key = src->owns_key;

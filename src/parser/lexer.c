@@ -15,12 +15,12 @@ struct _token_t {
 
 struct _lexer_t {
   allocator_t *allocator;
-  istream_t *stream;         /* owned; closed by lexer_close */
-  const char *filename;      /* borrowed, must outlive the lexer */
-  const char *source_data;   /* borrowed from istream (data accessor) */
+  istream_t *stream;       /* owned; closed by lexer_close */
+  const char *filename;    /* borrowed, must outlive the lexer */
+  const char *source_data; /* borrowed from istream (data accessor) */
   size_t source_len;
-  bool eof;                  /* EOF token has been produced */
-  token_t *pending;          /* peeked-but-not-consumed token (lexer-owned) */
+  bool eof;         /* EOF token has been produced */
+  token_t *pending; /* peeked-but-not-consumed token (lexer-owned) */
 };
 
 /* ---- Internal: class for token_t ---- */
@@ -50,10 +50,10 @@ static class_t lexer_class = {
 /* ---- Internal: keyword table (M1 language keywords) ---- */
 
 static const char *const g_keywords[] = {
-    "as",   "bool", "break", "const",   "continue", "else", "f32",
-    "f64",  "false", "for",  "func",    "i16",      "i32",  "i64",
-    "i8",   "if",   "return", "str",    "true",     "u16",  "u32",
-    "u64",  "u8",   "undefined", "var", "void",     "while",
+    "as",  "bool",  "break",     "const", "continue", "else",  "f32",
+    "f64", "false", "for",       "func",  "i16",      "i32",   "i64",
+    "i8",  "if",    "return",    "str",   "true",     "u16",   "u32",
+    "u64", "u8",    "undefined", "var",   "void",     "while",
 };
 
 /* ---- Internal: character classes ---- */
@@ -75,16 +75,15 @@ static bool is_whitespace(UChar32 cp) {
 static bool lookup_keyword(const char *text, size_t len) {
   for (size_t i = 0; i < sizeof(g_keywords) / sizeof(g_keywords[0]); i++) {
     const char *kw = g_keywords[i];
-    if (strlen(kw) == len && memcmp(text, kw, len) == 0)
-      return true;
+    if (strlen(kw) == len && memcmp(text, kw, len) == 0) return true;
   }
   return false;
 }
 
 /* ---- Internal: build a location from begin/end stream positions ---- */
 
-static location_t make_location(const lexer_t *lexer, stream_pos_t begin,
-                                stream_pos_t end) {
+static location_t
+make_location(const lexer_t *lexer, stream_pos_t begin, stream_pos_t end) {
   location_t loc;
   loc.begin.offset = begin.byte_offset;
   loc.begin.line = begin.line;
@@ -98,10 +97,9 @@ static location_t make_location(const lexer_t *lexer, stream_pos_t begin,
 
 /* ---- Lexer lifecycle ---- */
 
-lexer_t *lexer_create(allocator_t *allocator, istream_t *stream,
-                      const char *filename) {
-  if (!allocator || !stream)
-    return NULL;
+lexer_t *
+lexer_create(allocator_t *allocator, istream_t *stream, const char *filename) {
+  if (!allocator || !stream) return NULL;
   const char *data = istream_data(stream);
   if (!data)
     return NULL; /* requires a source with direct data access (mem-backed) */
@@ -118,16 +116,14 @@ lexer_t *lexer_create(allocator_t *allocator, istream_t *stream,
 }
 
 void lexer_close(lexer_t **lexer) {
-  if (!lexer || !*lexer)
-    return;
+  if (!lexer || !*lexer) return;
   allocator_free((*lexer)->allocator, (void **)lexer);
 }
 
 /* ---- Token production ---- */
 
 token_t *lexer_next(lexer_t *lexer) {
-  if (!lexer)
-    return NULL;
+  if (!lexer) return NULL;
   if (lexer->pending) {
     token_t *t = lexer->pending;
     lexer->pending = NULL; /* ownership transfers to the caller */
@@ -137,10 +133,8 @@ token_t *lexer_next(lexer_t *lexer) {
 }
 
 const token_t *lexer_peek(lexer_t *lexer) {
-  if (!lexer)
-    return NULL;
-  if (!lexer->pending)
-    lexer->pending = lexer_read_token(lexer);
+  if (!lexer) return NULL;
+  if (!lexer->pending) lexer->pending = lexer_read_token(lexer);
   return lexer->pending;
 }
 
@@ -150,8 +144,8 @@ static token_t *lexer_read_token(lexer_t *lexer) {
   stream_pos_t begin = istream_tell(lexer->stream);
   if (lexer->eof || istream_at_end(lexer->stream)) {
     lexer->eof = true;
-    return create_token(lexer->allocator, TOKEN_TYPE_EOF,
-                        make_location(lexer, begin, begin));
+    return create_token(
+        lexer->allocator, TOKEN_TYPE_EOF, make_location(lexer, begin, begin));
   }
 
   UChar32 cp = istream_peek_cp(lexer->stream);
@@ -161,11 +155,11 @@ static token_t *lexer_read_token(lexer_t *lexer) {
     while (is_whitespace(cp)) {
       istream_read_cp(lexer->stream);
       cp = istream_peek_cp(lexer->stream);
-      if (cp == -1)
-        break;
+      if (cp == -1) break;
     }
     stream_pos_t end = istream_tell(lexer->stream);
-    return create_token(lexer->allocator, TOKEN_TYPE_WHITESPACE,
+    return create_token(lexer->allocator,
+                        TOKEN_TYPE_WHITESPACE,
                         make_location(lexer, begin, end));
   }
 
@@ -173,8 +167,7 @@ static token_t *lexer_read_token(lexer_t *lexer) {
     istream_read_cp(lexer->stream);
     for (;;) {
       cp = istream_peek_cp(lexer->stream);
-      if (cp == -1 || !is_ident_char(cp))
-        break;
+      if (cp == -1 || !is_ident_char(cp)) break;
       istream_read_cp(lexer->stream);
     }
     stream_pos_t end = istream_tell(lexer->stream);
@@ -182,70 +175,60 @@ static token_t *lexer_read_token(lexer_t *lexer) {
     const char *text = lexer->source_data + begin.byte_offset;
     token_kind_t kind =
         lookup_keyword(text, len) ? TOKEN_TYPE_KEYWORD : TOKEN_TYPE_IDENTIFIER;
-    return create_token(lexer->allocator, kind,
-                        make_location(lexer, begin, end));
+    return create_token(
+        lexer->allocator, kind, make_location(lexer, begin, end));
   }
 
   /* ---- Not yet implemented categories (numeric / string / character /
    * symbol / comment). For now, consume one codepoint and emit an ERROR
    * token; these branches are replaced in later steps. ---- */
 
-  if (cp != -1)
-    istream_read_cp(lexer->stream);
+  if (cp != -1) istream_read_cp(lexer->stream);
   stream_pos_t end = istream_tell(lexer->stream);
-  return create_token(lexer->allocator, TOKEN_TYPE_ERROR,
-                      make_location(lexer, begin, end));
+  return create_token(
+      lexer->allocator, TOKEN_TYPE_ERROR, make_location(lexer, begin, end));
 }
 
 /* ---- Token accessors ---- */
 
 token_kind_t token_get_kind(const token_t *self) {
-  if (!self)
-    return TOKEN_TYPE_ERROR;
+  if (!self) return TOKEN_TYPE_ERROR;
   return self->kind;
 }
 
 const location_t *token_get_location(const token_t *self) {
-  if (!self)
-    return NULL;
+  if (!self) return NULL;
   return &self->location;
 }
 
-const char *token_get_text(const token_t *self, const lexer_t *lexer,
-                           size_t *out_len) {
+const char *
+token_get_text(const token_t *self, const lexer_t *lexer, size_t *out_len) {
   if (!self || !lexer) {
-    if (out_len)
-      *out_len = 0;
+    if (out_len) *out_len = 0;
     return NULL;
   }
   size_t start = self->location.begin.offset;
   size_t end = self->location.end.offset;
-  if (start > end)
-    start = end;
-  if (end > lexer->source_len)
-    end = lexer->source_len;
-  if (out_len)
-    *out_len = end - start;
+  if (start > end) start = end;
+  if (end > lexer->source_len) end = lexer->source_len;
+  if (out_len) *out_len = end - start;
   return lexer->source_data + start;
 }
 
 bool token_is(const token_t *self, const lexer_t *lexer, const char *str) {
-  if (!self || !lexer || !str)
-    return false;
+  if (!self || !lexer || !str) return false;
   size_t len = strlen(str);
   size_t tlen = 0;
   const char *text = token_get_text(self, lexer, &tlen);
-  if (!text)
-    return false;
+  if (!text) return false;
   return tlen == len && memcmp(text, str, len) == 0;
 }
 
 /* ---- Token helpers ---- */
 
-token_t *create_token(allocator_t *allocator, token_kind_t kind,
-                      location_t location) {
-  if (!allocator)
-    return NULL;
+token_t *
+create_token(allocator_t *allocator, token_kind_t kind, location_t location) {
+  if (!allocator) return NULL;
   token_t *token = (token_t *)allocator_new(allocator, &g_token_class, 1);
   token->kind = kind;
   token->location = location;
@@ -253,8 +236,7 @@ token_t *create_token(allocator_t *allocator, token_kind_t kind,
 }
 
 void token_free(allocator_t *allocator, token_t **token) {
-  if (!allocator || !token || !*token)
-    return;
+  if (!allocator || !token || !*token) return;
   allocator_free(allocator, (void **)token);
 }
 
@@ -263,8 +245,7 @@ void token_free(allocator_t *allocator, token_t **token) {
 static void lexer_dispose(void *self, allocator_t *allocator) {
   (void)allocator;
   lexer_t *lexer = (lexer_t *)self;
-  if (!lexer)
-    return;
+  if (!lexer) return;
   if (lexer->pending) {
     token_t *t = lexer->pending;
     token_free(lexer->allocator, &t);
@@ -286,8 +267,7 @@ static void lexer_move_cb(void *self, allocator_t *allocator, void *another) {
   (void)allocator;
   lexer_t *dst = (lexer_t *)self;
   lexer_t *src = (lexer_t *)another;
-  if (!dst || !src)
-    return;
+  if (!dst || !src) return;
 
   dst->allocator = src->allocator;
   dst->stream = src->stream;

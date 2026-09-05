@@ -112,9 +112,7 @@ TEST(VecNew, OwnedVec) {
   delete_allocator(&a);
 }
 
-TEST(VecNew, NullAllocator) {
-  EXPECT_EQ(vec_new(NULL, false), nullptr);
-}
+TEST(VecNew, NullAllocator) { EXPECT_EQ(vec_new(NULL, false), nullptr); }
 
 TEST(VecWithCapacity, PreAllocate) {
   allocator_t *a = create_allocator(test_alloc, test_free);
@@ -140,10 +138,10 @@ TEST(VecWithCapacity, ZeroCapacity) {
 
 TEST(VecFree, NullSafe) {
   allocator_t *a = create_allocator(test_alloc, test_free);
-  vec_free(a, nullptr);           // no-op
+  vec_free(a, nullptr); // no-op
   vec_t *null_vec = nullptr;
-  vec_free(a, &null_vec);         // no-op
-  vec_free(nullptr, &null_vec);   // no-op
+  vec_free(a, &null_vec);       // no-op
+  vec_free(nullptr, &null_vec); // no-op
   delete_allocator(&a);
 }
 
@@ -239,7 +237,7 @@ TEST(VecAccess, GetAndSet) {
   vec_push(v, a, b1);
 
   EXPECT_EQ(((int_box_t *)vec_get(v, 0))->value, 42);
-  EXPECT_EQ(vec_get(v, 999), nullptr);  // out of bounds
+  EXPECT_EQ(vec_get(v, 999), nullptr); // out of bounds
 
   int_box_t *b2 = (int_box_t *)allocator_new(a, &int_box_class, 1);
   b2->value = 99;
@@ -359,7 +357,8 @@ TEST(VecSwapRemove, Basic) {
   void *removed = vec_swap_remove(v, 1);
   EXPECT_EQ(((int_box_t *)removed)->value, 1);
   EXPECT_EQ(vec_len(v), 4u);
-  EXPECT_EQ(((int_box_t *)vec_get(v, 1))->value, 4); // last element moved to index 1
+  EXPECT_EQ(((int_box_t *)vec_get(v, 1))->value,
+            4); // last element moved to index 1
 
   allocator_free(a, (void **)&removed);
   vec_free(a, &v);

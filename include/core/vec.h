@@ -27,8 +27,8 @@ vec_t *vec_new(allocator_t *allocator, bool owns_element);
  * Same ownership semantics as vec_new.
  * Panics on out-of-memory. Returns NULL for invalid arguments.
  */
-vec_t *vec_with_capacity(allocator_t *allocator, bool owns_element,
-                         size_t capacity);
+vec_t *
+vec_with_capacity(allocator_t *allocator, bool owns_element, size_t capacity);
 
 /**
  * Free the vec and nullify the caller's pointer.

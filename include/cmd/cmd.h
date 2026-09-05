@@ -23,10 +23,10 @@ typedef struct {
  * All pointers point into the original argv — no allocation or copying.
  */
 typedef struct {
-  const cmd_opt_t *opts;  /* array of parsed options */
-  size_t optc;            /* number of options */
-  char *const *posargs;   /* positional arguments (argv slots) */
-  size_t posc;            /* number of positional arguments */
+  const cmd_opt_t *opts; /* array of parsed options */
+  size_t optc;           /* number of options */
+  char *const *posargs;  /* positional arguments (argv slots) */
+  size_t posc;           /* number of positional arguments */
 } cmd_args_t;
 
 /**
@@ -42,8 +42,11 @@ typedef struct {
  *
  * Returns the number of options parsed (cannot exceed opt_buf_len).
  */
-size_t cmd_args_parse(int argc, char **argv, cmd_opt_t *opt_buf,
-                      size_t opt_buf_len, cmd_args_t *out);
+size_t cmd_args_parse(int argc,
+                      char **argv,
+                      cmd_opt_t *opt_buf,
+                      size_t opt_buf_len,
+                      cmd_args_t *out);
 
 /**
  * Look up an option value by key name (without the "--" prefix).
@@ -72,9 +75,9 @@ const char *cmd_args_pos(const cmd_args_t *args, size_t i);
 typedef int (*cmd_handler_fn_t)(const cmd_args_t *args);
 
 typedef struct {
-  const char *name;        /* subcommand name */
-  const char *usage;       /* one-line usage, e.g. "clux demo [options]" */
-  const char *help;        /* multi-line description printed by --help */
+  const char *name;  /* subcommand name */
+  const char *usage; /* one-line usage, e.g. "clux demo [options]" */
+  const char *help;  /* multi-line description printed by --help */
   cmd_handler_fn_t handler;
 } cmd_t;
 

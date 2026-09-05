@@ -7,7 +7,10 @@
 
 /* ---- Internal: node structure ---- */
 
-typedef enum _rb_color_t { RB_RED, RB_BLACK } rb_color_t;
+typedef enum _rb_color_t {
+  RB_RED,
+  RB_BLACK,
+} rb_color_t;
 
 typedef struct _rb_node_t {
   void *element;
@@ -68,8 +71,7 @@ static rb_node_t *node_new(allocator_t *allocator, void *element) {
 static void rotate_left(rbtree_t *tree, rb_node_t *x) {
   rb_node_t *y = x->right;
   x->right = y->left;
-  if (y->left)
-    y->left->parent = x;
+  if (y->left) y->left->parent = x;
   y->parent = x->parent;
   if (!x->parent)
     tree->root = y;
@@ -84,8 +86,7 @@ static void rotate_left(rbtree_t *tree, rb_node_t *x) {
 static void rotate_right(rbtree_t *tree, rb_node_t *x) {
   rb_node_t *y = x->left;
   x->left = y->right;
-  if (y->right)
-    y->right->parent = x;
+  if (y->right) y->right->parent = x;
   y->parent = x->parent;
   if (!x->parent)
     tree->root = y;
@@ -147,8 +148,7 @@ static void transplant(rbtree_t *tree, rb_node_t *u, rb_node_t *v) {
     u->parent->left = v;
   else
     u->parent->right = v;
-  if (v)
-    v->parent = u->parent;
+  if (v) v->parent = u->parent;
 }
 
 /* ---- Internal: subtree minimum / maximum ---- */
@@ -184,16 +184,14 @@ static void delete_fixup(rbtree_t *tree, rb_node_t *x, rb_node_t *x_parent) {
         x_parent = x->parent;
       } else {
         if (!w->right || w->right->color == RB_BLACK) {
-          if (w->left)
-            w->left->color = RB_BLACK;
+          if (w->left) w->left->color = RB_BLACK;
           w->color = RB_RED;
           rotate_right(tree, w);
           w = x_parent->right;
         }
         w->color = x_parent->color;
         x_parent->color = RB_BLACK;
-        if (w->right)
-          w->right->color = RB_BLACK;
+        if (w->right) w->right->color = RB_BLACK;
         rotate_left(tree, x_parent);
         x = tree->root;
         x_parent = NULL;
@@ -213,32 +211,28 @@ static void delete_fixup(rbtree_t *tree, rb_node_t *x, rb_node_t *x_parent) {
         x_parent = x->parent;
       } else {
         if (!w->left || w->left->color == RB_BLACK) {
-          if (w->right)
-            w->right->color = RB_BLACK;
+          if (w->right) w->right->color = RB_BLACK;
           w->color = RB_RED;
           rotate_left(tree, w);
           w = x_parent->left;
         }
         w->color = x_parent->color;
         x_parent->color = RB_BLACK;
-        if (w->left)
-          w->left->color = RB_BLACK;
+        if (w->left) w->left->color = RB_BLACK;
         rotate_right(tree, x_parent);
         x = tree->root;
         x_parent = NULL;
       }
     }
   }
-  if (x)
-    x->color = RB_BLACK;
+  if (x) x->color = RB_BLACK;
 }
 
 /* ---- Internal: recursive free ---- */
 
-static void free_subtree(rbtree_t *tree, allocator_t *allocator,
-                         rb_node_t *node) {
-  if (!node)
-    return;
+static void
+free_subtree(rbtree_t *tree, allocator_t *allocator, rb_node_t *node) {
+  if (!node) return;
   free_subtree(tree, allocator, node->left);
   free_subtree(tree, allocator, node->right);
   if (tree->owns_element && node->element) {
@@ -254,8 +248,7 @@ static rb_node_t *clone_subtree(const rbtree_t *src_tree,
                                 allocator_t *allocator,
                                 const rb_node_t *src_node,
                                 rb_node_t *parent) {
-  if (!src_node)
-    return NULL;
+  if (!src_node) return NULL;
 
   void *element;
   if (src_tree->owns_element && src_node->element) {
@@ -275,10 +268,9 @@ static rb_node_t *clone_subtree(const rbtree_t *src_tree,
 
 /* ---- Construction / destruction ---- */
 
-rbtree_t *rbtree_new(allocator_t *allocator, rbtree_cmp_fn_t cmp_fn,
-                     bool owns_element) {
-  if (!allocator || !cmp_fn)
-    return NULL;
+rbtree_t *
+rbtree_new(allocator_t *allocator, rbtree_cmp_fn_t cmp_fn, bool owns_element) {
+  if (!allocator || !cmp_fn) return NULL;
 
   rbtree_t *tree = (rbtree_t *)allocator_new(allocator, &rbtree_class, 1);
   tree->root = NULL;
@@ -290,16 +282,14 @@ rbtree_t *rbtree_new(allocator_t *allocator, rbtree_cmp_fn_t cmp_fn,
 }
 
 void rbtree_free(allocator_t *allocator, rbtree_t **tree) {
-  if (!allocator || !tree || !*tree)
-    return;
+  if (!allocator || !tree || !*tree) return;
   allocator_free(allocator, (void **)tree);
 }
 
 /* ---- Insertion ---- */
 
 void *rbtree_insert(rbtree_t *tree, allocator_t *allocator, void *element) {
-  if (!tree || !element)
-    return NULL;
+  if (!tree || !element) return NULL;
 
   rb_node_t *parent = NULL;
   rb_node_t *cur = tree->root;
@@ -336,8 +326,7 @@ void *rbtree_insert(rbtree_t *tree, allocator_t *allocator, void *element) {
 /* ---- Removal ---- */
 
 void *rbtree_remove(rbtree_t *tree, const void *key) {
-  if (!tree || !key)
-    return NULL;
+  if (!tree || !key) return NULL;
 
   rb_node_t *z = tree->root;
   while (z) {
@@ -349,8 +338,7 @@ void *rbtree_remove(rbtree_t *tree, const void *key) {
     else
       break;
   }
-  if (!z)
-    return NULL;
+  if (!z) return NULL;
 
   void *removed = z->element;
   rb_color_t y_original_color = z->color;
@@ -389,8 +377,7 @@ void *rbtree_remove(rbtree_t *tree, const void *key) {
   z->element = NULL;
   allocator_free(tree->allocator, (void **)&z);
 
-  if (y_original_color == RB_BLACK)
-    delete_fixup(tree, x, x_parent);
+  if (y_original_color == RB_BLACK) delete_fixup(tree, x, x_parent);
 
   tree->size--;
   return removed;
@@ -399,8 +386,7 @@ void *rbtree_remove(rbtree_t *tree, const void *key) {
 /* ---- Lookup ---- */
 
 void *rbtree_find(const rbtree_t *tree, const void *key) {
-  if (!tree || !key)
-    return NULL;
+  if (!tree || !key) return NULL;
 
   rb_node_t *cur = tree->root;
   while (cur) {
@@ -422,52 +408,43 @@ bool rbtree_contains(const rbtree_t *tree, const void *key) {
 /* ---- Properties ---- */
 
 size_t rbtree_size(const rbtree_t *tree) {
-  if (!tree)
-    return 0;
+  if (!tree) return 0;
   return tree->size;
 }
 
 bool rbtree_is_empty(const rbtree_t *tree) {
-  if (!tree)
-    return true;
+  if (!tree) return true;
   return tree->size == 0;
 }
 
 void *rbtree_min(const rbtree_t *tree) {
-  if (!tree || !tree->root)
-    return NULL;
+  if (!tree || !tree->root) return NULL;
   return subtree_min(tree->root)->element;
 }
 
 void *rbtree_max(const rbtree_t *tree) {
-  if (!tree || !tree->root)
-    return NULL;
+  if (!tree || !tree->root) return NULL;
   return subtree_max(tree->root)->element;
 }
 
 /* ---- Ownership query ---- */
 
 bool rbtree_owns_element(const rbtree_t *tree) {
-  if (!tree)
-    return false;
+  if (!tree) return false;
   return tree->owns_element;
 }
 
 /* ---- Traversal ---- */
 
-static void foreach_node(rb_node_t *node, rbtree_visit_fn_t visit,
-                         void *ctx) {
-  if (!node)
-    return;
+static void foreach_node(rb_node_t *node, rbtree_visit_fn_t visit, void *ctx) {
+  if (!node) return;
   foreach_node(node->left, visit, ctx);
   visit(node->element, ctx);
   foreach_node(node->right, visit, ctx);
 }
 
-void rbtree_foreach(const rbtree_t *tree, rbtree_visit_fn_t visit,
-                    void *ctx) {
-  if (!tree || !visit)
-    return;
+void rbtree_foreach(const rbtree_t *tree, rbtree_visit_fn_t visit, void *ctx) {
+  if (!tree || !visit) return;
   foreach_node(tree->root, visit, ctx);
 }
 
@@ -475,8 +452,7 @@ void rbtree_foreach(const rbtree_t *tree, rbtree_visit_fn_t visit,
 
 static void rbtree_dispose(void *self, allocator_t *allocator) {
   rbtree_t *tree = (rbtree_t *)self;
-  if (!tree)
-    return;
+  if (!tree) return;
   free_subtree(tree, allocator, tree->root);
   tree->root = NULL;
   tree->size = 0;
@@ -487,8 +463,7 @@ static void rbtree_move_cb(void *self, allocator_t *allocator, void *another) {
   (void)allocator;
   rbtree_t *dst = (rbtree_t *)self;
   rbtree_t *src = (rbtree_t *)another;
-  if (!dst || !src)
-    return;
+  if (!dst || !src) return;
 
   dst->root = src->root;
   dst->size = src->size;
@@ -504,8 +479,7 @@ static void rbtree_move_cb(void *self, allocator_t *allocator, void *another) {
 static void rbtree_clone_cb(void *self, allocator_t *allocator, void *another) {
   rbtree_t *dst = (rbtree_t *)self;
   rbtree_t *src = (rbtree_t *)another;
-  if (!dst || !src)
-    return;
+  if (!dst || !src) return;
 
   dst->cmp_fn = src->cmp_fn;
   dst->owns_element = src->owns_element;
@@ -518,6 +492,5 @@ static void rbtree_clone_cb(void *self, allocator_t *allocator, void *another) {
   size_t count = 0;
   /* Simple recursive count not available; we traverse */
   /* Use the fact that clone_subtree preserves structure */
-  if (src->root)
-    dst->size = src->size;
+  if (src->root) dst->size = src->size;
 }

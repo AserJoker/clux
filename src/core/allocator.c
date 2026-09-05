@@ -35,8 +35,7 @@ static inline alloc_header_t *header_of(void *data) {
 static void list_insert(allocator_t *a, alloc_header_t *hdr) {
   hdr->prev = NULL;
   hdr->next = a->head;
-  if (a->head)
-    a->head->prev = hdr;
+  if (a->head) a->head->prev = hdr;
   a->head = hdr;
 }
 
@@ -45,8 +44,7 @@ static void list_remove(allocator_t *a, alloc_header_t *hdr) {
     hdr->prev->next = hdr->next;
   else
     a->head = hdr->next;
-  if (hdr->next)
-    hdr->next->prev = hdr->prev;
+  if (hdr->next) hdr->next->prev = hdr->prev;
   hdr->prev = NULL;
   hdr->next = NULL;
 }
@@ -54,11 +52,9 @@ static void list_remove(allocator_t *a, alloc_header_t *hdr) {
 /* ---- Allocator lifetime ---- */
 
 allocator_t *create_allocator(alloc_fn_t alloc_fn, free_fn_t free_fn) {
-  if (!alloc_fn || !free_fn)
-    return NULL;
+  if (!alloc_fn || !free_fn) return NULL;
   allocator_t *a = (allocator_t *)malloc(sizeof(allocator_t));
-  if (!a)
-    panic("out of memory: failed to create allocator");
+  if (!a) panic("out of memory: failed to create allocator");
   a->alloc_fn = alloc_fn;
   a->free_fn = free_fn;
   a->head = NULL;
@@ -66,19 +62,23 @@ allocator_t *create_allocator(alloc_fn_t alloc_fn, free_fn_t free_fn) {
 }
 
 void delete_allocator(allocator_t **allocator) {
-  if (!allocator || !*allocator)
-    return;
+  if (!allocator || !*allocator) return;
   allocator_t *a = *allocator;
 
   if (a->head) {
-    fprintf(stderr, "memory leak detected: allocator %p has live allocations:\n",
+    fprintf(stderr,
+            "memory leak detected: allocator %p has live allocations:\n",
             (void *)a);
     alloc_header_t *hdr = a->head;
     while (hdr) {
       size_t user_size = hdr->count * hdr->clazz->size;
       void *user_ptr = (char *)hdr + sizeof(alloc_header_t);
-      fprintf(stderr, "  leak: %zu bytes at %p (type='%s', count=%zu)\n",
-              user_size, user_ptr, hdr->clazz->name, hdr->count);
+      fprintf(stderr,
+              "  leak: %zu bytes at %p (type='%s', count=%zu)\n",
+              user_size,
+              user_ptr,
+              hdr->clazz->name,
+              hdr->count);
       hdr = hdr->next;
     }
   }
@@ -90,22 +90,20 @@ void delete_allocator(allocator_t **allocator) {
 /* ---- Allocation / deallocation ---- */
 
 void *allocator_new(allocator_t *allocator, class_t *clazz, size_t count) {
-  if (!allocator || !clazz || clazz->size == 0 || count == 0)
-    return NULL;
+  if (!allocator || !clazz || clazz->size == 0 || count == 0) return NULL;
 
   /* Overflow check: count * clazz->size */
-  if (count > SIZE_MAX / clazz->size)
-    return NULL;
+  if (count > SIZE_MAX / clazz->size) return NULL;
   size_t user_size = count * clazz->size;
 
   /* Overflow check: sizeof(alloc_header_t) + user_size */
-  if (user_size > SIZE_MAX - sizeof(alloc_header_t))
-    return NULL;
+  if (user_size > SIZE_MAX - sizeof(alloc_header_t)) return NULL;
   size_t total = sizeof(alloc_header_t) + user_size;
 
   void *raw = allocator->alloc_fn(total);
   if (!raw)
-    panic("out of memory: failed to allocate %zu bytes for '%s'", total,
+    panic("out of memory: failed to allocate %zu bytes for '%s'",
+          total,
           clazz->name);
 
   alloc_header_t *header = (alloc_header_t *)raw;
@@ -119,16 +117,18 @@ void *allocator_new(allocator_t *allocator, class_t *clazz, size_t count) {
   return user;
 }
 
-void *allocator_new_ex(allocator_t *allocator, const char *name, size_t size,
-                       move_fn_t move_fn, clone_fn_t clone_fn,
-                       dispose_fn_t dispose_fn, size_t count) {
-  if (!allocator || size == 0 || count == 0)
-    return NULL;
+void *allocator_new_ex(allocator_t *allocator,
+                       const char *name,
+                       size_t size,
+                       move_fn_t move_fn,
+                       clone_fn_t clone_fn,
+                       dispose_fn_t dispose_fn,
+                       size_t count) {
+  if (!allocator || size == 0 || count == 0) return NULL;
 
   /* Allocate a class_t on the heap so it survives past this call */
   class_t *clazz = (class_t *)malloc(sizeof(class_t));
-  if (!clazz)
-    panic("out of memory: failed to allocate class_t for '%s'", name);
+  if (!clazz) panic("out of memory: failed to allocate class_t for '%s'", name);
   clazz->name = name;
   clazz->size = size;
   clazz->move_fn = move_fn;
@@ -144,8 +144,7 @@ void *allocator_new_ex(allocator_t *allocator, const char *name, size_t size,
 }
 
 void allocator_free(allocator_t *allocator, void **data) {
-  if (!allocator || !data || !*data)
-    return;
+  if (!allocator || !data || !*data) return;
 
   alloc_header_t *header = header_of(*data);
   class_t *clazz = header->clazz;
@@ -173,8 +172,7 @@ void allocator_free(allocator_t *allocator, void **data) {
 /* ---- Move / clone ---- */
 
 void *allocator_move(allocator_t *allocator, void **object) {
-  if (!allocator || !object || !*object)
-    return NULL;
+  if (!allocator || !object || !*object) return NULL;
 
   alloc_header_t *header = header_of(*object);
 
@@ -190,8 +188,7 @@ void *allocator_move(allocator_t *allocator, void **object) {
 }
 
 void *allocator_clone(allocator_t *allocator, void **object) {
-  if (!allocator || !object || !*object)
-    return NULL;
+  if (!allocator || !object || !*object) return NULL;
 
   alloc_header_t *header = header_of(*object);
 
@@ -209,8 +206,7 @@ void *allocator_clone(allocator_t *allocator, void **object) {
 
 void default_move(void *self, allocator_t *allocator, void *another) {
   (void)allocator;
-  if (!self || !another)
-    return;
+  if (!self || !another) return;
   alloc_header_t *header = header_of(another);
   size_t size = header->count * header->clazz->size;
   memcpy(self, another, size);
@@ -219,8 +215,7 @@ void default_move(void *self, allocator_t *allocator, void *another) {
 
 void default_clone(void *self, allocator_t *allocator, void *another) {
   (void)allocator;
-  if (!self || !another)
-    return;
+  if (!self || !another) return;
   alloc_header_t *header = header_of(another);
   size_t size = header->count * header->clazz->size;
   memcpy(self, another, size);
@@ -229,13 +224,11 @@ void default_clone(void *self, allocator_t *allocator, void *another) {
 /* ---- Accessors ---- */
 
 const class_t *allocator_get_class(void *data) {
-  if (!data)
-    return NULL;
+  if (!data) return NULL;
   return header_of(data)->clazz;
 }
 
 size_t allocator_get_count(void *data) {
-  if (!data)
-    return 0;
+  if (!data) return 0;
   return header_of(data)->count;
 }

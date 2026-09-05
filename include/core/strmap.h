@@ -40,7 +40,9 @@ void strmap_free(allocator_t *allocator, strmap_t **map);
  * ownership transfers to the caller.
  * Panics on out-of-memory. No-op if `map` or `key` is NULL.
  */
-void *strmap_insert(strmap_t *map, allocator_t *allocator, const char *key,
+void *strmap_insert(strmap_t *map,
+                    allocator_t *allocator,
+                    const char *key,
                     void *value);
 
 /**

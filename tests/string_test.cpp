@@ -173,8 +173,7 @@ TEST(StringAppend, AutoGrowth) {
   for (int i = 0; i < 100; i++) {
     string_append_char(s, 'x');
     if (string_cap(s) > prev_cap) {
-      if (prev_cap > 0)
-        EXPECT_GE(string_cap(s), prev_cap * 2);
+      if (prev_cap > 0) EXPECT_GE(string_cap(s), prev_cap * 2);
       prev_cap = string_cap(s);
     }
   }
@@ -261,7 +260,7 @@ TEST(StringSearch, Find) {
   EXPECT_EQ(string_find(s, "hello", 1), 13u);
   EXPECT_EQ(string_find(s, "clux", 0), 19u);
   EXPECT_EQ(string_find(s, "zzz", 0), STRING_NPOS);
-  EXPECT_EQ(string_find(s, "", 5), 5u);  /* empty needle matches at start */
+  EXPECT_EQ(string_find(s, "", 5), 5u); /* empty needle matches at start */
   EXPECT_EQ(string_find(s, "x", 100), STRING_NPOS);
   EXPECT_EQ(string_find(s, "hello", 100), STRING_NPOS);
   EXPECT_EQ(string_find(nullptr, "x", 0), STRING_NPOS);

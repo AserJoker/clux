@@ -18,10 +18,10 @@ extern "C" {
  * All fields are 1-based for line/col, 0-based for byte_offset.
  */
 typedef struct {
-  size_t byte_offset;  /* absolute byte position in buffer */
-  size_t line;         /* 1-based line number */
-  size_t col;          /* 1-based codepoint column from line start */
-  size_t cluster_col;  /* 1-based grapheme-cluster column from line start */
+  size_t byte_offset; /* absolute byte position in buffer */
+  size_t line;        /* 1-based line number */
+  size_t col;         /* 1-based codepoint column from line start */
+  size_t cluster_col; /* 1-based grapheme-cluster column from line start */
 } stream_pos_t;
 
 /* ================================================================ */
@@ -108,8 +108,10 @@ typedef struct {
  * If `owns_data` is true, the buffer is freed via `allocator` on close.
  * `data` must outlive the source if `owns_data` is false.
  */
-stream_source_t stream_source_mem(allocator_t *allocator, const char *data,
-                                  size_t len, bool owns_data);
+stream_source_t stream_source_mem(allocator_t *allocator,
+                                  const char *data,
+                                  size_t len,
+                                  bool owns_data);
 
 /**
  * Create a memory-backed sink that writes to a growable buffer.
@@ -145,8 +147,8 @@ stream_source_t stream_source_file(allocator_t *allocator, const char *path);
  * The FILE* must be seekable and opened in binary mode.
  * Returns a zero-initialized source on failure (NULL args).
  */
-stream_source_t stream_source_file_fp(allocator_t *allocator, FILE *fp,
-                                      bool owns_fp);
+stream_source_t
+stream_source_file_fp(allocator_t *allocator, FILE *fp, bool owns_fp);
 
 /**
  * Create a file-backed sink that writes to the file at `path`.
@@ -164,8 +166,8 @@ stream_sink_t stream_sink_file(allocator_t *allocator, const char *path);
  * reset() seeks to the beginning of the file.
  * Returns a zero-initialized sink on failure (NULL args).
  */
-stream_sink_t stream_sink_file_fp(allocator_t *allocator, FILE *fp,
-                                  bool owns_fp);
+stream_sink_t
+stream_sink_file_fp(allocator_t *allocator, FILE *fp, bool owns_fp);
 
 /* ================================================================ */
 /* istream_t — UTF-8 read stream                                     */

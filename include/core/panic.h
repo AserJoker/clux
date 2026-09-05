@@ -44,7 +44,10 @@ void panic(const char *fmt, ...);
 #define assert(cond, msg)                                                      \
   do {                                                                         \
     if (!(cond)) {                                                             \
-      panic("%s:%d: assertion failed: (%s): %s", __FILE__, __LINE__, #cond,    \
+      panic("%s:%d: assertion failed: (%s): %s",                               \
+            __FILE__,                                                          \
+            __LINE__,                                                          \
+            #cond,                                                             \
             (msg));                                                            \
     }                                                                          \
   } while (0)

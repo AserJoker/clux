@@ -20,6 +20,4 @@ int main(int argc, char **argv) {
 
 // Placeholder smoke test so the suite is non-empty and CTest discovery succeeds.
 // Real test suites belong in their own tests/*.cpp files.
-TEST(Sanity, Smoke) {
-  EXPECT_EQ(1 + 1, 2);
-}
+TEST(Sanity, Smoke) { EXPECT_EQ(1 + 1, 2); }

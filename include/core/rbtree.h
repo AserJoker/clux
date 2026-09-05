@@ -32,8 +32,8 @@ typedef int (*rbtree_cmp_fn_t)(const void *a, const void *b);
  * element, and rbtree_clone will call allocator_clone on each element.
  * Panics on out-of-memory. Returns NULL for invalid arguments.
  */
-rbtree_t *rbtree_new(allocator_t *allocator, rbtree_cmp_fn_t cmp_fn,
-                     bool owns_element);
+rbtree_t *
+rbtree_new(allocator_t *allocator, rbtree_cmp_fn_t cmp_fn, bool owns_element);
 
 /**
  * Free the rbtree and nullify the caller's pointer.

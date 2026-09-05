@@ -11,12 +11,8 @@ static allocator_t *g_alloc = nullptr;
 
 class StreamTest : public ::testing::Test {
 protected:
-  void SetUp() override {
-    g_alloc = create_allocator(malloc, free);
-  }
-  void TearDown() override {
-    delete_allocator(&g_alloc);
-  }
+  void SetUp() override { g_alloc = create_allocator(malloc, free); }
+  void TearDown() override { delete_allocator(&g_alloc); }
 };
 
 /* ---- istream construction ---- */
@@ -35,11 +31,15 @@ TEST(IStreamTest, OpenAndClose) {
 }
 
 TEST(IStreamTest, NullArgs) {
-  EXPECT_EQ(istream_open(nullptr, stream_source_mem(g_alloc, "x", 1, false)), nullptr);
+  EXPECT_EQ(istream_open(nullptr, stream_source_mem(g_alloc, "x", 1, false)),
+            nullptr);
   stream_source_t empty_src = {0};
   EXPECT_EQ(istream_open(g_alloc, empty_src), nullptr);
-  EXPECT_EQ(istream_open(g_alloc, stream_source_mem(nullptr, "x", 1, false)), nullptr);
-  EXPECT_EQ(istream_open(g_alloc, stream_source_mem(g_alloc, nullptr, 1, false)), nullptr);
+  EXPECT_EQ(istream_open(g_alloc, stream_source_mem(nullptr, "x", 1, false)),
+            nullptr);
+  EXPECT_EQ(
+      istream_open(g_alloc, stream_source_mem(g_alloc, nullptr, 1, false)),
+      nullptr);
   istream_close(nullptr);
   istream_close(nullptr);
 }
@@ -157,13 +157,15 @@ TEST(IStreamTest, ClusterColEmoji) {
   const char *data = "\xF0\x9F\x91\x8B\xF0\x9F\x8F\xBF";
   istream_t *s = istream_open(alloc, stream_source_mem(alloc, data, 8, false));
 
-  istream_read_cp(s); /* U+1F44B waving hand */
-  EXPECT_EQ(istream_tell(s).col, 2u);       /* cp col incremented */
-  EXPECT_EQ(istream_tell(s).cluster_col, 2u); /* cluster col incremented (base) */
+  istream_read_cp(s);                 /* U+1F44B waving hand */
+  EXPECT_EQ(istream_tell(s).col, 2u); /* cp col incremented */
+  EXPECT_EQ(istream_tell(s).cluster_col,
+            2u); /* cluster col incremented (base) */
 
   istream_read_cp(s); /* U+1F3FF dark skin tone (grapheme extend) */
-  EXPECT_EQ(istream_tell(s).col, 3u);       /* cp col still increments */
-  EXPECT_EQ(istream_tell(s).cluster_col, 2u); /* cluster col unchanged (extend) */
+  EXPECT_EQ(istream_tell(s).col, 3u); /* cp col still increments */
+  EXPECT_EQ(istream_tell(s).cluster_col,
+            2u); /* cluster col unchanged (extend) */
 
   istream_close(&s);
   delete_allocator(&alloc);
@@ -250,9 +252,8 @@ TEST(IStreamTest, RemainingAndAtEnd) {
 
 TEST(IStreamTest, OwnsData) {
   allocator_t *alloc = create_allocator(malloc, free);
-  char *data = (char *)allocator_new_ex(alloc, "test_str", 1,
-                                         default_move, default_clone,
-                                         NULL, 4);
+  char *data = (char *)allocator_new_ex(
+      alloc, "test_str", 1, default_move, default_clone, NULL, 4);
   memcpy(data, "ABC", 4);
 
   /* Source takes ownership of data */
@@ -378,8 +379,8 @@ TEST(OStreamTest, ClusterColEmoji) {
   EXPECT_EQ(ostream_tell(s).col, 2u);
   EXPECT_EQ(ostream_tell(s).cluster_col, 2u);
 
-  ostream_write_cp(s, 0x1F3FF); /* skin tone (extend) */
-  EXPECT_EQ(ostream_tell(s).col, 3u);       /* cp col increments */
+  ostream_write_cp(s, 0x1F3FF);               /* skin tone (extend) */
+  EXPECT_EQ(ostream_tell(s).col, 3u);         /* cp col increments */
   EXPECT_EQ(ostream_tell(s).cluster_col, 2u); /* cluster unchanged */
 
   ostream_close(&s);
@@ -642,7 +643,8 @@ TEST(FileSourceTest, NullFp) {
 
 TEST(FileSourceTest, NonexistentFile) {
   allocator_t *alloc = create_allocator(malloc, free);
-  stream_source_t src = stream_source_file(alloc, "/nonexistent/path/to/file.txt");
+  stream_source_t src =
+      stream_source_file(alloc, "/nonexistent/path/to/file.txt");
   EXPECT_EQ(src.ctx, nullptr);
   delete_allocator(&alloc);
 }
