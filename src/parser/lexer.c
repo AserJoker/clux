@@ -138,6 +138,41 @@ const token_t *lexer_peek(lexer_t *lexer) {
   return lexer->pending;
 }
 
+/* ---- Backtracking ---- */
+
+lexer_checkpoint_t lexer_checkpoint(const lexer_t *lexer) {
+  lexer_checkpoint_t cp = {0};
+  if (!lexer) return cp;
+  if (lexer->pending) {
+    /* The next token to be produced is the peeked one: the checkpoint
+     * must record its start, not the stream position (which already
+     * points past it). */
+    cp.pos.byte_offset = lexer->pending->location.begin.offset;
+    cp.pos.line = lexer->pending->location.begin.line;
+    cp.pos.col = lexer->pending->location.begin.column;
+    cp.pos.cluster_col =
+        cp.pos.col; /* approximate; not used by rewind (recomputed) */
+  } else {
+    cp.pos = istream_tell(lexer->stream);
+  }
+  cp.eof = lexer->eof;
+  return cp;
+}
+
+void lexer_rewind(lexer_t *lexer, lexer_checkpoint_t checkpoint) {
+  if (!lexer) return;
+  /* Drop any peeked-but-unconsumed token: after a rewind the next
+   * peek/next re-lexes from the checkpoint, so a stale pending token
+   * would be wrong. */
+  if (lexer->pending) {
+    token_t *t = lexer->pending;
+    token_free(lexer->allocator, &t);
+    lexer->pending = NULL;
+  }
+  istream_seek(lexer->stream, checkpoint.pos.byte_offset);
+  lexer->eof = checkpoint.eof;
+}
+
 /* ---- Internal: read the next raw token from the stream ---- */
 
 static token_t *lexer_read_token(lexer_t *lexer) {

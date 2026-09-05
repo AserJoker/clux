@@ -410,6 +410,209 @@ TEST(Lexer, PeekWorksAfterMove) {
   delete_allocator(&a);
 }
 
+/* ==== Backtracking (checkpoint / rewind) ==== */
+
+TEST(Lexer, CheckpointNullSafe) {
+  lexer_checkpoint_t cp = lexer_checkpoint(nullptr);
+  EXPECT_EQ(cp.pos.byte_offset, 0u);
+  EXPECT_EQ(cp.eof, false);
+}
+
+TEST(Lexer, RewindNullSafe) {
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "foo", "rw.cx");
+  lexer_checkpoint_t cp = lexer_checkpoint(lx);
+  lexer_rewind(lx, cp);        /* no-op-ish: rewind to the same point */
+  lexer_rewind(nullptr, cp);   /* no-op */
+  token_t *t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "foo");
+  token_free(a, &t);
+  lexer_close(&lx);
+  delete_allocator(&a);
+}
+
+TEST(Lexer, RewindReplaysTokens) {
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "foo bar baz", "rw.cx");
+  token_t *t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "foo");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
+  token_free(a, &t);
+
+  lexer_checkpoint_t cp = lexer_checkpoint(lx); /* before "bar" */
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "bar");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "baz");
+  token_free(a, &t);
+  t = lexer_next(lx);
+  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
+  token_free(a, &t);
+
+  lexer_rewind(lx, cp); /* the same tokens are produced again */
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "bar");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "baz");
+  token_free(a, &t);
+  t = lexer_next(lx);
+  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
+  token_free(a, &t);
+  lexer_close(&lx);
+  delete_allocator(&a);
+}
+
+TEST(Lexer, RewindAfterPeekReProducesPeekedToken) {
+  /* The parser has peeked "func", then checkpoints. A rewind must put
+   * the lexer back BEFORE "func" — the pending token must not be lost. */
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "func foo", "rw.cx");
+  const token_t *p = lexer_peek(lx);
+  ASSERT_NE(p, nullptr);
+  EXPECT_TRUE(token_is(p, lx, "func"));
+
+  lexer_checkpoint_t cp = lexer_checkpoint(lx); /* pending = "func" */
+  token_t *t = lexer_next(lx);
+  EXPECT_EQ(t, p); /* ownership of the peeked token transfers */
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "foo");
+  token_free(a, &t);
+
+  lexer_rewind(lx, cp); /* must re-produce "func" first */
+  t = take(a, lx, TOKEN_TYPE_KEYWORD, "func");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "foo");
+  token_free(a, &t);
+  t = lexer_next(lx);
+  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
+  token_free(a, &t);
+  lexer_close(&lx);
+  delete_allocator(&a);
+}
+
+TEST(Lexer, RewindDropsPendingToken) {
+  /* A pending token at rewind time is lexer-owned and must be dropped,
+   * not leak into the re-lexed stream. */
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "foo bar", "rw.cx");
+  lexer_checkpoint_t cp = lexer_checkpoint(lx); /* before "foo" */
+  token_t *t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "foo");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
+  token_free(a, &t);
+  const token_t *p = lexer_peek(lx); /* pending = "bar" */
+  ASSERT_NE(p, nullptr);
+  EXPECT_TRUE(token_is(p, lx, "bar"));
+
+  lexer_rewind(lx, cp); /* drops pending "bar", back to "foo" */
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "foo");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "bar");
+  token_free(a, &t);
+  lexer_close(&lx);
+  delete_allocator(&a);
+}
+
+TEST(Lexer, RewindAfterEof) {
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "foo", "rw.cx");
+  lexer_checkpoint_t cp = lexer_checkpoint(lx);
+  token_t *t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "foo");
+  token_free(a, &t);
+  t = lexer_next(lx);
+  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
+  token_free(a, &t);
+  t = lexer_next(lx);
+  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF); /* idempotent */
+  token_free(a, &t);
+
+  lexer_rewind(lx, cp); /* EOF flag must be cleared along with the seek */
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "foo");
+  token_free(a, &t);
+  t = lexer_next(lx);
+  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
+  token_free(a, &t);
+  lexer_close(&lx);
+  delete_allocator(&a);
+}
+
+TEST(Lexer, RewindRestoresLocation) {
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "ab\ncd\nef", "rw.cx");
+  token_t *t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "ab");
+  token_free(a, &t);
+  t = lexer_next(lx); /* "\n" */
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "cd");
+  token_free(a, &t);
+  t = lexer_next(lx); /* "\n" */
+  token_free(a, &t);
+
+  lexer_checkpoint_t cp = lexer_checkpoint(lx); /* before "ef" */
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "ef");
+  const location_t *loc = token_get_location(t);
+  EXPECT_EQ(loc->begin.line, 3u);
+  EXPECT_EQ(loc->begin.column, 1u);
+  token_free(a, &t);
+
+  lexer_rewind(lx, cp);
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "ef");
+  loc = token_get_location(t);
+  EXPECT_EQ(loc->begin.offset, 6u);
+  EXPECT_EQ(loc->begin.line, 3u); /* line/col recomputed by the seek */
+  EXPECT_EQ(loc->begin.column, 1u);
+  token_free(a, &t);
+  lexer_close(&lx);
+  delete_allocator(&a);
+}
+
+TEST(Lexer, NestedCheckpoints) {
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "a b c d", "rw.cx");
+  lexer_checkpoint_t cp_a = lexer_checkpoint(lx); /* before "a" */
+  token_t *t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "a");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
+  token_free(a, &t);
+
+  lexer_checkpoint_t cp_b = lexer_checkpoint(lx); /* before "b" */
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "b");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "c");
+  token_free(a, &t);
+
+  lexer_rewind(lx, cp_b); /* inner rewind: back to before "b" */
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "b");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "c");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "d");
+  token_free(a, &t);
+
+  lexer_rewind(lx, cp_a); /* outer rewind: back to the very start */
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "a");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "b");
+  token_free(a, &t);
+  lexer_close(&lx);
+  delete_allocator(&a);
+}
+
 /* ==== allocator_move on lexer ==== */
 
 TEST(Lexer, MoveTransfersOwnership) {

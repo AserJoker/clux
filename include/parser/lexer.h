@@ -74,6 +74,42 @@ token_t *lexer_next(lexer_t *lexer);
  */
 const token_t *lexer_peek(lexer_t *lexer);
 
+/* ---- Backtracking ---- */
+
+/**
+ * Immutable snapshot of the lexer's state, captured by lexer_checkpoint
+ * and restored by lexer_rewind. A plain value: no allocation, no free.
+ */
+typedef struct {
+  stream_pos_t pos; /* position of the next token to be produced */
+  bool eof;         /* EOF flag at capture time */
+} lexer_checkpoint_t;
+
+/**
+ * Capture the lexer state so it can be restored later (deep
+ * backtracking). The checkpoint records the position of the NEXT token
+ * that lexer_next / lexer_peek would produce — which is the start of
+ * the peeked-but-unconsumed token, if one exists — plus the EOF flag.
+ *
+ * A checkpoint is a plain value: it stays valid after the lexer moves
+ * on and may be restored any number of times. Returns a zeroed
+ * checkpoint for a NULL lexer.
+ */
+lexer_checkpoint_t lexer_checkpoint(const lexer_t *lexer);
+
+/**
+ * Restore the lexer to a previously captured checkpoint. Any
+ * peeked-but-unconsumed token is dropped and re-lexed on demand; tokens
+ * consumed since the checkpoint were owned by the caller and remain the
+ * caller's to free. The next lexer_next / lexer_peek produces a fresh
+ * token equal to the one that would have been produced at capture time.
+ *
+ * Rewind seeks the underlying stream, which recomputes line/column by
+ * scanning from the start of the source (O(source bytes before the
+ * checkpoint)). No-op on a NULL lexer.
+ */
+void lexer_rewind(lexer_t *lexer, lexer_checkpoint_t checkpoint);
+
 /* ---- Token accessors ---- */
 
 /** Return the token kind. TOKEN_TYPE_ERROR for NULL. */
