@@ -18,6 +18,13 @@ target_include_directories(clux_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include
 target_link_libraries(clux_core PUBLIC ICU::uc ICU::i18n)
 
 # ---------------------------------------------------------------------------
+# Parser library (tokenizer + ast parser)
+# ---------------------------------------------------------------------------
+add_library(clux_parser STATIC src/parser/lexer.c)
+target_include_directories(clux_parser PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(clux_parser PUBLIC ICU::uc ICU::i18n)
+
+# ---------------------------------------------------------------------------
 # Command library (subcommand dispatch framework)
 # ---------------------------------------------------------------------------
 add_library(clux_cmd STATIC
@@ -34,6 +41,7 @@ target_link_libraries(clux_cmd PUBLIC ICU::uc icu_data_init)
 target_link_libraries(clux PRIVATE
     clux_cmd
     clux_core
+    clux_parser
     ICU::data
     ICU::io
 )
@@ -57,7 +65,7 @@ if(BUILD_TESTS)
   file(GLOB TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp")
 
   add_executable(clux_test ${TEST_SOURCES})
-  target_link_libraries(clux_test PRIVATE clux_core icu_data_init ICU::data GTest::gtest)
+  target_link_libraries(clux_test PRIVATE clux_core clux_cmd clux_parser icu_data_init ICU::data GTest::gtest)
 
   include(GoogleTest)
   gtest_discover_tests(clux_test)

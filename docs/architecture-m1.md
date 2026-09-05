@@ -76,9 +76,6 @@ typedef enum {
 typedef struct {
     token_kind_t kind;
     location_t   loc;
-    char        *text;
-    uint64_t     int_val;
-    double       float_val;
 } token_t;
 ```
 
