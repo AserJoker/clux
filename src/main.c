@@ -4,6 +4,7 @@
 #include "cmd/run.h"
 #include "cmd/test.h"
 #include "cmd/version.h"
+#include "icu_data.h"
 
 /* ---- Command table ---- */
 
@@ -45,5 +46,8 @@ static const cmd_t g_cmds[] = {
 /* ---- main ---- */
 
 int main(int argc, char *argv[]) {
+  /* Register the embedded ICU data before any ICU API (lexer's
+   * identifier / grapheme-cluster handling) is touched. */
+  icu_data_init();
   return cmd_dispatch(g_cmds, NUM_CMDS, argc, argv);
 }

@@ -84,6 +84,19 @@ if(CLUX_DIAG_SOURCES)
 endif()
 
 # ---------------------------------------------------------------------------
+# Driver library (pipeline orchestration: load -> lex -> ...)
+#
+# Only src/driver/driver.c exists so far; later stages (parser/sema/interp)
+# land here as additional *.c files (GLOB collects them automatically).
+# ---------------------------------------------------------------------------
+file(GLOB CLUX_DRIVER_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/driver/*.c")
+add_library(clux_driver STATIC ${CLUX_DRIVER_SOURCES})
+target_include_directories(clux_driver PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(clux_driver PUBLIC clux_core clux_parser ICU::uc ICU::i18n)
+clux_target_warnings(clux_driver)
+
+# ---------------------------------------------------------------------------
 # Command library (subcommand dispatch framework)
 # ---------------------------------------------------------------------------
 add_library(clux_cmd STATIC
@@ -95,13 +108,14 @@ add_library(clux_cmd STATIC
     src/cmd/version.c
 )
 target_include_directories(clux_cmd PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(clux_cmd PUBLIC clux_core ICU::uc icu_data_init)
+target_link_libraries(clux_cmd PUBLIC clux_core clux_driver ICU::uc icu_data_init)
 clux_target_warnings(clux_cmd)
 
 target_link_libraries(clux PRIVATE
     clux_cmd
     clux_core
     clux_parser
+    clux_driver
     ${CLUX_STAGE_LIBS}
     ICU::data
     ICU::io
@@ -127,7 +141,7 @@ if(BUILD_TESTS)
 
   add_executable(clux_test ${TEST_SOURCES})
   target_include_directories(clux_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
-  target_link_libraries(clux_test PRIVATE clux_core clux_cmd clux_parser ${CLUX_STAGE_LIBS} icu_data_init ICU::data GTest::gtest)
+  target_link_libraries(clux_test PRIVATE clux_core clux_cmd clux_parser clux_driver ${CLUX_STAGE_LIBS} icu_data_init ICU::data GTest::gtest)
   clux_target_warnings(clux_test)
 
   include(GoogleTest)

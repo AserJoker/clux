@@ -335,22 +335,39 @@ typedef struct value {
 
 printf 硬编码：识别 `printf` 函数名，直接调用 C 的 printf。
 
-### 2.11 Driver（include/driver/driver.h, src/driver/driver.c）—— 尚未实现（实际 run 入口为 src/cmd/run.c）
+### 2.11 Driver（include/driver/driver.h, src/driver/driver.c）—— 已实现（当前阶段：加载 + 词法 → 单词表）
 
-流水线编排者，见本文档第 1 节。
+流水线编排者，见本文档第 1 节。当前落地阶段 ①（加载源码）与 ②（词法分析），并直接完成 ③（输出单词表）：
 
 ```c
-// 编译段：加载 + lex + parse + sema。出错返回非 0，诊断已写入 diag_buf。
-int driver_compile_file(const char *path,
-                        allocator_t *arena,
-                        diag_buf_t  *diags,
-                        ast_node_t **out_program);
+// 加载源码到内存缓冲（allocator 管理，data 在 allocator 存活期间有效）。
+int driver_load_source(allocator_t *alloc,
+                       const char *path,
+                       const char **out_data,
+                       size_t     *out_len);
 
-// 完整流水线：compile + interp。返回进程退出码（0/1/2）。
+// 加载 + 词法分析 -> token 池（vec<token_t*>, owns_element=true）。
+// 返回 0 成功 / -1 文件无法打开；词法错误以 TOKEN_TYPE_ERROR 留在池中。
+int driver_lex_file(allocator_t *alloc, const char *path, vec_t **out_pool);
+
+// 顶层入口：加载 -> 词法 -> 输出单词表。
+// 返回退出码：0 成功，1 编译错误（文件打不开 / 词法错误）。
 int driver_run_file(const char *path);
 ```
 
-Driver 持有编译单元的 arena，所有阶段产物（AST、符号表、strslice 指向的源 buffer）在同一生命周期内有效。
+`cmd_run`（src/cmd/run.c）只做参数解析（取首个位置参数作为文件路径），其余编排下沉到 `driver_run_file`。
+
+**单词表输出格式（阶段 ③）**：每个 token 独占一行（EOF 作为终止符跳过不打印），打印其源码位置范围与转义后的文本：
+
+```
+<TOKEN_KIND> L<begin.line>:<begin.col>-<end.line>:<end.col> <escaped-text>
+```
+
+示例：`KEYWORD L1:1-1:5 func`；`STRING L2:10-2:15 \"ab\n\"`。控制字符转义为字面 `\n`/`\r`/`\t`/`\\`/`\"`，其他不可打印字节转 `\xHH`，**不输出真实换行/制表符**。词法错误行额外追加 ` error: <message>`，并同时向 stderr 打印诊断 `<file>:<line>:<col>: error: <message>`，退出码置 1。
+
+**内存源约束**：Lexer 要求内存直读源（`istream_data != NULL`），而 `stream_source_file` 的 `data()` 为 NULL，因此阶段 ① 先把文件读入 allocator 缓冲，再用 `stream_source_mem(allocator, buf, len, owns_data=true)` 建内存源——缓冲由 istream/lexer 生命周期自动释放。token 文本切片在 lexer 存活期间有效，故单词表在 `lexer_close` 之前打印完毕。
+
+`driver_compile_file` / `driver_run_file` 的完整签名（含 parse/sema/interp）待后续阶段接入 Parser/Sema/Interp 后补全。Driver 持有的编译单元 arena 使所有阶段产物（AST、符号表、token 文本指向的源 buffer）在同一生命周期内有效。
 
 ## 3. 命令行接口
 
@@ -368,9 +385,10 @@ CMake（C11；测试为 C++20 + GoogleTest）。库划分：
 |------|--------|------|
 | `clux_core` | `src/core/*.c` | allocator / stream / vec / rbtree / omap / strmap / string |
 | `clux_parser` | `src/parser/*.c` | lexer（T4 之后加入 parser.c），依赖 `clux_core` |
+| `clux_driver` | `src/driver/*.c` | 流水线编排（加载 + 词法，后续加 parse/sema/interp），依赖 `clux_core` + `clux_parser` |
 | `clux_sema` | `src/sema/*.c` | 类型系统与语义分析；**目录为空时不创建目标**（GLOB + `if`） |
 | `clux_diag` | `src/diag/*.c` | 诊断收集器；同上 |
-| `clux_cmd` | `src/cmd/*.c` | 子命令分发 |
+| `clux_cmd` | `src/cmd/*.c` | 子命令分发，依赖 `clux_driver` |
 
 `sema` / `diag` 两个目录目前还没有源文件（对应流水线阶段 T5/T6），一旦放入第一个 `*.c`，CMake 会自动创建对应目标并链入 `clux` 与 `clux_test`，无需再改构建脚本。测试目标通过 `file(GLOB CONFIGURE_DEPENDS)` 自动收集 `tests/*.cpp`。
 

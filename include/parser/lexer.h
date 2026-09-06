@@ -124,6 +124,14 @@ bool token_is(const token_t *self, const char *str);
  */
 const char *token_get_error_message(const token_t *self);
 
+/**
+ * Return a static, human-readable name for a token kind (e.g.
+ * "TOKEN_TYPE_KEYWORD"). Intended for diagnostics and the token-table
+ * output; do not free the returned string. Returns "TOKEN_TYPE_UNKNOWN"
+ * for an out-of-range kind.
+ */
+const char *token_kind_name(token_kind_t kind);
+
 /* ---- Token helpers ---- */
 
 /**

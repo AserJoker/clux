@@ -653,6 +653,29 @@ const char *token_get_error_message(const token_t *self) {
   return self->message;
 }
 
+/* ---- Token kind name (static, for diagnostics / token-table output) ---- */
+
+static const char *const g_token_kind_names[] = {
+    "TOKEN_TYPE_ERROR",
+    "TOKEN_TYPE_IDENTIFIER",
+    "TOKEN_TYPE_CHARACTER",
+    "TOKEN_TYPE_STRING",
+    "TOKEN_TYPE_NUMERIC",
+    "TOKEN_TYPE_KEYWORD",
+    "TOKEN_TYPE_SYMBOL",
+    "TOKEN_TYPE_COMMENT",
+    "TOKEN_TYPE_MULTILINE_COMMENT",
+    "TOKEN_TYPE_WHITESPACE",
+    "TOKEN_TYPE_EOF",
+};
+
+const char *token_kind_name(token_kind_t kind) {
+  if (kind < 0 ||
+      (size_t)kind >= sizeof(g_token_kind_names) / sizeof(g_token_kind_names[0]))
+    return "TOKEN_TYPE_UNKNOWN";
+  return g_token_kind_names[(size_t)kind];
+}
+
 /* ---- Token helpers ---- */
 
 token_t *
