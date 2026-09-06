@@ -5,6 +5,11 @@
 #include "cmd/test.h"
 #include "cmd/version.h"
 #include "icu_data.h"
+#include <locale.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 /* ---- Command table ---- */
 
@@ -43,9 +48,30 @@ static const cmd_t g_cmds[] = {
 
 #define NUM_CMDS (sizeof(g_cmds) / sizeof(g_cmds[0]))
 
+/* ---- UTF-8 locale setup (cross-platform) ---- */
+
+/* Force the C runtime to treat text as UTF-8 so output is not mis-encoded
+ * on terminals that default to a local code page (notably Windows cmd). */
+static void setup_utf8_locale(void) {
+#ifdef _WIN32
+  setlocale(LC_ALL, ".UTF-8");
+  SetConsoleOutputCP(CP_UTF8);
+  SetConsoleCP(CP_UTF8);
+#else
+  /* Try an explicit UTF-8 locale first, then fall back to whatever the
+   * environment provides; if all fail we leave the C locale as-is. */
+  if (!setlocale(LC_ALL, "C.UTF-8") &&
+      !setlocale(LC_ALL, "en_US.UTF-8")) {
+    setlocale(LC_ALL, "");
+  }
+#endif
+}
+
 /* ---- main ---- */
 
 int main(int argc, char *argv[]) {
+  setup_utf8_locale();
+
   /* Register the embedded ICU data before any ICU API (lexer's
    * identifier / grapheme-cluster handling) is touched. */
   icu_data_init();
