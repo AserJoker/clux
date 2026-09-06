@@ -34,7 +34,7 @@ TEST(IStreamTest, OpenAndClose) {
 TEST(IStreamTest, NullArgs) {
   EXPECT_EQ(istream_open(nullptr, stream_source_mem(g_alloc, "x", 1, false)),
             nullptr);
-  stream_source_t empty_src = {0};
+  stream_source_t empty_src = {};
   EXPECT_EQ(istream_open(g_alloc, empty_src), nullptr);
   EXPECT_EQ(istream_open(g_alloc, stream_source_mem(nullptr, "x", 1, false)),
             nullptr);

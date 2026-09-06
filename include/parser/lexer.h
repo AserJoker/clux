@@ -41,6 +41,9 @@ typedef struct _lexer_t lexer_t;
  * `filename` is stored by reference (not copied) into every token's
  * location and must outlive the lexer.
  *
+ * A leading UTF-8 BOM (EF BB BF), if present, is skipped: the first
+ * token starts after it.
+ *
  * Returns NULL for invalid arguments or non-direct-access sources.
  * Panics on out-of-memory.
  */

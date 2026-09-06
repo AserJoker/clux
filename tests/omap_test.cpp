@@ -21,7 +21,7 @@ static int cmp_int(const void *a, const void *b) {
   return (ia > ib) - (ia < ib);
 }
 
-static int cmp_cstr(const void *a, const void *b) {
+[[maybe_unused]] static int cmp_cstr(const void *a, const void *b) {
   return strcmp((const char *)a, (const char *)b);
 }
 
@@ -31,7 +31,7 @@ typedef struct {
   int value;
 } int_box_t;
 
-static class_t int_box_class = {
+[[maybe_unused]] static class_t int_box_class = {
     .name = "int_box",
     .size = sizeof(int_box_t),
     .move_fn = default_move,

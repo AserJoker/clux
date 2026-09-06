@@ -79,7 +79,7 @@ func add(a:i32, b:i32):i32 {
 
 ### 2.1 Lexer (include/parser/lexer.h, src/parser/lexer.c)
 
-输入源文件字符流，输出 Token 流。**Lexer 只负责切分 token，不解析值**：数值、转义序列、字符内容等值解析全部留给 Parser（T3/T4 的 literal 解析），token 文本是对源 buffer 的零拷贝切片。
+输入源文件字符流，输出 Token 流。**Lexer 只负责切分 token，不解析值**：数值的大小、转义序列的解码留给 Parser（T3/T4 的 literal 解析），token 文本是对源 buffer 的零拷贝切片。Lexer 只校验字面量的**形状**（是否闭合、后缀是否合法、转义是否被允许、字符字面量是否恰好一个字符）。
 
 - `lexer_create(allocator_t*, istream_t*, filename)` → `lexer_t*`
 - `lexer_next(lexer_t*)` → `token_t`（调用者所有，需 `token_free`）
@@ -88,6 +88,9 @@ func add(a:i32, b:i32):i32 {
 - `lexer_error(lexer_t*, location_t*)` → `const char*`：词法错误信息（无错误返回 NULL）
 - 支持所有 M1 关键字、运算符、字面量（数字含进制与类型后缀、C 风格字符/字符串字面量、行/块注释）
 - 每个 Token 携带源码位置（文件/行/列）
+- 标识符按 Unicode ID_Start / ID_Continue 判定（ICU `u_isIDStart` / `u_isIDPart`；`_` 作为特例允许开头）
+- 跳过文件开头的 UTF-8 BOM；行注释止于 CR 或 LF，CRLF 的 `\r\n` 整体归为空白
+- 字面量形状校验：数字后缀白名单、转义序列白名单（含 `\xHH` 的 1-2 位 hex）、字符字面量恰好一个字符且可表示为 u8
 
 **Lexer 错误不可恢复（fail-fast）**：一旦遇到无法识别字符、非法数字后缀、未闭合字符串/字符/块注释等，Lexer 立即：
 1. 记录错误信息与位置（`lexer_error` 可查）
@@ -360,7 +363,41 @@ clux run <file.cx>    解释执行 .cx 文件
 
 ## 4. 构建系统
 
-CMake + 备选 Makefile。C11 标准，编译选项 `-Wall -Wextra -Wpedantic`。
+CMake（C11；测试为 C++20 + GoogleTest）。库划分：
+
+| 目标 | 源文件 | 说明 |
+|------|--------|------|
+| `clux_core` | `src/core/*.c` | allocator / stream / vec / rbtree / omap / strmap / string |
+| `clux_parser` | `src/parser/*.c` | lexer（T4 之后加入 parser.c），依赖 `clux_core` |
+| `clux_sema` | `src/sema/*.c` | 类型系统与语义分析；**目录为空时不创建目标**（GLOB + `if`） |
+| `clux_diag` | `src/diag/*.c` | 诊断收集器；同上 |
+| `clux_cmd` | `src/cmd/*.c` | 子命令分发 |
+
+`sema` / `diag` 两个目录目前还没有源文件（对应流水线阶段 T5/T6），一旦放入第一个 `*.c`，CMake 会自动创建对应目标并链入 `clux` 与 `clux_test`，无需再改构建脚本。测试目标通过 `file(GLOB CONFIGURE_DEPENDS)` 自动收集 `tests/*.cpp`。
+
+**编译警告**：项目目标统一启用严格警告（MSVC 风格驱动用 `/W4`，GNU 风格驱动用 `-Wall -Wextra -Wpedantic`），第三方（ICU / GoogleTest）保持各自配置——通过 `clux_target_warnings(<target>)` 施加，不用全局 `add_compile_options`。
+
+刻意关闭/绕过的项：
+
+| 项 | 处理 | 理由 |
+|------|------|------|
+| MSVC CRT 安全弃用（`fopen` / `tmpnam` / `freopen`） | Windows 下定义 `_CRT_SECURE_NO_WARNINGS` | clux 使用可移植 C API，而非 MSVC 专有的 `_s` 变体 |
+
+其余警告视为真实缺陷并直接修掉（如未使用变量/参数、C99 compound literal、结构体部分初始化），**当前构建零警告**。
+
+### 4.1 构建注意事项
+
+**不要执行 `ninja clean` 或 `cmake --build <dir> --clean-first`。**
+
+`third_party/icu/icu_data_gen.c` 是在 **configure 阶段**生成到 build 目录中的文件，clean 会把它删掉，而 ninja 没有重建它的规则，随后构建必然失败：
+
+```
+FAILED: third_party/icu/CMakeFiles/icudata.dir/icu_data_gen.c.obj
+clang: error: no such file or directory: '<build>/third_party/icu/icu_data_gen.c'
+```
+
+- 已经 clean 过：重新 configure 即可恢复（`cmake -S . -B build`，或在 build 目录内执行 `cmake .`），再正常构建。
+- 需要一次干净构建：另建一个 build 目录（`cmake -S . -B build-clean && cmake --build build-clean`），而不是清理原目录。
 
 ## 5. 测试策略
 

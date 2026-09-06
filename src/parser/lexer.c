@@ -4,6 +4,7 @@
 #include "parser/location.h"
 #include <stdarg.h>
 #include <string.h>
+#include <unicode/uchar.h>
 
 /* ---- Internal: token_t definition ---- */
 
@@ -57,20 +58,31 @@ static class_t lexer_class = {
 /* ---- Internal: keyword table (M1 language keywords) ---- */
 
 static const char *const g_keywords[] = {
-    "as",  "bool",  "break",     "const", "continue", "else",  "f32",
-    "f64", "false", "for",       "func",  "i16",      "i32",   "i64",
-    "i8",  "if",    "return",    "str",   "true",     "u16",   "u32",
-    "u64", "u8",    "undefined", "var",   "void",     "while",
+    "as",   "bool",   "break",     "const",     "continue", "else",
+    "f32",  "f64",    "false",     "for",       "func",     "i16",
+    "i32",  "i64",    "i8",        "if",        "return",   "str",
+    "true", "u16",    "u32",       "u64",       "u8",       "undefined",
+    "var",  "void",   "volatile",  "while",
 };
 
 /* ---- Internal: character classes ---- */
 
+/**
+ * Identifier rules follow the Unicode identifier profile (spec 2.5):
+ * a codepoint with the ID_Start property, or '_' as a special case
+ * (Unicode classifies '_' as ID_Continue only). Continuation codepoints
+ * use ICU's ID_Part test (ID_Continue, extended for identifiers).
+ * -1 (EOF) never matches.
+ */
 static bool is_ident_start(UChar32 cp) {
-  return (cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z') || cp == '_';
+  if (cp <= 0) return false;
+  if (cp == '_') return true;
+  return u_isIDStart(cp) ? true : false;
 }
 
 static bool is_ident_char(UChar32 cp) {
-  return is_ident_start(cp) || (cp >= '0' && cp <= '9');
+  if (cp <= 0) return false;
+  return is_ident_start(cp) || (u_isIDPart(cp) ? true : false);
 }
 
 static bool is_whitespace(UChar32 cp) {
@@ -84,7 +96,7 @@ static bool is_digit_in_base(UChar32 cp, int base) {
   return false;
 }
 
-/* ---- Internal: keyword lookup (linear scan; 27 entries) ---- */
+/* ---- Internal: keyword lookup (linear scan; 28 entries) ---- */
 
 static bool lookup_keyword(const char *text, size_t len) {
   for (size_t i = 0; i < sizeof(g_keywords) / sizeof(g_keywords[0]); i++) {
@@ -131,6 +143,67 @@ lexer_fail(lexer_t *lexer, stream_pos_t at, const char *fmt, ...) {
   return create_token(lexer->allocator, TOKEN_TYPE_ERROR, lexer->error_loc);
 }
 
+/* ---- Internal: escape sequences (spec 2.6) ---- */
+
+static bool is_hex_digit(UChar32 cp) {
+  return (cp >= '0' && cp <= '9') || (cp >= 'a' && cp <= 'f') ||
+         (cp >= 'A' && cp <= 'F');
+}
+
+/** True for the simple escapes: \n \t \r \\ \' \" \0 */
+static bool is_simple_escape(UChar32 cp) {
+  switch (cp) {
+  case 'n':
+  case 't':
+  case 'r':
+  case '\\':
+  case '\'':
+  case '"':
+  case '0':
+    return true;
+  default:
+    return false;
+  }
+}
+
+/**
+ * Consume the body of an escape sequence, i.e. everything after the
+ * backslash that has already been read: either a simple escape or
+ * '\xHH' with 1-2 hex digits.
+ *
+ * Returns NULL on success, or a fatal (fail-fast) error token:
+ *   - "\\" at EOF      -> dangling backslash
+ *   - "\\" + newline   -> newline in literal
+ *   - unknown escape   -> invalid escape sequence
+ *   - "\\x" + non-hex  -> invalid hex escape
+ */
+static token_t *lexer_read_escape(lexer_t *lexer,
+                                  stream_pos_t begin,
+                                  const char *what) {
+  UChar32 e = istream_read_cp(lexer->stream);
+  if (e == -1)
+    return lexer_fail(
+        lexer, begin, "unterminated %s (dangling backslash)", what);
+  if (e == '\n' || e == '\r')
+    return lexer_fail(lexer, begin, "unterminated %s (newline in literal)", what);
+
+  if (e == 'x') { /* \xHH: 1-2 hex digits */
+    UChar32 h = istream_peek_cp(lexer->stream);
+    if (h == -1 || !is_hex_digit(h))
+      return lexer_fail(
+          lexer, begin, "invalid hex escape in %s: expected hex digit", what);
+    istream_read_cp(lexer->stream);
+    if (is_hex_digit(istream_peek_cp(lexer->stream)))
+      istream_read_cp(lexer->stream); /* optional second digit */
+    return NULL;
+  }
+
+  if (!is_simple_escape(e))
+    return lexer_fail(
+        lexer, begin, "invalid escape sequence in %s (U+%04X)", what, (int)e);
+  return NULL;
+}
+
 /* ---- Lexer lifecycle ---- */
 
 lexer_t *
@@ -146,6 +219,11 @@ lexer_create(allocator_t *allocator, istream_t *stream, const char *filename) {
   lexer->filename = filename;
   lexer->source_data = data;
   lexer->source_len = istream_size(stream);
+  /* Skip a leading UTF-8 BOM (EF BB BF): it belongs to no token and must
+   * not turn into an "unrecognized character" error on Windows sources. */
+  if (lexer->source_len >= 3 && (unsigned char)data[0] == 0xEF &&
+      (unsigned char)data[1] == 0xBB && (unsigned char)data[2] == 0xBF)
+    istream_seek(stream, 3);
   lexer->eof = false;
   lexer->pending = NULL;
   lexer->has_error = false;
@@ -346,9 +424,8 @@ static token_t *lexer_read_string(lexer_t *lexer, stream_pos_t begin) {
       return lexer_fail(lexer, begin, "unterminated string literal");
     if (cp == '"') break;
     if (cp == '\\') {
-      if (istream_read_cp(lexer->stream) == -1)
-        return lexer_fail(
-            lexer, begin, "unterminated string literal (dangling backslash)");
+      token_t *err = lexer_read_escape(lexer, begin, "string literal");
+      if (err) return err;
     } else if (cp == '\n' || cp == '\r') {
       return lexer_fail(
           lexer, begin, "unterminated string literal (newline in string)");
@@ -359,26 +436,38 @@ static token_t *lexer_read_string(lexer_t *lexer, stream_pos_t begin) {
       lexer->allocator, TOKEN_TYPE_STRING, make_location(lexer, begin, end));
 }
 
-/* ---- Internal: character literals ---- */
+/* ---- Internal: character literals (spec 2.6: exactly one character) ---- */
 
 static token_t *lexer_read_char(lexer_t *lexer, stream_pos_t begin) {
   istream_read_cp(lexer->stream); /* consume '\'' */
-  for (;;) {
-    UChar32 cp = istream_read_cp(lexer->stream);
-    if (cp == -1)
-      return lexer_fail(lexer, begin, "unterminated character literal");
-    if (cp == '\'') break;
-    if (cp == '\\') {
-      if (istream_read_cp(lexer->stream) == -1)
-        return lexer_fail(lexer,
-                          begin,
-                          "unterminated character literal (dangling "
-                          "backslash)");
-    } else if (cp == '\n' || cp == '\r') {
-      return lexer_fail(
-          lexer, begin, "unterminated character literal (newline in literal)");
-    }
+  UChar32 cp = istream_read_cp(lexer->stream);
+  if (cp == -1)
+    return lexer_fail(lexer, begin, "unterminated character literal");
+  if (cp == '\'') return lexer_fail(lexer, begin, "empty character literal");
+  if (cp == '\n' || cp == '\r')
+    return lexer_fail(
+        lexer, begin, "unterminated character literal (newline in literal)");
+
+  if (cp == '\\') {
+    token_t *err = lexer_read_escape(lexer, begin, "character literal");
+    if (err) return err;
+  } else if (cp > 0xFF) {
+    /* character literals have value type u8 (spec 2.6) */
+    return lexer_fail(lexer,
+                      begin,
+                      "character literal out of range for u8 (U+%04X)",
+                      (int)cp);
   }
+
+  /* exactly one character: the next codepoint must be the closing quote */
+  UChar32 close = istream_read_cp(lexer->stream);
+  if (close != '\'') {
+    if (close == -1)
+      return lexer_fail(lexer, begin, "unterminated character literal");
+    return lexer_fail(
+        lexer, begin, "character literal must contain exactly one character");
+  }
+
   stream_pos_t end = istream_tell(lexer->stream);
   return create_token(
       lexer->allocator, TOKEN_TYPE_CHARACTER, make_location(lexer, begin, end));
@@ -391,11 +480,13 @@ static token_t *lexer_read_slash(lexer_t *lexer, stream_pos_t begin) {
   istream_read_cp(lexer->stream);
   UChar32 cp = istream_peek_cp(lexer->stream);
 
-  if (cp == '/') { /* line comment: // ... up to (not incl.) newline or EOF */
+  /* line comment: // ... up to (not incl.) CR, LF or EOF. CR is not part
+   * of the comment so that CRLF sources keep "\r\n" as pure whitespace. */
+  if (cp == '/') {
     istream_read_cp(lexer->stream);
     for (;;) {
       cp = istream_peek_cp(lexer->stream);
-      if (cp == -1 || cp == '\n') break;
+      if (cp == -1 || cp == '\n' || cp == '\r') break;
       istream_read_cp(lexer->stream);
     }
     stream_pos_t end = istream_tell(lexer->stream);
@@ -466,6 +557,7 @@ static bool is_single_symbol(UChar32 c) {
   case ';':
   case ',':
   case ':':
+  case '.':
     return true;
   default:
     return false;

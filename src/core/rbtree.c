@@ -487,10 +487,6 @@ static void rbtree_clone_cb(void *self, allocator_t *allocator, void *another) {
   dst->size = 0;
   dst->root = clone_subtree(src, allocator, src->root, NULL);
 
-  /* Count nodes to set size */
-  rb_node_t *n = dst->root;
-  size_t count = 0;
-  /* Simple recursive count not available; we traverse */
-  /* Use the fact that clone_subtree preserves structure */
+  /* clone_subtree preserves the structure, so the node count carries over */
   if (src->root) dst->size = src->size;
 }

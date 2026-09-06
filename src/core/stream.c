@@ -56,6 +56,7 @@ static bool is_line_break(UChar32 cp) {
 static size_t compute_cluster_col(const char *line_start,
                                   size_t line_len,
                                   size_t pos_offset) {
+  (void)line_len; /* only the bytes before pos_offset take part in the count */
   if (pos_offset == 0) return 1;
 
   UErrorCode status = U_ZERO_ERROR;

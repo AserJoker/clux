@@ -30,6 +30,7 @@ static token_t *take(allocator_t *a,
                      lexer_t *lx,
                      token_kind_t expected,
                      const char *expected_text) {
+  (void)a;
   token_t *t = lexer_next(lx);
   EXPECT_NE(t, nullptr);
   if (!t) return nullptr;
@@ -101,10 +102,10 @@ TEST(Lexer, EofIdempotent) {
 
 TEST(Lexer, AllKeywords) {
   const char *kws[] = {
-      "as",  "bool",  "break",     "const", "continue", "else",  "f32",
-      "f64", "false", "for",       "func",  "i16",      "i32",   "i64",
-      "i8",  "if",    "return",    "str",   "true",     "u16",   "u32",
-      "u64", "u8",    "undefined", "var",   "void",     "while",
+      "as",  "bool",  "break",    "const",   "continue", "else", "f32",
+      "f64", "false", "for",      "func",    "i16",      "i32",  "i64",
+      "i8",  "if",    "return",   "str",     "true",     "u16",  "u32",
+      "u64", "u8",    "undefined", "var",    "void",     "volatile", "while",
   };
   allocator_t *a = create_allocator(test_alloc, test_free);
   for (size_t i = 0; i < sizeof(kws) / sizeof(kws[0]); i++) {
@@ -162,6 +163,64 @@ TEST(Lexer, IdentifierStopsAtNonIdent) {
   EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
   token_free(a, &t);
   lexer_close(&lx);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+/* ==== Unicode identifiers (spec 2.5: ID_Start / ID_Continue) ==== */
+
+TEST(Lexer, UnicodeIdentifiers) {
+  /* UTF-8 bytes written as escapes so the test does not depend on the
+   * source file encoding: 变量 / café / _ü / a1_π / 中文 */
+  const char *idents[] = {
+      "\xe5\x8f\x98\xe9\x87\x8f",       /* 变量 */
+      "caf\xc3\xa9",                    /* café */
+      "_\xc3\xbc",                      /* _ü */
+      "a1_\xcf\x80",                    /* a1_π */
+      "\xe4\xb8\xad\xe6\x96\x87",       /* 中文 */
+  };
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  for (size_t i = 0; i < sizeof(idents) / sizeof(idents[0]); i++) {
+    lexer_t *lx = make_lexer(a, idents[i], "id.cx");
+    token_t *t = take(a, lx, TOKEN_TYPE_IDENTIFIER, idents[i]);
+    token_free(a, &t);
+    lexer_close(&lx);
+  }
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+TEST(Lexer, UnicodeIdentifierStopsAtSymbol) {
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "\xe5\x8f\x98\xe9\x87\x8f=1", "id.cx");
+  token_t *t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "\xe5\x8f\x98\xe9\x87\x8f");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_SYMBOL, "=");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_NUMERIC, "1");
+  token_free(a, &t);
+  lexer_close(&lx);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+TEST(Lexer, NonIdentifierUnicodeIsFatal) {
+  struct {
+    const char *src;
+    const char *needle;
+  } cases[] = {
+      {"\xe2\x82\xac", "U+20AC"},     /* € (Sc) is not ID_Start */
+      {"\xf0\x9f\x98\x80", "U+1F600"}, /* emoji (So) is not ID_Start */
+      {"\xc2\xa9", "U+00A9"},          /* © (So) is not ID_Start */
+  };
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    lexer_t *lx = make_lexer(a, cases[i].src, "id.cx");
+    token_t *t = lexer_next(lx);
+    EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_ERROR) << i;
+    token_free(a, &t);
+    const char *msg = lexer_error(lx, nullptr);
+    ASSERT_NE(msg, nullptr) << i;
+    EXPECT_NE(strstr(msg, cases[i].needle), nullptr) << i;
+    lexer_close(&lx);
+  }
   EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
@@ -373,7 +432,7 @@ TEST(Lexer, NullSafety) {
   token_free(a, &null_tok); /* no-op */
   EXPECT_EQ(null_tok, nullptr);
   token_free(nullptr, &null_tok); /* no-op */
-  EXPECT_EQ(create_token(nullptr, TOKEN_TYPE_EOF, (location_t){0}), nullptr);
+  EXPECT_EQ(create_token(nullptr, TOKEN_TYPE_EOF, location_t{}), nullptr);
   lexer_close(&lx);
   EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
@@ -810,7 +869,9 @@ TEST(Lexer, NumericErrorsAreFatal) {
 /* ==== Character literals ==== */
 
 TEST(Lexer, CharLiterals) {
-  const char *cases[] = {"'a'", "'\\n'", "'\\''", "'\\\\'", "'\\x41'", "' '"};
+  const char *cases[] = {"'a'",    "'\\n'",   "'\\''", "'\\\\'", "'\\x41'",
+                         "' '",    "'\\0'",   "'\\t'", "'\\r'",  "'\\\"'",
+                         "'\\x7'", "'\\xFF'", "'\\x3'"};
   allocator_t *a = create_allocator(test_alloc, test_free);
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
     lexer_t *lx = make_lexer(a, cases[i], "chr.cx");
@@ -829,6 +890,14 @@ TEST(Lexer, CharErrorsAreFatal) {
       {"'a", "unterminated character literal"},
       {"'\\", "unterminated character literal"},
       {"'\n'", "unterminated character literal"},
+      {"''", "empty character literal"},
+      {"'ab'", "exactly one character"},
+      {"'\\01'", "exactly one character"},
+      {"'\\q'", "invalid escape sequence"},
+      {"'\\u0041'", "invalid escape sequence"},
+      {"'\\x'", "invalid hex escape"},
+      {"'\\xZ'", "invalid hex escape"},
+      {"'\xe4\xb8\xad'", "out of range for u8"},
   };
   allocator_t *a = create_allocator(test_alloc, test_free);
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -869,6 +938,10 @@ TEST(Lexer, StringErrorsAreFatal) {
       {"\"abc", "unterminated string literal"},
       {"\"ab\\", "unterminated string literal"},
       {"\"ab\ncd\"", "unterminated string literal"},
+      {"\"\\q\"", "invalid escape sequence"},
+      {"\"\\x\"", "invalid hex escape"},
+      {"\"\\xz\"", "invalid hex escape"},
+      {"\"a\\u0041\"", "invalid escape sequence"},
   };
   allocator_t *a = create_allocator(test_alloc, test_free);
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -949,8 +1022,8 @@ TEST(Lexer, UnterminatedBlockCommentIsFatal) {
 /* ==== Symbols ==== */
 
 TEST(Lexer, SingleSymbols) {
-  const char *syms[] = {"+", "-", "*", "%", "<", ">", "=", "!", "&", "|", "^",
-                        "~", "(", ")", "{", "}", "[", "]", ";", ",", ":"};
+  const char *syms[] = {"+", "-", "*", "%", "<", ">", "=", "!", "&", "|",  "^",
+                        "~", "(", ")", "{", "}", "[", "]", ";", ",", ":", "."};
   allocator_t *a = create_allocator(test_alloc, test_free);
   for (size_t i = 0; i < sizeof(syms) / sizeof(syms[0]); i++) {
     lexer_t *lx = make_lexer(a, syms[i], "sym.cx");
@@ -1006,5 +1079,57 @@ TEST(Lexer, SymbolMixedWithTokens) {
   t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "b");
   token_free(a, &t);
   lexer_close(&lx);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+TEST(Lexer, DotIsASymbol) {
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "a.b", "sym.cx");
+  token_t *t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "a");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_SYMBOL, ".");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "b");
+  token_free(a, &t);
+  lexer_close(&lx);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+/* ==== CRLF line endings ==== */
+
+TEST(Lexer, LineCommentStopsAtCarriageReturn) {
+  /* In a CRLF source the comment must not swallow the '\r'. */
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "// hi\r\nx", "cmt.cx");
+  token_t *t = take(a, lx, TOKEN_TYPE_COMMENT, "// hi");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_WHITESPACE, "\r\n");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "x");
+  token_free(a, &t);
+  lexer_close(&lx);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+/* ==== UTF-8 BOM ==== */
+
+TEST(Lexer, Utf8BomIsSkipped) {
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "\xEF\xBB\xBF" "abc", "bom.cx");
+  token_t *t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "abc");
+  const location_t *loc = token_get_location(t);
+  EXPECT_EQ(loc->begin.offset, 3u); /* the BOM belongs to no token */
+  EXPECT_EQ(loc->begin.line, 1u);
+  token_free(a, &t);
+  t = lexer_next(lx);
+  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
+  token_free(a, &t);
+  lexer_close(&lx);
+
+  lexer_t *only = make_lexer(a, "\xEF\xBB\xBF", "bom.cx"); /* BOM-only file */
+  t = lexer_next(only);
+  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
+  token_free(a, &t);
+  lexer_close(&only);
   EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
