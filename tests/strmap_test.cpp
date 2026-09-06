@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "test_common.h"
 #include <cstring>
 #include <string>
 #include <vector>
@@ -15,7 +16,7 @@ static allocator_t *g_alloc = nullptr;
 class StrmapTest : public ::testing::Test {
 protected:
   void SetUp() override { g_alloc = create_allocator(malloc, free); }
-  void TearDown() override { delete_allocator(&g_alloc); }
+  void TearDown() override { EXPECT_ALLOCATOR_EMPTY_DELETE(&g_alloc); }
 };
 
 /* A simple boxed value for owns_value testing */

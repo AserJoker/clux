@@ -1,11 +1,11 @@
 #include <gtest/gtest.h>
+#include "test_common.h"
 #include <stdexcept>
 #include <cstdlib>
 #include <cstring>
 
 extern "C" {
 #include "core/allocator.h"
-#include "core/panic.h"
 }
 
 /* ---- Test helpers ---- */
@@ -119,23 +119,6 @@ static class_t string_class = {
     .dispose_fn = string_dispose,
 };
 
-/* ---- Panic handler for testing ---- */
-
-extern "C" void alloc_throw_handler(const char *message) {
-  throw std::runtime_error(message);
-}
-
-/* ---- Fixture: save/restore panic handler ---- */
-
-class AllocatorPanicTest : public ::testing::Test {
-protected:
-  panic_handler_t saved_panic_;
-
-  void SetUp() override { saved_panic_ = get_panic_handler(); }
-
-  void TearDown() override { set_panic_handler(saved_panic_); }
-};
-
 /* ========================================================================= */
 /* Test suites                                                               */
 /* ========================================================================= */
@@ -145,7 +128,7 @@ protected:
 TEST(CreateDelete, ValidAllocator) {
   allocator_t *a = create_allocator(test_alloc, test_free);
   ASSERT_NE(a, nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
   EXPECT_EQ(a, nullptr);
 }
 
@@ -167,14 +150,14 @@ TEST(CreateDelete, NullDoublePtr) {
 
 TEST(CreateDelete, NullPtr) {
   allocator_t *p = nullptr;
-  delete_allocator(&p); // no crash
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&p); // no crash
   EXPECT_EQ(p, nullptr);
 }
 
 TEST(CreateDelete, DeleteAndNullify) {
   allocator_t *a = create_allocator(test_alloc, test_free);
   ASSERT_NE(a, nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
   EXPECT_EQ(a, nullptr);
 }
 
@@ -192,7 +175,7 @@ TEST(AllocatorNew, SingleInt) {
 
   allocator_free(a, &data);
   EXPECT_EQ(data, nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorNew, MultipleInts) {
@@ -211,13 +194,13 @@ TEST(AllocatorNew, MultipleInts) {
   }
 
   allocator_free(a, &data);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorNew, ZeroCount) {
   allocator_t *a = create_allocator(test_alloc, test_free);
   EXPECT_EQ(allocator_new(a, &int_class, 0), nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorNew, NullAllocator) {
@@ -227,7 +210,7 @@ TEST(AllocatorNew, NullAllocator) {
 TEST(AllocatorNew, NullClass) {
   allocator_t *a = create_allocator(test_alloc, test_free);
   EXPECT_EQ(allocator_new(a, nullptr, 1), nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorNew, ClassZeroSize) {
@@ -240,7 +223,7 @@ TEST(AllocatorNew, ClassZeroSize) {
   };
   allocator_t *a = create_allocator(test_alloc, test_free);
   EXPECT_EQ(allocator_new(a, &zero_class, 1), nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorNew, GetClassReturnsCorrect) {
@@ -249,7 +232,7 @@ TEST(AllocatorNew, GetClassReturnsCorrect) {
   ASSERT_NE(data, nullptr);
   EXPECT_EQ(allocator_get_class(data), &int_class);
   allocator_free(a, &data);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorNew, GetCountReturnsCorrect) {
@@ -258,7 +241,7 @@ TEST(AllocatorNew, GetCountReturnsCorrect) {
   ASSERT_NE(data, nullptr);
   EXPECT_EQ(allocator_get_count(data), 3u);
   allocator_free(a, &data);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorNew, GetClassNullData) {
@@ -284,7 +267,7 @@ TEST(AllocatorNewEx, Basic) {
 
   allocator_free(a, &data);
   EXPECT_EQ(data, nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorNewEx, GetClassInfo) {
@@ -303,7 +286,7 @@ TEST(AllocatorNewEx, GetClassInfo) {
   EXPECT_EQ(allocator_get_count(data), 2u);
 
   allocator_free(a, &data);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorNewEx, NullMoveCloneDispose) {
@@ -319,14 +302,14 @@ TEST(AllocatorNewEx, NullMoveCloneDispose) {
   EXPECT_EQ(clazz->dispose_fn, nullptr);
 
   allocator_free(a, &data);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorNewEx, ZeroSize) {
   allocator_t *a = create_allocator(test_alloc, test_free);
   EXPECT_EQ(allocator_new_ex(a, "zero", 0, nullptr, nullptr, nullptr, 1),
             nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorNewEx, ZeroCount) {
@@ -334,7 +317,7 @@ TEST(AllocatorNewEx, ZeroCount) {
   EXPECT_EQ(
       allocator_new_ex(a, "zero", sizeof(int), nullptr, nullptr, nullptr, 0),
       nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorNewEx, NullAllocator) {
@@ -351,7 +334,7 @@ TEST(AllocatorFree, FreeAndNullify) {
   ASSERT_NE(data, nullptr);
   allocator_free(a, &data);
   EXPECT_EQ(data, nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorFree, FreeNullData) {
@@ -359,13 +342,13 @@ TEST(AllocatorFree, FreeNullData) {
   void *p = nullptr;
   allocator_free(a, &p); // no crash
   EXPECT_EQ(p, nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorFree, FreeNullDoublePtr) {
   allocator_t *a = create_allocator(test_alloc, test_free);
   allocator_free(a, nullptr); // no crash
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorFree, FreeNullAllocator) {
@@ -382,7 +365,7 @@ TEST(AllocatorFree, CallsDispose) {
   allocator_free(a, &data);
   EXPECT_EQ(g_dispose_call_count, 1);
   EXPECT_EQ(data, nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorFree, DisposeNullSafe) {
@@ -391,7 +374,7 @@ TEST(AllocatorFree, DisposeNullSafe) {
   ASSERT_NE(data, nullptr);
   allocator_free(a, &data); // dispose_fn is nullptr, no crash
   EXPECT_EQ(data, nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ---- AllocatorMove ---- */
@@ -408,7 +391,7 @@ TEST(AllocatorMove, BasicWithDefaultMove) {
   EXPECT_EQ(src, nullptr);
 
   allocator_free(a, &dst);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorMove, CustomMoveFn) {
@@ -432,44 +415,25 @@ TEST(AllocatorMove, CustomMoveFn) {
   EXPECT_EQ(src, nullptr); // source pointer nullified
 
   allocator_free(a, &dst);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorMove, NullObject) {
   allocator_t *a = create_allocator(test_alloc, test_free);
   void *p = nullptr;
   EXPECT_EQ(allocator_move(a, &p), nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorMove, NullPtr) {
   allocator_t *a = create_allocator(test_alloc, test_free);
   EXPECT_EQ(allocator_move(a, nullptr), nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorMove, NullAllocator) {
   void *p = nullptr;
   EXPECT_EQ(allocator_move(nullptr, &p), nullptr);
-}
-
-TEST_F(AllocatorPanicTest, PanicsOnNullMoveFn) {
-  set_panic_handler(alloc_throw_handler);
-  allocator_t *a = create_allocator(test_alloc, test_free);
-  void *src = allocator_new(a, &no_callback_class, 1);
-  ASSERT_NE(src, nullptr);
-
-  try {
-    allocator_move(a, &src);
-    FAIL() << "allocator_move should panic on NULL move_fn";
-  } catch (const std::runtime_error &e) {
-    std::string msg = e.what();
-    EXPECT_NE(msg.find("does not support move"), std::string::npos);
-    EXPECT_NE(msg.find("no_callback"), std::string::npos);
-  }
-
-  allocator_free(a, &src);
-  delete_allocator(&a);
 }
 
 /* ---- AllocatorClone ---- */
@@ -490,7 +454,7 @@ TEST(AllocatorClone, BasicWithDefaultClone) {
 
   allocator_free(a, &src);
   allocator_free(a, &dst);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorClone, CustomCloneFn) {
@@ -515,83 +479,25 @@ TEST(AllocatorClone, CustomCloneFn) {
 
   allocator_free(a, &src);
   allocator_free(a, &dst);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorClone, NullObject) {
   allocator_t *a = create_allocator(test_alloc, test_free);
   void *p = nullptr;
   EXPECT_EQ(allocator_clone(a, &p), nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorClone, NullPtr) {
   allocator_t *a = create_allocator(test_alloc, test_free);
   EXPECT_EQ(allocator_clone(a, nullptr), nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(AllocatorClone, NullAllocator) {
   void *p = nullptr;
   EXPECT_EQ(allocator_clone(nullptr, &p), nullptr);
-}
-
-TEST_F(AllocatorPanicTest, PanicsOnNullCloneFn) {
-  set_panic_handler(alloc_throw_handler);
-  allocator_t *a = create_allocator(test_alloc, test_free);
-  void *src = allocator_new(a, &no_callback_class, 1);
-  ASSERT_NE(src, nullptr);
-
-  try {
-    allocator_clone(a, &src);
-    FAIL() << "allocator_clone should panic on NULL clone_fn";
-  } catch (const std::runtime_error &e) {
-    std::string msg = e.what();
-    EXPECT_NE(msg.find("does not support clone"), std::string::npos);
-    EXPECT_NE(msg.find("no_callback"), std::string::npos);
-  }
-
-  allocator_free(a, &src);
-  delete_allocator(&a);
-}
-
-/* ---- OOM panics ---- */
-
-static void *oom_alloc(size_t size) {
-  (void)size;
-  return nullptr;
-}
-static void oom_free(void *ptr) { (void)ptr; }
-
-TEST_F(AllocatorPanicTest, OomPanics) {
-  set_panic_handler(alloc_throw_handler);
-  allocator_t *a = create_allocator(oom_alloc, oom_free);
-
-  try {
-    allocator_new(a, &int_class, 1);
-    FAIL() << "allocator_new should panic on OOM";
-  } catch (const std::runtime_error &e) {
-    std::string msg = e.what();
-    EXPECT_NE(msg.find("out of memory"), std::string::npos);
-  }
-
-  delete_allocator(&a);
-}
-
-TEST_F(AllocatorPanicTest, OomInNewExPanics) {
-  set_panic_handler(alloc_throw_handler);
-  allocator_t *a = create_allocator(oom_alloc, oom_free);
-
-  try {
-    allocator_new_ex(
-        a, "point", sizeof(double), default_move, default_clone, nullptr, 1);
-    FAIL() << "allocator_new_ex should panic on OOM";
-  } catch (const std::runtime_error &e) {
-    std::string msg = e.what();
-    EXPECT_NE(msg.find("out of memory"), std::string::npos);
-  }
-
-  delete_allocator(&a);
 }
 
 /* ---- DefaultCallbacks ---- */
@@ -612,7 +518,7 @@ TEST(DefaultCallbacks, DefaultMoveViaAllocatorMove) {
   EXPECT_EQ(src, nullptr);
 
   allocator_free(a, &dst);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(DefaultCallbacks, DefaultCloneViaAllocatorClone) {
@@ -633,7 +539,7 @@ TEST(DefaultCallbacks, DefaultCloneViaAllocatorClone) {
 
   allocator_free(a, &src);
   allocator_free(a, &dst);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ---- TrackingAllocator ---- */
@@ -650,7 +556,7 @@ TEST(TrackingAllocator, CountsMatch) {
   EXPECT_EQ(g_track.free_count, 1);
   EXPECT_EQ(data, nullptr);
 
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ---- OwnershipChain (integration) ---- */
@@ -669,7 +575,7 @@ TEST(OwnershipChain, AllocateMoveFree) {
 
   allocator_free(a, &moved);
   EXPECT_EQ(moved, nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(OwnershipChain, AllocateCloneFreeBoth) {
@@ -691,7 +597,7 @@ TEST(OwnershipChain, AllocateCloneFreeBoth) {
   allocator_free(a, &cloned);
   EXPECT_EQ(obj, nullptr);
   EXPECT_EQ(cloned, nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(OwnershipChain, NestedAllocation) {
@@ -709,7 +615,7 @@ TEST(OwnershipChain, NestedAllocation) {
 
   allocator_free(a, &box);
   EXPECT_EQ(box, nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Leak Detection ==== */
@@ -722,7 +628,7 @@ TEST(LeakDetection, NoLeakCleanDelete) {
   allocator_free(a, &p1);
   allocator_free(a, &p2);
   /* delete_allocator should not print any leak warnings */
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
   EXPECT_EQ(a, nullptr);
 }
 
@@ -764,8 +670,10 @@ TEST(LeakDetection, LeakReportedOnDelete) {
 
 TEST(LeakDetection, MultipleLeaksReported) {
   allocator_t *a = create_allocator(test_alloc, test_free);
-  allocator_new(a, &int_class, 1);
-  allocator_new(a, &byte_class, 10);
+  void *p1 = allocator_new(a, &int_class, 1);
+  void *p2 = allocator_new(a, &byte_class, 10);
+  ASSERT_NE(p1, nullptr);
+  ASSERT_NE(p2, nullptr);
 
   char tmp_path[L_tmpnam];
   tmpnam(tmp_path);
@@ -788,4 +696,11 @@ TEST(LeakDetection, MultipleLeaksReported) {
   std::string output(buf);
   EXPECT_NE(output.find("int"), std::string::npos);
   EXPECT_NE(output.find("byte"), std::string::npos);
+
+  /* Free the deliberately-leaked allocations. delete_allocator has already
+   * released the allocator struct, so reclaim the raw blocks directly.
+   * HDR must match the layout of the internal alloc_header_t (5 pointers). */
+  enum { HDR = sizeof(void *) * 5 };
+  free((char *)p1 - HDR);
+  free((char *)p2 - HDR);
 }

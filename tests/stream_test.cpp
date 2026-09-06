@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "test_common.h"
 #include <cstring>
 #include <string>
 
@@ -12,7 +13,7 @@ static allocator_t *g_alloc = nullptr;
 class StreamTest : public ::testing::Test {
 protected:
   void SetUp() override { g_alloc = create_allocator(malloc, free); }
-  void TearDown() override { delete_allocator(&g_alloc); }
+  void TearDown() override { EXPECT_ALLOCATOR_EMPTY_DELETE(&g_alloc); }
 };
 
 /* ---- istream construction ---- */
@@ -27,7 +28,7 @@ TEST(IStreamTest, OpenAndClose) {
   EXPECT_FALSE(istream_at_end(s));
   istream_close(&s);
   EXPECT_EQ(s, nullptr);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 TEST(IStreamTest, NullArgs) {
@@ -58,7 +59,7 @@ TEST(IStreamTest, ReadAscii) {
   EXPECT_TRUE(istream_at_end(s));
 
   istream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 TEST(IStreamTest, ReadUtf8Multibyte) {
@@ -71,7 +72,7 @@ TEST(IStreamTest, ReadUtf8Multibyte) {
   EXPECT_EQ(istream_read_cp(s), -1);
 
   istream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 TEST(IStreamTest, PeekDoesNotAdvance) {
@@ -85,7 +86,7 @@ TEST(IStreamTest, PeekDoesNotAdvance) {
   EXPECT_EQ(istream_peek_cp(s), 0x42);
 
   istream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 /* ---- istream position tracking ---- */
@@ -109,7 +110,7 @@ TEST(IStreamTest, TellBasicPosition) {
   EXPECT_EQ(pos.cluster_col, 2u);
 
   istream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 TEST(IStreamTest, LineTrackingLF) {
@@ -131,7 +132,7 @@ TEST(IStreamTest, LineTrackingLF) {
   EXPECT_EQ(istream_tell(s).col, 2u);
 
   istream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 TEST(IStreamTest, LineTrackingCRLF) {
@@ -149,7 +150,7 @@ TEST(IStreamTest, LineTrackingCRLF) {
   EXPECT_EQ(istream_tell(s).col, 2u);
 
   istream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 TEST(IStreamTest, ClusterColEmoji) {
@@ -168,7 +169,7 @@ TEST(IStreamTest, ClusterColEmoji) {
             2u); /* cluster col unchanged (extend) */
 
   istream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 /* ---- istream seek ---- */
@@ -190,7 +191,7 @@ TEST(IStreamTest, SeekToStart) {
   EXPECT_EQ(pos.cluster_col, 1u);
 
   istream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 TEST(IStreamTest, SeekToMiddleLine) {
@@ -208,7 +209,7 @@ TEST(IStreamTest, SeekToMiddleLine) {
   EXPECT_EQ(istream_read_cp(s), 0x43); /* 'C' */
 
   istream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 /* ---- istream scanf ---- */
@@ -224,7 +225,7 @@ TEST(IStreamTest, ScanfInt) {
   EXPECT_EQ(val, 42);
 
   istream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 /* ---- istream remaining / at_end ---- */
@@ -245,7 +246,7 @@ TEST(IStreamTest, RemainingAndAtEnd) {
   EXPECT_TRUE(istream_at_end(s));
 
   istream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 /* ---- istream owns data ---- */
@@ -263,7 +264,7 @@ TEST(IStreamTest, OwnsData) {
 
   istream_close(&s);
   /* data should have been freed by source close */
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 /* ================================================================ */
@@ -278,7 +279,7 @@ TEST(OStreamTest, OpenAndClose) {
   EXPECT_EQ(ostream_size(s), 0u);
   ostream_close(&s);
   EXPECT_EQ(s, nullptr);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 TEST(OStreamTest, WriteCpAscii) {
@@ -293,7 +294,7 @@ TEST(OStreamTest, WriteCpAscii) {
   EXPECT_STREQ(ostream_data(s), "ABC");
 
   ostream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 TEST(OStreamTest, WriteCpUtf8) {
@@ -306,7 +307,7 @@ TEST(OStreamTest, WriteCpUtf8) {
   EXPECT_EQ(ostream_size(s), 6u);
 
   ostream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 TEST(OStreamTest, WriteRaw) {
@@ -318,7 +319,7 @@ TEST(OStreamTest, WriteRaw) {
   EXPECT_STREQ(ostream_data(s), "Hello");
 
   ostream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 TEST(OStreamTest, Printf) {
@@ -330,7 +331,7 @@ TEST(OStreamTest, Printf) {
   EXPECT_STREQ(ostream_data(s), "1 + 2 = 3");
 
   ostream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 TEST(OStreamTest, TellPosition) {
@@ -350,7 +351,7 @@ TEST(OStreamTest, TellPosition) {
   EXPECT_EQ(pos.cluster_col, 2u);
 
   ostream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 TEST(OStreamTest, LineTracking) {
@@ -367,7 +368,7 @@ TEST(OStreamTest, LineTracking) {
   EXPECT_EQ(ostream_tell(s).col, 2u);
 
   ostream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 TEST(OStreamTest, ClusterColEmoji) {
@@ -384,7 +385,7 @@ TEST(OStreamTest, ClusterColEmoji) {
   EXPECT_EQ(ostream_tell(s).cluster_col, 2u); /* cluster unchanged */
 
   ostream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 TEST(OStreamTest, Reset) {
@@ -400,7 +401,7 @@ TEST(OStreamTest, Reset) {
   EXPECT_EQ(ostream_tell(s).col, 1u);
 
   ostream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 TEST(OStreamTest, GrowBuffer) {
@@ -415,7 +416,7 @@ TEST(OStreamTest, GrowBuffer) {
   EXPECT_GE(ostream_tell(s).col, 201u);
 
   ostream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 TEST(OStreamTest, PrintfLineTracking) {
@@ -427,7 +428,7 @@ TEST(OStreamTest, PrintfLineTracking) {
   EXPECT_EQ(ostream_tell(s).col, 1u);
 
   ostream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 /* ---- Null safety ---- */
@@ -483,7 +484,7 @@ TEST(FileSourceTest, ReadFileByPath) {
   EXPECT_TRUE(istream_at_end(s));
 
   istream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
   remove(path.c_str());
 }
 
@@ -508,7 +509,7 @@ TEST(FileSourceTest, ReadFileByFp) {
   EXPECT_EQ(istream_read_cp(s), 'B');
 
   istream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
   remove(path.c_str());
 }
 
@@ -544,7 +545,7 @@ TEST(FileSourceTest, SeekInFile) {
   EXPECT_EQ(istream_read_cp(s), 'C');
 
   istream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
   remove(path.c_str());
 }
 
@@ -573,7 +574,7 @@ TEST(FileSourceTest, PositionTracking) {
   EXPECT_EQ(istream_tell(s).col, 2u);
 
   istream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
   remove(path.c_str());
 }
 
@@ -593,7 +594,7 @@ TEST(FileSourceTest, Utf8InFile) {
   EXPECT_EQ(istream_read_cp(s), -1);
 
   istream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
   remove(path.c_str());
 }
 
@@ -615,7 +616,7 @@ TEST(FileSourceTest, ScanfFromFile) {
   EXPECT_EQ(val, 42);
 
   istream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
   remove(path.c_str());
 }
 
@@ -627,7 +628,7 @@ TEST(FileSourceTest, NullPath) {
   stream_source_t src2 = stream_source_file(nullptr, "dummy");
   EXPECT_EQ(src2.ctx, nullptr);
 
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 TEST(FileSourceTest, NullFp) {
@@ -638,7 +639,7 @@ TEST(FileSourceTest, NullFp) {
   stream_source_t src2 = stream_source_file_fp(nullptr, stdin, false);
   EXPECT_EQ(src2.ctx, nullptr);
 
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 TEST(FileSourceTest, NonexistentFile) {
@@ -646,7 +647,7 @@ TEST(FileSourceTest, NonexistentFile) {
   stream_source_t src =
       stream_source_file(alloc, "/nonexistent/path/to/file.txt");
   EXPECT_EQ(src.ctx, nullptr);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 TEST(FileSourceTest, DataReturnsNull) {
@@ -667,7 +668,7 @@ TEST(FileSourceTest, DataReturnsNull) {
   EXPECT_EQ(istream_data(s), nullptr);
 
   istream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
   remove(path.c_str());
 }
 
@@ -698,7 +699,7 @@ TEST(FileSinkTest, WriteFileByPath) {
   EXPECT_EQ(n, 2u);
   EXPECT_STREQ(buf, "Hi");
 
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
   remove(path.c_str());
 }
 
@@ -729,7 +730,7 @@ TEST(FileSinkTest, WriteFileByFp) {
   EXPECT_EQ(n, 2u);
   EXPECT_STREQ(buf, "OK");
 
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
   remove(path.c_str());
 }
 
@@ -755,7 +756,7 @@ TEST(FileSinkTest, WriteUtf8ToFile) {
   EXPECT_EQ(n, 6u);
   EXPECT_EQ(memcmp(buf, "\xE4\xBD\xA0\xE5\xA5\xBD", 6), 0);
 
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
   remove(path.c_str());
 }
 
@@ -779,7 +780,7 @@ TEST(FileSinkTest, PrintfToFile) {
   EXPECT_EQ(n, 9u);
   EXPECT_STREQ(buf, "1 + 2 = 3");
 
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
   remove(path.c_str());
 }
 
@@ -809,7 +810,7 @@ TEST(FileSinkTest, PositionTracking) {
   EXPECT_EQ(pos.col, 2u);
 
   ostream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
   remove(path.c_str());
 }
 
@@ -828,7 +829,7 @@ TEST(FileSinkTest, DataReturnsNull) {
   EXPECT_EQ(ostream_data(s), nullptr);
 
   ostream_close(&s);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
   remove(path.c_str());
 }
 
@@ -840,7 +841,7 @@ TEST(FileSinkTest, NullPath) {
   stream_sink_t sink2 = stream_sink_file(nullptr, "dummy");
   EXPECT_EQ(sink2.ctx, nullptr);
 
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 TEST(FileSinkTest, NullFp) {
@@ -851,7 +852,7 @@ TEST(FileSinkTest, NullFp) {
   stream_sink_t sink2 = stream_sink_file_fp(nullptr, stdout, false);
   EXPECT_EQ(sink2.ctx, nullptr);
 
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
 }
 
 /* ---- round-trip: write file then read it back ---- */
@@ -889,6 +890,6 @@ TEST(FileRoundTripTest, WriteAndRead) {
   EXPECT_EQ(istream_read_cp(in), -1);
 
   istream_close(&in);
-  delete_allocator(&alloc);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
   remove(path.c_str());
 }

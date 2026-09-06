@@ -65,6 +65,7 @@ if(BUILD_TESTS)
   file(GLOB TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp")
 
   add_executable(clux_test ${TEST_SOURCES})
+  target_include_directories(clux_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
   target_link_libraries(clux_test PRIVATE clux_core clux_cmd clux_parser icu_data_init ICU::data GTest::gtest)
 
   include(GoogleTest)

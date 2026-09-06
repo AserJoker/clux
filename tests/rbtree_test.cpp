@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "test_common.h"
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -7,7 +8,6 @@
 
 extern "C" {
 #include "core/allocator.h"
-#include "core/panic.h"
 #include "core/rbtree.h"
 }
 
@@ -95,22 +95,6 @@ static int cmp_str_box(const void *a, const void *b) {
   return strcmp(((const str_box_t *)a)->str, ((const str_box_t *)b)->str);
 }
 
-/* ---- Panic handler ---- */
-
-static thread_local std::string g_last_rb_panic;
-
-extern "C" void rb_throw_handler(const char *message) {
-  g_last_rb_panic = message;
-  throw std::runtime_error(message);
-}
-
-class RbTreePanicTest : public ::testing::Test {
-protected:
-  panic_handler_t saved_;
-  void SetUp() override { saved_ = get_panic_handler(); }
-  void TearDown() override { set_panic_handler(saved_); }
-};
-
 /* ==== RbTreeNew / RbTreeFree ==== */
 
 TEST(RbTreeNew, EmptyTree) {
@@ -124,7 +108,7 @@ TEST(RbTreeNew, EmptyTree) {
   EXPECT_EQ(rbtree_max(t), nullptr);
   rbtree_free(a, &t);
   EXPECT_EQ(t, nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(RbTreeNew, OwnedTree) {
@@ -132,7 +116,7 @@ TEST(RbTreeNew, OwnedTree) {
   rbtree_t *t = rbtree_new(a, cmp_int_box, true);
   EXPECT_TRUE(rbtree_owns_element(t));
   rbtree_free(a, &t);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(RbTreeNew, NullArgs) {
@@ -147,7 +131,7 @@ TEST(RbTreeFree, NullSafe) {
   rbtree_t *null_t = nullptr;
   rbtree_free(a, &null_t);
   rbtree_free(nullptr, &null_t);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Insert / Find / Contains ==== */
@@ -168,7 +152,7 @@ TEST(RbTreeInsert, SingleInsert) {
   EXPECT_TRUE(rbtree_contains(t, &key));
 
   rbtree_free(a, &t);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(RbTreeInsert, MultipleInsert) {
@@ -188,7 +172,7 @@ TEST(RbTreeInsert, MultipleInsert) {
   }
 
   rbtree_free(a, &t);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(RbTreeInsert, DuplicateReplace) {
@@ -205,7 +189,7 @@ TEST(RbTreeInsert, DuplicateReplace) {
   EXPECT_EQ(rbtree_find(t, &key), &v2); /* new value stored */
 
   rbtree_free(a, &t);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Min / Max ==== */
@@ -222,7 +206,7 @@ TEST(RbTreeMinMax, Basic) {
   EXPECT_EQ(*(int *)rbtree_max(t), 9);
 
   rbtree_free(a, &t);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Remove ==== */
@@ -248,7 +232,7 @@ TEST(RbTreeRemove, BasicRemove) {
   }
 
   rbtree_free(a, &t);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(RbTreeRemove, RemoveNotFound) {
@@ -263,7 +247,7 @@ TEST(RbTreeRemove, RemoveNotFound) {
   EXPECT_EQ(rbtree_size(t), 1u);
 
   rbtree_free(a, &t);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(RbTreeRemove, RemoveRoot) {
@@ -281,7 +265,7 @@ TEST(RbTreeRemove, RemoveRoot) {
   EXPECT_TRUE(rbtree_is_empty(t));
 
   rbtree_free(a, &t);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(RbTreeRemove, RemoveMinAndMax) {
@@ -301,7 +285,7 @@ TEST(RbTreeRemove, RemoveMinAndMax) {
   EXPECT_EQ(*(int *)rbtree_max(t), 7);
 
   rbtree_free(a, &t);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Owned elements ==== */
@@ -319,7 +303,7 @@ TEST(RbTreeOwned, FreeOwnedElements) {
 
   /* rbtree_free with owns=true should free all elements */
   rbtree_free(a, &t);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(RbTreeOwned, NonOwnedNotFreed) {
@@ -334,7 +318,7 @@ TEST(RbTreeOwned, NonOwnedNotFreed) {
   /* b is still valid because owns=false */
   EXPECT_EQ(b->value, 42);
   allocator_free(a, (void **)&b);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Clone ==== */
@@ -357,7 +341,7 @@ TEST(RbTreeClone, ShallowClone) {
 
   rbtree_free(a, &cloned);
   rbtree_free(a, &t);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(RbTreeClone, DeepClone) {
@@ -389,7 +373,7 @@ TEST(RbTreeClone, DeepClone) {
 
   rbtree_free(a, &cloned);
   rbtree_free(a, &t);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Move ==== */
@@ -410,7 +394,7 @@ TEST(RbTreeMove, TransferOwnership) {
   EXPECT_NE(rbtree_find(moved, &key), nullptr);
 
   rbtree_free(a, &moved);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Stress test: sorted insertion / removal ==== */
@@ -444,7 +428,7 @@ TEST(RbTreeStress, SortedInsertAndRemove) {
   }
 
   rbtree_free(a, &t);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(RbTreeStress, RandomInsertAndRemove) {
@@ -475,7 +459,7 @@ TEST(RbTreeStress, RandomInsertAndRemove) {
     EXPECT_FALSE(rbtree_contains(t, &vals[i]));
 
   rbtree_free(a, &t);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Null safety ==== */

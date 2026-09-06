@@ -12,6 +12,7 @@ struct _allocator_t {
   alloc_fn_t *alloc_fn;
   free_fn_t *free_fn;
   struct _alloc_header_t *head; /* linked list of live allocations */
+  size_t live_count;            /* number of live allocations (for leak checks) */
 };
 
 /* ---- Internal header prepended to every allocation ---- */
@@ -58,6 +59,7 @@ allocator_t *create_allocator(alloc_fn_t alloc_fn, free_fn_t free_fn) {
   a->alloc_fn = alloc_fn;
   a->free_fn = free_fn;
   a->head = NULL;
+  a->live_count = 0;
   return a;
 }
 
@@ -111,6 +113,7 @@ void *allocator_new(allocator_t *allocator, class_t *clazz, size_t count) {
   header->count = count;
   header->owns_clazz = false;
   list_insert(allocator, header);
+  allocator->live_count++;
 
   void *user = (char *)raw + sizeof(alloc_header_t);
   memset(user, 0, user_size);
@@ -152,6 +155,7 @@ void allocator_free(allocator_t *allocator, void **data) {
 
   /* Remove from live-allocation list before freeing */
   list_remove(allocator, header);
+  allocator->live_count--;
 
   /* Call dispose before freeing memory */
   if (clazz->dispose_fn) {
@@ -231,4 +235,9 @@ const class_t *allocator_get_class(void *data) {
 size_t allocator_get_count(void *data) {
   if (!data) return 0;
   return header_of(data)->count;
+}
+
+size_t allocator_live_count(allocator_t *allocator) {
+  if (!allocator) return 0;
+  return allocator->live_count;
 }

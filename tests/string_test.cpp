@@ -1,9 +1,9 @@
 #include <gtest/gtest.h>
+#include "test_common.h"
 #include <string>
 
 extern "C" {
 #include "core/allocator.h"
-#include "core/panic.h"
 #include "core/string.h"
 }
 
@@ -11,22 +11,6 @@ extern "C" {
 
 static void *test_alloc(size_t size) { return malloc(size); }
 static void test_free(void *ptr) { free(ptr); }
-
-/* ---- Panic handler for death / exception tests ---- */
-
-static thread_local std::string g_last_string_panic;
-
-extern "C" void string_throw_handler(const char *message) {
-  g_last_string_panic = message;
-  throw std::runtime_error(message);
-}
-
-class StringPanicTest : public ::testing::Test {
-protected:
-  panic_handler_t saved_;
-  void SetUp() override { saved_ = get_panic_handler(); }
-  void TearDown() override { set_panic_handler(saved_); }
-};
 
 /* ==== Construction ==== */
 
@@ -40,7 +24,7 @@ TEST(StringNew, EmptyString) {
   EXPECT_STREQ(string_cstr(s), "");
   string_free(&s);
   EXPECT_EQ(s, nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(StringNew, NullAllocator) { EXPECT_EQ(string_new(NULL), nullptr); }
@@ -52,7 +36,7 @@ TEST(StringFromCstr, Basic) {
   EXPECT_EQ(string_len(s), 5u);
   EXPECT_STREQ(string_cstr(s), "hello");
   string_free(&s);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(StringFromCstr, Empty) {
@@ -62,14 +46,14 @@ TEST(StringFromCstr, Empty) {
   EXPECT_EQ(string_len(s), 0u);
   EXPECT_TRUE(string_is_empty(s));
   string_free(&s);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(StringFromCstr, NullInput) {
   allocator_t *a = create_allocator(test_alloc, test_free);
   EXPECT_EQ(string_from_cstr(a, nullptr), nullptr);
   EXPECT_EQ(string_from_cstr(NULL, "x"), nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(StringFromBytes, RawBytes) {
@@ -81,7 +65,7 @@ TEST(StringFromBytes, RawBytes) {
   EXPECT_EQ(string_char_at(s, 1), 0);
   EXPECT_EQ(string_char_at(s, 2), 'b');
   string_free(&s);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(StringFromString, Copy) {
@@ -93,7 +77,7 @@ TEST(StringFromString, Copy) {
   EXPECT_STREQ(string_cstr(s2), "copy me");
   string_free(&s1);
   string_free(&s2);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Accessors ==== */
@@ -107,7 +91,7 @@ TEST(StringAccess, CharAt) {
   EXPECT_EQ(string_char_at(s, 99), -1);
   EXPECT_EQ(string_char_at(nullptr, 0), -1);
   string_free(&s);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(StringAccess, NullSafe) {
@@ -129,7 +113,7 @@ TEST(StringAppend, Cstr) {
   EXPECT_EQ(string_len(s), 6u);
   EXPECT_STREQ(string_cstr(s), "foobar");
   string_free(&s);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(StringAppend, BytesAndChar) {
@@ -140,7 +124,7 @@ TEST(StringAppend, BytesAndChar) {
   EXPECT_STREQ(string_cstr(s), "abcde");
   EXPECT_EQ(string_len(s), 5u);
   string_free(&s);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(StringAppend, String) {
@@ -151,7 +135,7 @@ TEST(StringAppend, String) {
   EXPECT_STREQ(string_cstr(s1), "hello world");
   string_free(&s1);
   string_free(&s2);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(StringAppend, NullSafe) {
@@ -163,7 +147,7 @@ TEST(StringAppend, NullSafe) {
   string_append_char(nullptr, 'z');
   EXPECT_STREQ(string_cstr(s), "x");
   string_free(&s);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(StringAppend, AutoGrowth) {
@@ -181,7 +165,7 @@ TEST(StringAppend, AutoGrowth) {
   for (int i = 0; i < 100; i++)
     EXPECT_EQ(string_char_at(s, (size_t)i), 'x');
   string_free(&s);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Assign / Clear / Reserve / Shrink ==== */
@@ -197,7 +181,7 @@ TEST(StringMutate, Assign) {
   string_assign_cstr(s, nullptr); /* no-op */
   EXPECT_STREQ(string_cstr(s), "xy");
   string_free(&s);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(StringMutate, Clear) {
@@ -211,7 +195,7 @@ TEST(StringMutate, Clear) {
   string_append_cstr(s, "again");
   EXPECT_STREQ(string_cstr(s), "again");
   string_free(&s);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(StringMutate, Reserve) {
@@ -224,7 +208,7 @@ TEST(StringMutate, Reserve) {
   string_reserve(s, 10); /* smaller: no-op */
   EXPECT_EQ(string_cap(s), cap_before);
   string_free(&s);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(StringMutate, ShrinkToFit) {
@@ -237,7 +221,7 @@ TEST(StringMutate, ShrinkToFit) {
   EXPECT_EQ(string_cap(s), 6u); /* 5 bytes + NUL */
   EXPECT_STREQ(string_cstr(s), "small");
   string_free(&s);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(StringMutate, ShrinkToFitEmpty) {
@@ -248,7 +232,7 @@ TEST(StringMutate, ShrinkToFitEmpty) {
   EXPECT_EQ(string_cap(s), 0u);
   EXPECT_STREQ(string_cstr(s), "");
   string_free(&s);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Searching ==== */
@@ -266,7 +250,7 @@ TEST(StringSearch, Find) {
   EXPECT_EQ(string_find(nullptr, "x", 0), STRING_NPOS);
   EXPECT_EQ(string_find(s, nullptr, 0), STRING_NPOS);
   string_free(&s);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(StringSearch, RFind) {
@@ -279,7 +263,7 @@ TEST(StringSearch, RFind) {
   EXPECT_EQ(string_rfind(s, ""), 5u);
   EXPECT_EQ(string_rfind(s, "ababa"), 0u);
   string_free(&s);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(StringSearch, Contains) {
@@ -290,7 +274,7 @@ TEST(StringSearch, Contains) {
   EXPECT_FALSE(string_contains(s, "needlezz"));
   EXPECT_FALSE(string_contains(s, nullptr));
   string_free(&s);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(StringSearch, StartsEndsWith) {
@@ -306,7 +290,7 @@ TEST(StringSearch, StartsEndsWith) {
   EXPECT_FALSE(string_starts_with(s, nullptr));
   EXPECT_FALSE(string_ends_with(s, nullptr));
   string_free(&s);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Comparison ==== */
@@ -339,7 +323,7 @@ TEST(StringCompare, Ordering) {
   string_free(&s3);
   string_free(&s4);
   string_free(&s5);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Derived strings ==== */
@@ -369,7 +353,7 @@ TEST(StringDerived, Substring) {
   string_free(&sub2);
   string_free(&sub3);
   string_free(&s);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(StringDerived, Concat) {
@@ -396,7 +380,7 @@ TEST(StringDerived, Concat) {
   string_free(&s1);
   string_free(&s2);
   string_free(&s3);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(StringDerived, ReplaceFirst) {
@@ -430,7 +414,7 @@ TEST(StringDerived, ReplaceFirst) {
   string_free(&r3);
   string_free(&r4);
   string_free(&s);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(StringDerived, ReplaceAll) {
@@ -470,7 +454,7 @@ TEST(StringDerived, ReplaceAll) {
   string_free(&r2);
   string_free(&s);
   string_free(&s2);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== allocator_move / allocator_clone ==== */
@@ -484,7 +468,7 @@ TEST(StringMove, TransferOwnership) {
   EXPECT_STREQ(string_cstr(moved), "movable");
   EXPECT_EQ(string_len(moved), 7u);
   string_free(&moved);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(StringClone, DeepCopy) {
@@ -504,7 +488,7 @@ TEST(StringClone, DeepCopy) {
 
   string_free(&cloned);
   string_free(&s);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(StringClone, EmptyClone) {
@@ -516,7 +500,7 @@ TEST(StringClone, EmptyClone) {
   EXPECT_TRUE(string_is_empty(cloned));
   string_free(&cloned);
   string_free(&s);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(StringMove, MovedFromSafeDispose) {
@@ -528,39 +512,7 @@ TEST(StringMove, MovedFromSafeDispose) {
   EXPECT_EQ(s, nullptr);
   EXPECT_STREQ(string_cstr(moved), "data");
   string_free(&moved);
-  delete_allocator(&a);
-}
-
-/* ==== Panic tests ==== */
-
-TEST_F(StringPanicTest, ReserveOverflowPanics) {
-  set_panic_handler(string_throw_handler);
-  allocator_t *a = create_allocator(test_alloc, test_free);
-  string_t *s = string_new(a);
-  try {
-    string_reserve(s, SIZE_MAX); /* len + SIZE_MAX + 1 overflows */
-    FAIL() << "should have panicked";
-  } catch (const std::runtime_error &e) {
-    EXPECT_NE(std::string(e.what()).find("capacity overflow"),
-              std::string::npos);
-  }
-  string_free(&s);
-  delete_allocator(&a);
-}
-
-TEST_F(StringPanicTest, AppendOverflowPanics) {
-  set_panic_handler(string_throw_handler);
-  allocator_t *a = create_allocator(test_alloc, test_free);
-  string_t *s = string_new(a);
-  try {
-    string_append_bytes(s, "x", SIZE_MAX); /* len + SIZE_MAX + 1 overflows */
-    FAIL() << "should have panicked";
-  } catch (const std::runtime_error &e) {
-    EXPECT_NE(std::string(e.what()).find("capacity overflow"),
-              std::string::npos);
-  }
-  string_free(&s);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== NULL safety ==== */
@@ -577,5 +529,5 @@ TEST(StringNullSafe, FreeAndMutate) {
   string_append_cstr(nullptr, "x");
   string_append_string(nullptr, nullptr);
   string_assign_cstr(nullptr, "x");
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }

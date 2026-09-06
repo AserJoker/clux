@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "test_common.h"
 #include <string>
 
 extern "C" {
@@ -52,7 +53,7 @@ TEST(Lexer, CreateNullSafe) {
   lexer_t *null_lexer = nullptr;
   lexer_close(&null_lexer); /* no-op */
   EXPECT_EQ(null_lexer, nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(Lexer, CreateClosesStreamOnClose) {
@@ -61,7 +62,7 @@ TEST(Lexer, CreateClosesStreamOnClose) {
   ASSERT_NE(lx, nullptr);
   lexer_close(&lx);
   EXPECT_EQ(lx, nullptr);
-  delete_allocator(&a); /* no leak: lexer owns the istream */
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a); /* no leak: lexer owns the istream */
 }
 
 /* ==== EOF ==== */
@@ -78,7 +79,7 @@ TEST(Lexer, EmptyInputEof) {
   EXPECT_EQ(loc->begin.column, loc->end.column);
   token_free(a, &t);
   lexer_close(&lx);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(Lexer, EofIdempotent) {
@@ -93,7 +94,7 @@ TEST(Lexer, EofIdempotent) {
     token_free(a, &t);
   }
   lexer_close(&lx);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Keywords ==== */
@@ -112,7 +113,7 @@ TEST(Lexer, AllKeywords) {
     token_free(a, &t);
     lexer_close(&lx);
   }
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(Lexer, KeywordVsIdentifier) {
@@ -132,7 +133,7 @@ TEST(Lexer, KeywordVsIdentifier) {
   EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
   token_free(a, &t);
   lexer_close(&lx);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Identifiers ==== */
@@ -146,7 +147,7 @@ TEST(Lexer, Identifiers) {
     token_free(a, &t);
     lexer_close(&lx);
   }
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(Lexer, IdentifierStopsAtNonIdent) {
@@ -157,7 +158,7 @@ TEST(Lexer, IdentifierStopsAtNonIdent) {
   token_t *t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "abc");
   token_free(a, &t);
   lexer_close(&lx);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Whitespace ==== */
@@ -172,7 +173,7 @@ TEST(Lexer, WhitespaceMergedIntoOneToken) {
   EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
   token_free(a, &t);
   lexer_close(&lx);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(Lexer, WhitespaceLocation) {
@@ -193,7 +194,7 @@ TEST(Lexer, WhitespaceLocation) {
   EXPECT_EQ(loc->end.column, 1u);
   token_free(a, &t);
   lexer_close(&lx);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Locations ==== */
@@ -225,7 +226,7 @@ TEST(Lexer, LocationHalfOpenRange) {
   EXPECT_EQ(loc->end.column, 3u);
   token_free(a, &t);
   lexer_close(&lx);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Mixed stream ==== */
@@ -243,7 +244,7 @@ TEST(Lexer, MixedStream) {
   EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
   token_free(a, &t);
   lexer_close(&lx);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== token_is ==== */
@@ -262,7 +263,7 @@ TEST(Lexer, TokenIs) {
   EXPECT_FALSE(token_is(t, nullptr, "func"));
   token_free(a, &t);
   lexer_close(&lx);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Error token (unrecognized characters) ==== */
@@ -281,7 +282,7 @@ TEST(Lexer, UnrecognizedCharProducesError) {
   EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
   token_free(a, &t);
   lexer_close(&lx);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Null safety ==== */
@@ -312,7 +313,7 @@ TEST(Lexer, NullSafety) {
   token_free(nullptr, &null_tok); /* no-op */
   EXPECT_EQ(create_token(nullptr, TOKEN_TYPE_EOF, (location_t){0}), nullptr);
   lexer_close(&lx);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== lexer_peek ==== */
@@ -327,7 +328,7 @@ TEST(Lexer, PeekStablePointer) {
   EXPECT_EQ(token_get_kind(p1), TOKEN_TYPE_KEYWORD);
   EXPECT_TRUE(token_is(p1, lx, "func"));
   lexer_close(&lx);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(Lexer, PeekDoesNotAdvance) {
@@ -349,7 +350,7 @@ TEST(Lexer, PeekDoesNotAdvance) {
   ASSERT_NE(p2, nullptr);
   EXPECT_EQ(token_get_kind(p2), TOKEN_TYPE_WHITESPACE);
   lexer_close(&lx);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(Lexer, PeekAcrossTokens) {
@@ -377,7 +378,7 @@ TEST(Lexer, PeekAcrossTokens) {
   token_free(a, &t);
 
   lexer_close(&lx);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(Lexer, PeekEofStable) {
@@ -389,7 +390,7 @@ TEST(Lexer, PeekEofStable) {
   const token_t *p2 = lexer_peek(lx);
   EXPECT_EQ(p1, p2);
   lexer_close(&lx);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(Lexer, PeekNullSafe) { EXPECT_EQ(lexer_peek(nullptr), nullptr); }
@@ -407,7 +408,7 @@ TEST(Lexer, PeekWorksAfterMove) {
   EXPECT_EQ(t, p);
   token_free(a, &t);
   lexer_close(&moved);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Backtracking (checkpoint / rewind) ==== */
@@ -427,7 +428,7 @@ TEST(Lexer, RewindNullSafe) {
   token_t *t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "foo");
   token_free(a, &t);
   lexer_close(&lx);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(Lexer, RewindReplaysTokens) {
@@ -460,7 +461,7 @@ TEST(Lexer, RewindReplaysTokens) {
   EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
   token_free(a, &t);
   lexer_close(&lx);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(Lexer, RewindAfterPeekReProducesPeekedToken) {
@@ -492,7 +493,7 @@ TEST(Lexer, RewindAfterPeekReProducesPeekedToken) {
   EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
   token_free(a, &t);
   lexer_close(&lx);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(Lexer, RewindDropsPendingToken) {
@@ -517,7 +518,7 @@ TEST(Lexer, RewindDropsPendingToken) {
   t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "bar");
   token_free(a, &t);
   lexer_close(&lx);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(Lexer, RewindAfterEof) {
@@ -540,7 +541,7 @@ TEST(Lexer, RewindAfterEof) {
   EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
   token_free(a, &t);
   lexer_close(&lx);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(Lexer, RewindRestoresLocation) {
@@ -570,7 +571,7 @@ TEST(Lexer, RewindRestoresLocation) {
   EXPECT_EQ(loc->begin.column, 1u);
   token_free(a, &t);
   lexer_close(&lx);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(Lexer, NestedCheckpoints) {
@@ -610,7 +611,7 @@ TEST(Lexer, NestedCheckpoints) {
   t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "b");
   token_free(a, &t);
   lexer_close(&lx);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== allocator_move on lexer ==== */
@@ -628,5 +629,5 @@ TEST(Lexer, MoveTransfersOwnership) {
   EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
   token_free(a, &t);
   lexer_close(&moved);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }

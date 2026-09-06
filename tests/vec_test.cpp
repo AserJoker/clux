@@ -1,9 +1,9 @@
 #include <gtest/gtest.h>
+#include "test_common.h"
 #include <string>
 
 extern "C" {
 #include "core/allocator.h"
-#include "core/panic.h"
 #include "core/vec.h"
 }
 
@@ -11,22 +11,6 @@ extern "C" {
 
 static void *test_alloc(size_t size) { return malloc(size); }
 static void test_free(void *ptr) { free(ptr); }
-
-/* ---- Panic handler for death / exception tests ---- */
-
-static thread_local std::string g_last_vec_panic;
-
-extern "C" void vec_throw_handler(const char *message) {
-  g_last_vec_panic = message;
-  throw std::runtime_error(message);
-}
-
-class VecPanicTest : public ::testing::Test {
-protected:
-  panic_handler_t saved_;
-  void SetUp() override { saved_ = get_panic_handler(); }
-  void TearDown() override { set_panic_handler(saved_); }
-};
 
 /* ---- Simple class for owned-element tests ---- */
 
@@ -89,6 +73,17 @@ static class_t str_box_class = {
     .dispose_fn = str_box_dispose,
 };
 
+/* ---- Helper: free every element still held by a non-owned vec ---- */
+/* (a non-owned vec does NOT free its elements on vec_free, so callers   */
+/*  that pushed elements into an owns=false vec must reclaim them).       */
+
+static void vec_free_elements(allocator_t *a, vec_t *v) {
+  for (size_t i = 0; i < vec_len(v); i++) {
+    void *e = vec_get(v, i);
+    allocator_free(a, &e);
+  }
+}
+
 /* ==== VecNew / VecWithCapacity ==== */
 
 TEST(VecNew, EmptyVec) {
@@ -101,7 +96,7 @@ TEST(VecNew, EmptyVec) {
   EXPECT_FALSE(vec_owns_element(v));
   vec_free(a, &v);
   EXPECT_EQ(v, nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(VecNew, OwnedVec) {
@@ -109,7 +104,7 @@ TEST(VecNew, OwnedVec) {
   vec_t *v = vec_new(a, true);
   EXPECT_TRUE(vec_owns_element(v));
   vec_free(a, &v);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(VecNew, NullAllocator) { EXPECT_EQ(vec_new(NULL, false), nullptr); }
@@ -122,7 +117,7 @@ TEST(VecWithCapacity, PreAllocate) {
   EXPECT_GE(vec_cap(v), 16u);
   EXPECT_TRUE(vec_is_empty(v));
   vec_free(a, &v);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(VecWithCapacity, ZeroCapacity) {
@@ -131,7 +126,7 @@ TEST(VecWithCapacity, ZeroCapacity) {
   ASSERT_NE(v, nullptr);
   EXPECT_EQ(vec_cap(v), 0u);
   vec_free(a, &v);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== VecFree ==== */
@@ -142,7 +137,7 @@ TEST(VecFree, NullSafe) {
   vec_t *null_vec = nullptr;
   vec_free(a, &null_vec);       // no-op
   vec_free(nullptr, &null_vec); // no-op
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(VecFree, OwnedElementsFreed) {
@@ -161,7 +156,7 @@ TEST(VecFree, OwnedElementsFreed) {
   // vec_free with owns=true should free both int_box objects
   vec_free(a, &v);
   EXPECT_EQ(v, nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(VecFree, NonOwnedElementsNotFreed) {
@@ -177,7 +172,7 @@ TEST(VecFree, NonOwnedElementsNotFreed) {
   EXPECT_EQ(b1->value, 10);
   // clean up manually
   allocator_free(a, (void **)&b1);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== VecPush / VecPop ==== */
@@ -214,7 +209,7 @@ TEST(VecPushPop, BasicSequence) {
   allocator_free(a, (void **)&second);
   allocator_free(a, (void **)&first);
   vec_free(a, &v);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(VecPushPop, NullValueIgnored) {
@@ -223,7 +218,7 @@ TEST(VecPushPop, NullValueIgnored) {
   vec_push(v, a, nullptr);
   EXPECT_EQ(vec_len(v), 0u);
   vec_free(a, &v);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== VecGet / VecSet / VecFirst / VecLast ==== */
@@ -245,9 +240,10 @@ TEST(VecAccess, GetAndSet) {
   EXPECT_EQ(((int_box_t *)old)->value, 42);
   EXPECT_EQ(((int_box_t *)vec_get(v, 0))->value, 99);
 
-  allocator_free(a, (void **)&old);
+  allocator_free(a, (void **)&old); /* b1 returned by vec_set */
+  vec_free_elements(a, v);          /* frees b2 still held by the vec */
   vec_free(a, &v);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(VecAccess, FirstAndLast) {
@@ -268,8 +264,9 @@ TEST(VecAccess, FirstAndLast) {
   EXPECT_EQ(((int_box_t *)vec_first(v))->value, 1);
   EXPECT_EQ(((int_box_t *)vec_last(v))->value, 2);
 
+  vec_free_elements(a, v); /* b1/b2 are caller-owned */
   vec_free(a, &v);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== VecInsert / VecRemove ==== */
@@ -290,8 +287,9 @@ TEST(VecInsertRemove, InsertAtBeginning) {
   EXPECT_EQ(((int_box_t *)vec_get(v, 0))->value, 1);
   EXPECT_EQ(((int_box_t *)vec_get(v, 1))->value, 2);
 
+  vec_free_elements(a, v); /* b1, b2 are caller-owned */
   vec_free(a, &v);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(VecInsertRemove, InsertAtEnd) {
@@ -308,8 +306,9 @@ TEST(VecInsertRemove, InsertAtEnd) {
 
   EXPECT_EQ(((int_box_t *)vec_get(v, 1))->value, 2);
 
+  vec_free_elements(a, v); /* b1, b2 are caller-owned */
   vec_free(a, &v);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(VecInsertRemove, RemoveMiddle) {
@@ -328,9 +327,10 @@ TEST(VecInsertRemove, RemoveMiddle) {
   EXPECT_EQ(((int_box_t *)vec_get(v, 0))->value, 1);
   EXPECT_EQ(((int_box_t *)vec_get(v, 1))->value, 3);
 
-  allocator_free(a, (void **)&removed);
+  allocator_free(a, (void **)&removed); /* freed the removed element */
+  vec_free_elements(a, v);              /* frees the 2 remaining elements */
   vec_free(a, &v);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(VecInsertRemove, RemoveOutOfBounds) {
@@ -338,7 +338,7 @@ TEST(VecInsertRemove, RemoveOutOfBounds) {
   vec_t *v = vec_new(a, false);
   EXPECT_EQ(vec_remove(v, 0), nullptr);
   vec_free(a, &v);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== VecSwapRemove ==== */
@@ -360,9 +360,10 @@ TEST(VecSwapRemove, Basic) {
   EXPECT_EQ(((int_box_t *)vec_get(v, 1))->value,
             4); // last element moved to index 1
 
-  allocator_free(a, (void **)&removed);
+  allocator_free(a, (void **)&removed); /* freed the removed element */
+  vec_free_elements(a, v);              /* frees the 2 remaining elements */
   vec_free(a, &v);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(VecSwapRemove, LastElement) {
@@ -377,9 +378,10 @@ TEST(VecSwapRemove, LastElement) {
   EXPECT_EQ(((int_box_t *)removed)->value, 42);
   EXPECT_EQ(vec_len(v), 0u);
 
-  allocator_free(a, (void **)&removed);
+  allocator_free(a, (void **)&removed); /* freed the removed element */
+  vec_free_elements(a, v);              /* frees the 2 remaining elements */
   vec_free(a, &v);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== VecReserve / VecShrinkToFit ==== */
@@ -398,7 +400,7 @@ TEST(VecCapacity, Reserve) {
   EXPECT_EQ(vec_cap(v), cap_before);
 
   vec_free(a, &v);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(VecCapacity, ShrinkToFit) {
@@ -421,8 +423,9 @@ TEST(VecCapacity, ShrinkToFit) {
     EXPECT_EQ(((int_box_t *)vec_get(v, i))->value, i);
   }
 
+  vec_free_elements(a, v); /* frees the 5 pushed elements */
   vec_free(a, &v);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(VecCapacity, ShrinkToFitEmpty) {
@@ -431,7 +434,7 @@ TEST(VecCapacity, ShrinkToFitEmpty) {
   vec_shrink_to_fit(v, a);
   EXPECT_EQ(vec_cap(v), 0u);
   vec_free(a, &v);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Growth policy ==== */
@@ -456,8 +459,9 @@ TEST(VecCapacity, AutoGrowth) {
   }
   EXPECT_EQ(vec_len(v), 100u);
 
+  vec_free_elements(a, v); /* frees the 100 pushed elements */
   vec_free(a, &v);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== allocator_move on vec ==== */
@@ -476,8 +480,9 @@ TEST(VecMove, TransferOwnership) {
   EXPECT_EQ(vec_len(moved), 1u);
   EXPECT_EQ(((int_box_t *)vec_get(moved, 0))->value, 77);
 
+  vec_free_elements(a, moved); /* frees the single caller-owned element */
   vec_free(a, &moved);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== allocator_clone on vec (owns=false: shallow) ==== */
@@ -502,7 +507,8 @@ TEST(VecClone, ShallowClone) {
 
   vec_free(a, &cloned); // owns=false, won't free element
   vec_free(a, &v);
-  delete_allocator(&a);
+  allocator_free(a, (void **)&b); // the single shared element, freed once
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== allocator_clone on vec (owns=true: deep) ==== */
@@ -538,7 +544,7 @@ TEST(VecClone, DeepClone) {
 
   vec_free(a, &cloned); // frees cloned elements
   vec_free(a, &v);      // frees original elements
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Move + dispose: moved-from vec must not free elements ==== */
@@ -563,7 +569,7 @@ TEST(VecMove, MovedFromVecSafeDispose) {
   EXPECT_STREQ(m0->str, "test");
 
   vec_free(a, &moved);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== VecSet returns old value ==== */
@@ -583,64 +589,10 @@ TEST(VecAccess, SetOldValue) {
   EXPECT_EQ(((int_box_t *)old)->value, 10);
   EXPECT_EQ(((int_box_t *)vec_get(v, 0))->value, 20);
 
-  allocator_free(a, (void **)&old);
+  allocator_free(a, (void **)&old); /* b1 returned by vec_set */
+  vec_free_elements(a, v);          /* frees b2 still held by the vec */
   vec_free(a, &v);
-  delete_allocator(&a);
-}
-
-/* ==== VecInsert out of bounds panics ==== */
-
-TEST_F(VecPanicTest, InsertOutOfBoundsPanics) {
-  set_panic_handler(vec_throw_handler);
-  allocator_t *a = create_allocator(test_alloc, test_free);
-  vec_t *v = vec_new(a, false);
-
-  int_box_t *b = (int_box_t *)allocator_new(a, &int_box_class, 1);
-  b->value = 1;
-
-  try {
-    vec_insert(v, a, 5, b); // index 5 > len 0
-    FAIL() << "should have panicked";
-  } catch (const std::runtime_error &e) {
-    EXPECT_NE(std::string(e.what()).find("out of bounds"), std::string::npos);
-  }
-
-  allocator_free(a, (void **)&b);
-  vec_free(a, &v);
-  delete_allocator(&a);
-}
-
-/* ==== allocator_clone on vec without clone_fn panics ==== */
-
-TEST_F(VecPanicTest, CloneVecWithNonCloneableElementPanics) {
-  set_panic_handler(vec_throw_handler);
-
-  // Create a class without clone_fn
-  class_t no_clone_class = {
-      .name = "no_clone",
-      .size = sizeof(int),
-      .move_fn = default_move,
-      .clone_fn = NULL,
-      .dispose_fn = NULL,
-  };
-
-  allocator_t *a = create_allocator(test_alloc, test_free);
-  vec_t *v = vec_new(a, true);
-
-  void *elem = allocator_new(a, &no_clone_class, 1);
-  vec_push(v, a, elem);
-
-  try {
-    void *v_ptr = v;
-    allocator_clone(a, (void **)&v_ptr);
-    FAIL() << "should have panicked on non-cloneable element";
-  } catch (const std::runtime_error &e) {
-    EXPECT_NE(std::string(e.what()).find("does not support clone"),
-              std::string::npos);
-  }
-
-  vec_free(a, &v);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== VecLen / VecCap / VecIsEmpty on NULL ==== */

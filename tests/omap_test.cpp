@@ -1,11 +1,11 @@
 #include <gtest/gtest.h>
+#include "test_common.h"
 #include <string>
 #include <vector>
 
 extern "C" {
 #include "core/allocator.h"
 #include "core/omap.h"
-#include "core/panic.h"
 }
 
 /* ---- Test allocator helpers ---- */
@@ -102,7 +102,7 @@ TEST(OMapNew, EmptyMap) {
   EXPECT_FALSE(omap_owns_value(m));
   omap_free(a, &m);
   EXPECT_EQ(m, nullptr);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(OMapNew, NullArgs) {
@@ -117,7 +117,7 @@ TEST(OMapFree, NullSafe) {
   omap_free(a, nullptr);
   omap_t *null_m = nullptr;
   omap_free(a, &null_m);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Insert / Get / Contains ==== */
@@ -145,7 +145,7 @@ TEST(OMapInsert, BasicInsertAndGet) {
   EXPECT_FALSE(omap_contains(m, &k_missing));
 
   omap_free(a, &m);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(OMapInsert, DuplicateKeyReplaceValue) {
@@ -160,7 +160,7 @@ TEST(OMapInsert, DuplicateKeyReplaceValue) {
   EXPECT_EQ(*(int *)omap_get(m, &k), 200);
 
   omap_free(a, &m);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Insertion order preserved in key_vec ==== */
@@ -185,7 +185,7 @@ TEST(OMapKeys, InsertionOrderPreserved) {
   EXPECT_EQ(*(int *)vec_get(kvec, 4), 9);
 
   omap_free(a, &m);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Remove ==== */
@@ -211,7 +211,7 @@ TEST(OMapRemove, BasicRemove) {
   EXPECT_EQ(*(int *)vec_get(kvec, 0), 2);
 
   omap_free(a, &m);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(OMapRemove, NotFound) {
@@ -226,7 +226,7 @@ TEST(OMapRemove, NotFound) {
   EXPECT_EQ(omap_size(m), 1u);
 
   omap_free(a, &m);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Owned key/value ==== */
@@ -258,7 +258,7 @@ TEST(OMapOwned, OwnsKeyAndValue) {
 
   /* omap_free with owns=true frees all keys and values */
   omap_free(a, &m);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(OMapOwned, NonOwnedNotFreed) {
@@ -272,7 +272,7 @@ TEST(OMapOwned, NonOwnedNotFreed) {
   /* k and v still valid */
   EXPECT_EQ(k, 42);
   EXPECT_EQ(v, 100);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Remove with owns_key ==== */
@@ -297,7 +297,7 @@ TEST(OMapOwned, RemoveOwnedKeyFreed) {
   EXPECT_EQ(omap_size(m), 0u);
 
   omap_free(a, &m);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Clone ==== */
@@ -319,7 +319,7 @@ TEST(OMapClone, ShallowClone) {
 
   omap_free(a, &cloned);
   omap_free(a, &m);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 TEST(OMapClone, DeepClone) {
@@ -361,7 +361,7 @@ TEST(OMapClone, DeepClone) {
 
   omap_free(a, &cloned);
   omap_free(a, &m);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Move ==== */
@@ -380,7 +380,7 @@ TEST(OMapMove, TransferOwnership) {
   EXPECT_EQ(*(int *)omap_get(moved, &k), 100);
 
   omap_free(a, &moved);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Stress test ==== */
@@ -422,7 +422,7 @@ TEST(OMapStress, ManyInsertsAndRemoves) {
   }
 
   omap_free(a, &m);
-  delete_allocator(&a);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
 /* ==== Null safety ==== */

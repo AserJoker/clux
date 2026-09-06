@@ -143,6 +143,13 @@ const class_t *allocator_get_class(void *data);
 /** Return the number of objects in an allocation, or 0. */
 size_t allocator_get_count(void *data);
 
+/**
+ * Return the number of live allocations still tracked by the allocator,
+ * or 0 if `allocator` is NULL. Useful in tests to assert that every
+ * allocation has been freed before the allocator is destroyed.
+ */
+size_t allocator_live_count(allocator_t *allocator);
+
 #ifdef __cplusplus
 }
 #endif
