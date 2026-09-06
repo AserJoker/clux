@@ -1,0 +1,4 @@
+// hello.cx — M1 样例：字符串字面量、函数定义、printf 调用、void 返回类型
+func main():void {
+    printf("hello, clux\n");
+}
