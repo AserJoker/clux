@@ -82,27 +82,22 @@ func add(a:i32, b:i32):i32 {
 输入源文件字符流，输出 Token 流。**Lexer 只负责切分 token，不解析值**：数值的大小、转义序列的解码留给 Parser（T3/T4 的 literal 解析），token 文本是对源 buffer 的零拷贝切片。Lexer 只校验字面量的**形状**（是否闭合、后缀是否合法、转义是否被允许、字符字面量是否恰好一个字符）。
 
 - `lexer_create(allocator_t*, istream_t*, filename)` → `lexer_t*`
-- `lexer_next(lexer_t*)` → `token_t`（调用者所有，需 `token_free`）
-- `lexer_peek(lexer_t*)` → `const token_t*`（借用，不消费）
-- `lexer_checkpoint()` / `lexer_rewind()`：深回溯（M1 语法无必用点，保留）
-- `lexer_error(lexer_t*, location_t*)` → `const char*`：词法错误信息（无错误返回 NULL）
+- `lexer_next(lexer_t*)` → `token_t*`（调用者所有，需 `token_free`）
 - 支持所有 M1 关键字、运算符、字面量（数字含进制与类型后缀、C 风格字符/字符串字面量、行/块注释）
 - 每个 Token 携带源码位置（文件/行/列）
 - 标识符按 Unicode ID_Start / ID_Continue 判定（ICU `u_isIDStart` / `u_isIDPart`；`_` 作为特例允许开头）
 - 跳过文件开头的 UTF-8 BOM；行注释止于 CR 或 LF，CRLF 的 `\r\n` 整体归为空白
 - 字面量形状校验：数字后缀白名单、转义序列白名单（含 `\xHH` 的 1-2 位 hex）、字符字面量恰好一个字符且可表示为 u8
 
-**Lexer 错误不可恢复（fail-fast）**：一旦遇到无法识别字符、非法数字后缀、未闭合字符串/字符/块注释等，Lexer 立即：
-1. 记录错误信息与位置（`lexer_error` 可查）
-2. 产出 `TOKEN_TYPE_ERROR` token（Parser 看到即判定 fatal）
-3. 之后所有调用返回 EOF（不再产出任何 token）
-4. `lexer_rewind` **不撤销**错误状态——错误是永久性的，不做恢复尝试
+**Token 池（上层流水线负责）**：Lexer 只暴露 `lexer_next`，不内置 peek / checkpoint / rewind / 错误状态。上层按 `lexer_next` 把 token 灌入一个普通 `vec<token*>`（`owns_element=true`，随 `vec_free` 自动释放每个 token）；Parser 按索引随机访问该池，可自由前进或回退，无需重新词法分析、无前瞻缓冲。
+
+**词法错误由上层处理（不 fail-fast）**：遇到无法识别字符、非法数字后缀、未闭合字符串/字符/块注释等，Lexer 产出**一个** `TOKEN_TYPE_ERROR` token（错误信息通过 `token_get_error_message` 携带于该 token 上），随后**继续**词法分析（错误输入已被消费）。Lexer 自身不记录错误、不因错误停止——是否就此终止完全是流水线的决定。典型策略：Parser 拉到 `TOKEN_TYPE_ERROR` → 用 `token_get_error_message` 记入诊断 → 置 fatal → 立即终止解析。
 
 ### 2.2 Token (include/parser/token.h, src/parser/token.c)
 
 ```c
 typedef enum {
-    TOKEN_TYPE_ERROR,      // 词法错误：不可识别输入（fail-fast，仅此一个）
+    TOKEN_TYPE_ERROR,      // 词法错误：不可识别输入（消息由 token_get_error_message 携带，仅一个）
     TOKEN_TYPE_IDENTIFIER,
     TOKEN_TYPE_CHARACTER,  // 字符字面量 'a'（值类型 u8；文本含引号，转义原样）
     TOKEN_TYPE_STRING,     // 字符串字面量 "abc"（文本含引号，转义原样）
@@ -139,7 +134,7 @@ Token 文本语义约定：
 - 表达式解析用 Pratt parsing（绑定力表驱动，见 specs/parser.md）
 - 语句层：token 分派（switch），歧义由 lookahead=1 解决（IDENT 后跟 `=` 系列 → 赋值语句）
 - 语法错误恢复：panic mode（跳到语句边界 `;` `}` EOF）
-- **词法错误处理**：Parser 拉取 token 时遇到 `TOKEN_TYPE_ERROR` → 读取 `lexer_error` 记入诊断 → 置 fatal 标志 → 立即终止解析（不做 panic recovery），driver 据此直接失败
+- **词法错误处理**：Parser 遍历 token 池时遇到 `TOKEN_TYPE_ERROR` → 用 `token_get_error_message` 记入诊断 → 置 fatal 标志 → 立即终止解析（不做 panic recovery），driver 据此直接失败
 - `parser_error(parser_t*)` → 是否已发生错误（语法或词法）
 
 ### 2.4 AST (include/parser/ast.h, src/parser/ast.c)

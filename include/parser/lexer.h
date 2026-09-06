@@ -10,7 +10,8 @@ extern "C" {
 /* ---- Token kinds ---- */
 
 typedef enum {
-  TOKEN_TYPE_ERROR, /* lexer error: unrecognized input (fatal, fail-fast) */
+  TOKEN_TYPE_ERROR, /* lexical error: unrecognized input (message attached
+                       to the token; recovery is the pipeline's call) */
   TOKEN_TYPE_IDENTIFIER,
   TOKEN_TYPE_CHARACTER, /* character literal, e.g. 'a' (value type: u8) */
   TOKEN_TYPE_STRING,    /* string literal, e.g. "abc" */
@@ -53,89 +54,50 @@ lexer_create(allocator_t *allocator, istream_t *stream, const char *filename);
 /**
  * Close the lexer (closing the underlying istream) and nullify the
  * caller's pointer. No-op if `lexer` or `*lexer` is NULL.
+ *
+ * Tokens already handed out by lexer_next are owned by whoever holds
+ * them; closing the lexer does not free them, but their text slices
+ * point into the source and become dangling.
  */
 void lexer_close(lexer_t **lexer);
 
 /* ---- Token production ---- */
 
 /**
- * Return the next token. All tokens are produced, including
- * WHITESPACE (consecutive runs merged into one token) and comments.
- * After the input is exhausted, returns TOKEN_TYPE_EOF; repeated calls
- * keep returning EOF (idempotent).
- *
- * On a lexical error the lexer enters its fatal (fail-fast) state:
- * it returns exactly one TOKEN_TYPE_ERROR token, then every subsequent
- * call returns EOF. The error message is available via lexer_error.
+ * Return the next token. All tokens are produced, including WHITESPACE
+ * (consecutive runs merged into one token) and comments. After the
+ * input is exhausted, returns TOKEN_TYPE_EOF; repeated calls keep
+ * returning EOF (idempotent).
  *
  * The returned token is owned by the caller and must be freed with
  * token_free. Returns NULL only for a NULL lexer.
+ *
+ * This is the ONLY way to pull tokens: there is no peek, no pending
+ * buffer, no checkpoint/rewind. Backtracking is the pipeline's job —
+ * it keeps the tokens it has already pulled (see below).
+ *
+ * Lexical errors do not stop the lexer and are not recorded inside it:
+ * an offending input yields exactly one TOKEN_TYPE_ERROR token (message
+ * via token_get_error_message) and lexing resumes after it. Deciding
+ * whether one error is fatal is entirely up to the pipeline.
  */
 token_t *lexer_next(lexer_t *lexer);
 
 /**
- * Peek at the next token without consuming it (the lexer position does
- * not advance). Repeated calls return the same token (stable pointer).
+ * Building a token pool on top of lexer_next (pipeline side):
  *
- * The returned token is BORROWED: it is owned by the lexer and must
- * NOT be freed or modified. The next lexer_next call transfers
- * ownership of this token to the caller. Returns NULL for a NULL lexer.
- */
-const token_t *lexer_peek(lexer_t *lexer);
-
-/* ---- Backtracking ---- */
-
-/**
- * Immutable snapshot of the lexer's state, captured by lexer_checkpoint
- * and restored by lexer_rewind. A plain value: no allocation, no free.
- */
-typedef struct {
-  stream_pos_t pos; /* position of the next token to be produced */
-  bool eof;         /* EOF flag at capture time */
-} lexer_checkpoint_t;
-
-/**
- * Capture the lexer state so it can be restored later (deep
- * backtracking). The checkpoint records the position of the NEXT token
- * that lexer_next / lexer_peek would produce — which is the start of
- * the peeked-but-unconsumed token, if one exists — plus the EOF flag.
+ *   vec_t *pool = vec_new(allocator, true);   // owns_element: frees tokens
+ *   for (;;) {
+ *       token_t *t = lexer_next(lexer);
+ *       token_kind_t k = token_get_kind(t);
+ *       vec_push(pool, allocator, t);
+ *       if (k == TOKEN_TYPE_EOF || k == TOKEN_TYPE_ERROR) break;
+ *   }
  *
- * A checkpoint is a plain value: it stays valid after the lexer moves
- * on and may be restored any number of times. Returns a zeroed
- * checkpoint for a NULL lexer.
+ * The result is a plain vec_t of token_t* in source order — the Parser
+ * walks it by index and may jump forwards or backwards freely, with no
+ * re-lexing and no lookahead buffer.
  */
-lexer_checkpoint_t lexer_checkpoint(const lexer_t *lexer);
-
-/**
- * Restore the lexer to a previously captured checkpoint. Any
- * peeked-but-unconsumed token is dropped and re-lexed on demand; tokens
- * consumed since the checkpoint were owned by the caller and remain the
- * caller's to free. The next lexer_next / lexer_peek produces a fresh
- * token equal to the one that would have been produced at capture time.
- *
- * Rewind seeks the underlying stream, which recomputes line/column by
- * scanning from the start of the source (O(source bytes before the
- * checkpoint)). No-op on a NULL lexer.
- *
- * NOTE: a rewind does NOT clear the lexer's fatal error state. Lexical
- * errors are permanent (fail-fast): once lexer_error has been set, the
- * lexer stays in the error state no matter where it is rewound to.
- */
-void lexer_rewind(lexer_t *lexer, lexer_checkpoint_t checkpoint);
-
-/* ---- Fatal error (fail-fast) ---- */
-
-/**
- * Return the lexer's fatal error message, or NULL if no lexical error
- * has occurred. If `out_loc` is non-NULL it receives the error location.
- *
- * Lexical errors are NOT recoverable: once an error is set, the lexer
- * stops producing tokens (every subsequent call returns EOF) and
- * lexer_rewind does not clear it. The offending input is surfaced once
- * as a TOKEN_TYPE_ERROR token; the Parser must treat it as fatal and
- * terminate compilation immediately.
- */
-const char *lexer_error(const lexer_t *lexer, location_t *out_loc);
 
 /* ---- Token accessors ---- */
 
@@ -148,20 +110,26 @@ const location_t *token_get_location(const token_t *self);
 /**
  * Return a slice of the source text covered by the token (zero-copy,
  * O(1)). The slice is NOT NUL-terminated; its length is written to
- * `*out_len`. The pointer is valid as long as the lexer is alive.
- * Returns NULL (and *out_len = 0) on invalid arguments.
+ * `*out_len`. The pointer is valid as long as the source (hence the
+ * lexer) is alive. Returns NULL (and *out_len = 0) for a NULL token.
  */
-const char *
-token_get_text(const token_t *self, const lexer_t *lexer, size_t *out_len);
+const char *token_get_text(const token_t *self, size_t *out_len);
 
 /** Return true if the token text equals `str` (byte-exact). */
-bool token_is(const token_t *self, const lexer_t *lexer, const char *str);
+bool token_is(const token_t *self, const char *str);
+
+/**
+ * Return the message carried by a TOKEN_TYPE_ERROR token, or NULL for
+ * any other token (and for NULL). The message is owned by the token.
+ */
+const char *token_get_error_message(const token_t *self);
 
 /* ---- Token helpers ---- */
 
 /**
- * Create a standalone token (mainly used internally by the lexer and
- * by tests). Panics on out-of-memory. Returns NULL for invalid args.
+ * Create a standalone token with an empty text slice and no message
+ * (mainly used internally by the lexer and by tests).
+ * Panics on out-of-memory. Returns NULL for invalid args.
  */
 token_t *
 create_token(allocator_t *allocator, token_kind_t kind, location_t location);

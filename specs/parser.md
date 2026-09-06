@@ -9,16 +9,16 @@
 
 - **语句层：递归下降**，按当前 token 分派（switch）。
 - **表达式层：Pratt parsing**，绑定力表驱动——不按优先级写 13 层嵌套函数。
-- **前瞻**：lookahead=1（`parser_t::cur` 借用 `lexer_peek`）。M1 语法无歧义点需要深回溯；lexer 的 checkpoint/rewind 保留但 parser 不依赖。
-- **错误恢复**：语法错误 panic mode（同步点 `;` `}` EOF）；词法错误 fail-fast（fatal，立即终止）。
+- **前瞻**：Parser 工作在**上层构建的 token 池**（`vec<token*>`，按索引访问）之上，因此天然支持任意距离的前瞻与回退（前进/后退只是移动游标，无重新词法分析、无 peek/checkpoint/rewind 缓冲）。M1 语法实际只需 lookahead=1。
+- **错误恢复**：语法错误 panic mode（同步点 `;` `}` EOF）；词法错误（fatal，立即终止）由 token 池里的 `TOKEN_TYPE_ERROR`（消息走 `token_get_error_message`）表达。
 
 ## 2. parser_t 状态
 
 ```c
 typedef struct parser {
     allocator_t   *alloc;
-    lexer_t       *lexer;
-    const token_t *cur;          /* 借用自 lexer_peek，advance 后失效 */
+    const vec_t   *tokens;       /* 上层构建的 token 池（不拥有，随流水线释放） */
+    size_t         pos;          /* 当前 token 在池中的索引 */
     diag_buf_t    *diags;        /* 公共诊断收集器 */
     bool           fatal;        /* 词法错误：立即终止解析 */
     int            loop_depth;   /* break/continue 合法性 */
@@ -26,27 +26,31 @@ typedef struct parser {
 } parser_t;
 ```
 
-生命周期：parser 不拥有 lexer（调用方负责 close）、不拥有 diags（调用方负责释放）。parser 只使用 arena 分配 AST。
+生命周期：parser 不拥有 token 池（调用方负责释放）、不拥有 diags（调用方负责释放）。parser 只使用 arena 分配 AST。
 
 ## 3. Token 流管理
 
-Lexer 产出所有 token（含空白/注释）。Parser 包一层 **trivia 跳过**，任何时刻内存只活一个 token（O(1)）：
+Token 池由上层按 `lexer_next` 灌满后传入 Parser；池里含所有 token（含空白/注释）。Parser 包一层 **trivia 跳过**，通过移动 `pos` 游标前进，可自由回退：
 
 ```c
+static const token_t *parser_cur(parser_t *p) {
+    return (const token_t *)vec_get(p->tokens, p->pos);
+}
+
 static void parser_advance(parser_t *p) {
-    token_t *t;
     for (;;) {
-        t = lexer_next(p->lexer);            /* 所有权转移 */
-        token_free(p->alloc, &t);            /* 立即释放 */
-        token_kind_t k = token_get_kind(lexer_peek(p->lexer));
+        if (p->pos + 1 >= vec_len(p->tokens)) { p->pos = vec_len(p->tokens); return; }
+        p->pos++;
+        token_kind_t k = token_get_kind(parser_cur(p));
         if (k != TOKEN_TYPE_WHITESPACE && k != TOKEN_TYPE_COMMENT
-            && k != TOKEN_TYPE_MULTILINE_COMMENT) break;
+            && k != TOKEN_TYPE_MULTILINE_COMMENT) break; /* 跳过 trivia */
     }
-    p->cur = lexer_peek(p->lexer);
 }
 ```
 
-**词法错误检测**：`parser_advance` / 初始化 peek 时若 `token_get_kind == TOKEN_TYPE_ERROR` → 读 `lexer_error` 记 fatal 诊断 → `p->fatal = true` → 停止拉取。顶层 `parser_parse` 检查 `p->fatal` 立即返回。
+**词法错误检测**：`parser_advance` / 初始化时若 `token_get_kind(parser_cur(p)) == TOKEN_TYPE_ERROR` → 用 `token_get_error_message` 记 fatal 诊断 → `p->fatal = true` → 停止解析。顶层 `parser_parse` 检查 `p->fatal` 立即返回。
+
+**回退**：`p->pos--`（或保存 `pos` 快照）即可在解析失败时回到先前位置，无需 lexer 参与。
 
 原语（全部内部 static）：
 
@@ -195,5 +199,5 @@ Parser 只负责：
 2. **禁止** 把 `=` 系列加入绑定力表（赋值不是表达式）。
 3. **禁止** 在 parser 中做类型检查或写 `resolved_type`。
 4. **禁止** 对词法错误执行 panic recovery（fatal 立即终止）。
-5. **禁止** 持有 `p->cur` 指针越过一次 `parser_advance`（借用失效）。
+5. **禁止** 缓存 token 指针越过一次 `parser_advance`（`pos` 已前进，应改用保存 `pos` 快照或 `vec_get` 回退，而非持有旧指针）。
 6. **禁止** 在 parser 内 free 已构建的 AST 节点（arena 统一释放）。

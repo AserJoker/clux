@@ -69,8 +69,8 @@ int driver_run_file(const char *path);
 
 ### 4.1 词法错误（fail-fast，不可恢复）
 
-- Lexer 遇到错误 → 产出 `TOKEN_TYPE_ERROR`，之后所有调用返回 EOF，`lexer_error` 返回消息。
-- Parser 在拉取 token 时看到 `TOKEN_TYPE_ERROR` → 把 `lexer_error` 的消息作为**错误诊断**记入 `diag_buf` → 置 fatal → **立即终止解析**（不执行 panic recovery、不继续收集）。
+- Lexer 遇到错误 → 产出**一个** `TOKEN_TYPE_ERROR` token（消息由 `token_get_error_message` 携带于该 token 上），随后继续词法分析（不停止、不记录错误）。
+- Parser 在遍历 token 池时看到 `TOKEN_TYPE_ERROR` → 用 `token_get_error_message` 的消息作为**错误诊断**记入 `diag_buf` → 置 fatal → **立即终止解析**（不执行 panic recovery、不继续收集）。
 - Driver 检查到 fatal（parser_error 或 diag_has_error）→ 打印诊断 → 退出码 1。
 - 禁止：对词法错误做跳过/恢复/重试。
 

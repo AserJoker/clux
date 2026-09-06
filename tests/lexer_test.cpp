@@ -5,6 +5,7 @@
 extern "C" {
 #include "core/allocator.h"
 #include "core/stream.h"
+#include "core/vec.h"
 #include "parser/location.h"
 #include "parser/lexer.h"
 }
@@ -36,12 +37,37 @@ static token_t *take(allocator_t *a,
   if (!t) return nullptr;
   EXPECT_EQ(token_get_kind(t), expected);
   size_t len = 0;
-  const char *text = token_get_text(t, lx, &len);
+  const char *text = token_get_text(t, &len);
   if (expected_text) {
     EXPECT_EQ(len, strlen(expected_text));
     EXPECT_EQ(memcmp(text, expected_text, len), 0);
   }
   return t;
+}
+
+/* Drain every remaining token (up to and incl. EOF) and free it. Used so
+ * the allocator-leak check below stays clean. */
+static void drain(allocator_t *a, lexer_t *lx) {
+  for (;;) {
+    token_t *t = lexer_next(lx);
+    token_kind_t k = token_get_kind(t);
+    token_free(a, &t);
+    if (k == TOKEN_TYPE_EOF) break;
+  }
+}
+
+/* Pull tokens until the first TOKEN_TYPE_ERROR, returning that token
+ * (caller frees it). Every token before it is freed. Returns NULL if no
+ * error token appears before EOF. */
+static token_t *first_error(allocator_t *a, lexer_t *lx) {
+  (void)a;
+  for (;;) {
+    token_t *t = lexer_next(lx);
+    token_kind_t k = token_get_kind(t);
+    if (k == TOKEN_TYPE_ERROR) return t;
+    token_free(a, &t);
+    if (k == TOKEN_TYPE_EOF) return nullptr;
+  }
 }
 
 /* ==== Lexer create / close ==== */
@@ -201,7 +227,7 @@ TEST(Lexer, UnicodeIdentifierStopsAtSymbol) {
   EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
-TEST(Lexer, NonIdentifierUnicodeIsFatal) {
+TEST(Lexer, NonIdentifierUnicodeIsError) {
   struct {
     const char *src;
     const char *needle;
@@ -213,12 +239,13 @@ TEST(Lexer, NonIdentifierUnicodeIsFatal) {
   allocator_t *a = create_allocator(test_alloc, test_free);
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
     lexer_t *lx = make_lexer(a, cases[i].src, "id.cx");
-    token_t *t = lexer_next(lx);
-    EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_ERROR) << i;
-    token_free(a, &t);
-    const char *msg = lexer_error(lx, nullptr);
+    token_t *t = first_error(a, lx);
+    ASSERT_NE(t, nullptr) << i;
+    const char *msg = token_get_error_message(t);
     ASSERT_NE(msg, nullptr) << i;
     EXPECT_NE(strstr(msg, cases[i].needle), nullptr) << i;
+    token_free(a, &t);
+    drain(a, lx); /* the lexer simply resumes (here: straight to EOF) */
     lexer_close(&lx);
   }
   EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
@@ -317,31 +344,30 @@ TEST(Lexer, TokenIs) {
   lexer_t *lx = make_lexer(a, "func", "t.cx");
   token_t *t = lexer_next(lx);
   ASSERT_NE(t, nullptr);
-  EXPECT_TRUE(token_is(t, lx, "func"));
-  EXPECT_FALSE(token_is(t, lx, "funcx"));
-  EXPECT_FALSE(token_is(t, lx, "fun"));
-  EXPECT_FALSE(token_is(t, lx, ""));
-  EXPECT_FALSE(token_is(t, lx, nullptr));
-  EXPECT_FALSE(token_is(nullptr, lx, "func"));
-  EXPECT_FALSE(token_is(t, nullptr, "func"));
+  EXPECT_TRUE(token_is(t, "func"));
+  EXPECT_FALSE(token_is(t, "funcx"));
+  EXPECT_FALSE(token_is(t, "fun"));
+  EXPECT_FALSE(token_is(t, ""));
+  EXPECT_FALSE(token_is(t, nullptr));
+  EXPECT_FALSE(token_is(nullptr, "func"));
   token_free(a, &t);
   lexer_close(&lx);
   EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
-/* ==== Error token (fail-fast, unrecoverable) ==== */
+/* ==== Error token (lexing resumes; the message is on the token) ==== */
 
-TEST(Lexer, UnrecognizedCharProducesError) {
+TEST(Lexer, UnrecognizedCharProducesErrorThenResumes) {
   allocator_t *a = create_allocator(test_alloc, test_free);
   lexer_t *lx = make_lexer(a, "@x", "err.cx");
   token_t *t = take(a, lx, TOKEN_TYPE_ERROR, nullptr);
-  location_t eloc;
-  const char *msg = lexer_error(lx, &eloc);
+  const char *msg = token_get_error_message(t);
   ASSERT_NE(msg, nullptr);
   EXPECT_NE(strstr(msg, "U+0040"), nullptr);
-  EXPECT_EQ(eloc.begin.offset, 0u);
   token_free(a, &t);
-  /* fail-fast: no further tokens are produced (not even "x") */
+  /* The lexer does NOT stop: it resumes after the bad character. */
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "x");
+  token_free(a, &t);
   t = lexer_next(lx);
   EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
   token_free(a, &t);
@@ -363,45 +389,14 @@ TEST(Lexer, ErrorMessageAndLocation) {
 
   t = lexer_next(lx);
   EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_ERROR);
-  location_t eloc;
-  const char *msg = lexer_error(lx, &eloc);
+  location_t eloc = *token_get_location(t);
+  const char *msg = token_get_error_message(t);
   ASSERT_NE(msg, nullptr);
   EXPECT_NE(strstr(msg, "U+0040"), nullptr);
   EXPECT_EQ(eloc.begin.line, 2u);
   EXPECT_EQ(eloc.begin.column, 4u); /* after "cd " on line 2 */
   token_free(a, &t);
-  lexer_close(&lx);
-  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
-}
-
-TEST(Lexer, ErrorSurvivesRewind) {
-  /* A lexical error is permanent: rewinding does NOT clear it. */
-  allocator_t *a = create_allocator(test_alloc, test_free);
-  lexer_t *lx = make_lexer(a, "@", "err.cx");
-  lexer_checkpoint_t cp = lexer_checkpoint(lx);
-  token_t *t = lexer_next(lx);
-  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_ERROR);
-  token_free(a, &t);
-  EXPECT_NE(lexer_error(lx, nullptr), nullptr);
-
-  lexer_rewind(lx, cp);
-  EXPECT_NE(lexer_error(lx, nullptr), nullptr); /* error state survives */
-  t = lexer_next(lx);
-  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_ERROR); /* re-lexing fails again */
-  token_free(a, &t);
-  lexer_close(&lx);
-  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
-}
-
-TEST(Lexer, ErrorPeekStable) {
-  allocator_t *a = create_allocator(test_alloc, test_free);
-  lexer_t *lx = make_lexer(a, "@", "err.cx");
-  const token_t *p1 = lexer_peek(lx);
-  const token_t *p2 = lexer_peek(lx);
-  ASSERT_NE(p1, nullptr);
-  EXPECT_EQ(p1, p2);
-  EXPECT_EQ(token_get_kind(p1), TOKEN_TYPE_ERROR);
-  EXPECT_NE(lexer_error(lx, nullptr), nullptr);
+  drain(a, lx);
   lexer_close(&lx);
   EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
@@ -419,12 +414,11 @@ TEST(Lexer, NullSafety) {
   ASSERT_NE(t, nullptr);
 
   size_t len = 123;
-  EXPECT_EQ(token_get_text(nullptr, lx, &len), nullptr);
+  EXPECT_EQ(token_get_text(nullptr, &len), nullptr);
   EXPECT_EQ(len, 0u);
-  EXPECT_EQ(token_get_text(t, nullptr, &len), nullptr);
-  EXPECT_EQ(len, 0u);
-  EXPECT_EQ(token_get_text(t, lx, nullptr), token_get_text(t, lx, &len));
+  EXPECT_EQ(token_get_text(t, &len), token_get_text(t, &len));
   EXPECT_EQ(len, 3u); /* out_len may be NULL: still returns the slice */
+  EXPECT_EQ(token_get_text(t, nullptr), token_get_text(t, &len));
 
   token_free(a, &t);
   token_free(a, nullptr); /* no-op */
@@ -433,304 +427,6 @@ TEST(Lexer, NullSafety) {
   EXPECT_EQ(null_tok, nullptr);
   token_free(nullptr, &null_tok); /* no-op */
   EXPECT_EQ(create_token(nullptr, TOKEN_TYPE_EOF, location_t{}), nullptr);
-  lexer_close(&lx);
-  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
-}
-
-/* ==== lexer_peek ==== */
-
-TEST(Lexer, PeekStablePointer) {
-  allocator_t *a = create_allocator(test_alloc, test_free);
-  lexer_t *lx = make_lexer(a, "func", "peek.cx");
-  const token_t *p1 = lexer_peek(lx);
-  const token_t *p2 = lexer_peek(lx);
-  ASSERT_NE(p1, nullptr);
-  EXPECT_EQ(p1, p2); /* repeated peeks return the same token */
-  EXPECT_EQ(token_get_kind(p1), TOKEN_TYPE_KEYWORD);
-  EXPECT_TRUE(token_is(p1, lx, "func"));
-  lexer_close(&lx);
-  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
-}
-
-TEST(Lexer, PeekDoesNotAdvance) {
-  allocator_t *a = create_allocator(test_alloc, test_free);
-  lexer_t *lx = make_lexer(a, "foo bar", "peek.cx");
-  const token_t *p = lexer_peek(lx);
-  ASSERT_NE(p, nullptr);
-  EXPECT_EQ(token_get_kind(p), TOKEN_TYPE_IDENTIFIER);
-  EXPECT_TRUE(token_is(p, lx, "foo"));
-
-  /* next still sees the same first token */
-  token_t *t = lexer_next(lx);
-  EXPECT_EQ(t, p); /* ownership of the peeked token transfers */
-  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_IDENTIFIER);
-  token_free(a, &t);
-
-  /* the lexer position advanced past "foo" */
-  const token_t *p2 = lexer_peek(lx);
-  ASSERT_NE(p2, nullptr);
-  EXPECT_EQ(token_get_kind(p2), TOKEN_TYPE_WHITESPACE);
-  lexer_close(&lx);
-  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
-}
-
-TEST(Lexer, PeekAcrossTokens) {
-  allocator_t *a = create_allocator(test_alloc, test_free);
-  lexer_t *lx = make_lexer(a, "a b", "peek.cx");
-  const token_t *p = lexer_peek(lx);
-  EXPECT_TRUE(token_is(p, lx, "a"));
-  token_t *t = lexer_next(lx);
-  token_free(a, &t);
-
-  p = lexer_peek(lx);
-  EXPECT_TRUE(token_is(p, lx, " "));
-  t = lexer_next(lx);
-  token_free(a, &t);
-
-  p = lexer_peek(lx);
-  EXPECT_TRUE(token_is(p, lx, "b"));
-  t = lexer_next(lx);
-  token_free(a, &t);
-
-  p = lexer_peek(lx);
-  EXPECT_EQ(token_get_kind(p), TOKEN_TYPE_EOF);
-  t = lexer_next(lx);
-  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
-  token_free(a, &t);
-
-  lexer_close(&lx);
-  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
-}
-
-TEST(Lexer, PeekEofStable) {
-  allocator_t *a = create_allocator(test_alloc, test_free);
-  lexer_t *lx = make_lexer(a, "", "peek.cx");
-  const token_t *p1 = lexer_peek(lx);
-  ASSERT_NE(p1, nullptr);
-  EXPECT_EQ(token_get_kind(p1), TOKEN_TYPE_EOF);
-  const token_t *p2 = lexer_peek(lx);
-  EXPECT_EQ(p1, p2);
-  lexer_close(&lx);
-  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
-}
-
-TEST(Lexer, PeekNullSafe) { EXPECT_EQ(lexer_peek(nullptr), nullptr); }
-
-TEST(Lexer, PeekWorksAfterMove) {
-  allocator_t *a = create_allocator(test_alloc, test_free);
-  lexer_t *lx = make_lexer(a, "return", "peekmv.cx");
-  lexer_t *moved = (lexer_t *)allocator_move(a, (void **)&lx);
-  ASSERT_NE(moved, nullptr);
-  const token_t *p = lexer_peek(moved);
-  ASSERT_NE(p, nullptr);
-  EXPECT_EQ(token_get_kind(p), TOKEN_TYPE_KEYWORD);
-  EXPECT_TRUE(token_is(p, moved, "return"));
-  token_t *t = lexer_next(moved);
-  EXPECT_EQ(t, p);
-  token_free(a, &t);
-  lexer_close(&moved);
-  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
-}
-
-/* ==== Backtracking (checkpoint / rewind) ==== */
-
-TEST(Lexer, CheckpointNullSafe) {
-  lexer_checkpoint_t cp = lexer_checkpoint(nullptr);
-  EXPECT_EQ(cp.pos.byte_offset, 0u);
-  EXPECT_EQ(cp.eof, false);
-}
-
-TEST(Lexer, RewindNullSafe) {
-  allocator_t *a = create_allocator(test_alloc, test_free);
-  lexer_t *lx = make_lexer(a, "foo", "rw.cx");
-  lexer_checkpoint_t cp = lexer_checkpoint(lx);
-  lexer_rewind(lx, cp);      /* no-op-ish: rewind to the same point */
-  lexer_rewind(nullptr, cp); /* no-op */
-  token_t *t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "foo");
-  token_free(a, &t);
-  lexer_close(&lx);
-  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
-}
-
-TEST(Lexer, RewindReplaysTokens) {
-  allocator_t *a = create_allocator(test_alloc, test_free);
-  lexer_t *lx = make_lexer(a, "foo bar baz", "rw.cx");
-  token_t *t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "foo");
-  token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
-  token_free(a, &t);
-
-  lexer_checkpoint_t cp = lexer_checkpoint(lx); /* before "bar" */
-  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "bar");
-  token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
-  token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "baz");
-  token_free(a, &t);
-  t = lexer_next(lx);
-  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
-  token_free(a, &t);
-
-  lexer_rewind(lx, cp); /* the same tokens are produced again */
-  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "bar");
-  token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
-  token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "baz");
-  token_free(a, &t);
-  t = lexer_next(lx);
-  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
-  token_free(a, &t);
-  lexer_close(&lx);
-  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
-}
-
-TEST(Lexer, RewindAfterPeekReProducesPeekedToken) {
-  /* The parser has peeked "func", then checkpoints. A rewind must put
-   * the lexer back BEFORE "func" — the pending token must not be lost. */
-  allocator_t *a = create_allocator(test_alloc, test_free);
-  lexer_t *lx = make_lexer(a, "func foo", "rw.cx");
-  const token_t *p = lexer_peek(lx);
-  ASSERT_NE(p, nullptr);
-  EXPECT_TRUE(token_is(p, lx, "func"));
-
-  lexer_checkpoint_t cp = lexer_checkpoint(lx); /* pending = "func" */
-  token_t *t = lexer_next(lx);
-  EXPECT_EQ(t, p); /* ownership of the peeked token transfers */
-  token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
-  token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "foo");
-  token_free(a, &t);
-
-  lexer_rewind(lx, cp); /* must re-produce "func" first */
-  t = take(a, lx, TOKEN_TYPE_KEYWORD, "func");
-  token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
-  token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "foo");
-  token_free(a, &t);
-  t = lexer_next(lx);
-  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
-  token_free(a, &t);
-  lexer_close(&lx);
-  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
-}
-
-TEST(Lexer, RewindDropsPendingToken) {
-  /* A pending token at rewind time is lexer-owned and must be dropped,
-   * not leak into the re-lexed stream. */
-  allocator_t *a = create_allocator(test_alloc, test_free);
-  lexer_t *lx = make_lexer(a, "foo bar", "rw.cx");
-  lexer_checkpoint_t cp = lexer_checkpoint(lx); /* before "foo" */
-  token_t *t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "foo");
-  token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
-  token_free(a, &t);
-  const token_t *p = lexer_peek(lx); /* pending = "bar" */
-  ASSERT_NE(p, nullptr);
-  EXPECT_TRUE(token_is(p, lx, "bar"));
-
-  lexer_rewind(lx, cp); /* drops pending "bar", back to "foo" */
-  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "foo");
-  token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
-  token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "bar");
-  token_free(a, &t);
-  lexer_close(&lx);
-  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
-}
-
-TEST(Lexer, RewindAfterEof) {
-  allocator_t *a = create_allocator(test_alloc, test_free);
-  lexer_t *lx = make_lexer(a, "foo", "rw.cx");
-  lexer_checkpoint_t cp = lexer_checkpoint(lx);
-  token_t *t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "foo");
-  token_free(a, &t);
-  t = lexer_next(lx);
-  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
-  token_free(a, &t);
-  t = lexer_next(lx);
-  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF); /* idempotent */
-  token_free(a, &t);
-
-  lexer_rewind(lx, cp); /* EOF flag must be cleared along with the seek */
-  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "foo");
-  token_free(a, &t);
-  t = lexer_next(lx);
-  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
-  token_free(a, &t);
-  lexer_close(&lx);
-  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
-}
-
-TEST(Lexer, RewindRestoresLocation) {
-  allocator_t *a = create_allocator(test_alloc, test_free);
-  lexer_t *lx = make_lexer(a, "ab\ncd\nef", "rw.cx");
-  token_t *t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "ab");
-  token_free(a, &t);
-  t = lexer_next(lx); /* "\n" */
-  token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "cd");
-  token_free(a, &t);
-  t = lexer_next(lx); /* "\n" */
-  token_free(a, &t);
-
-  lexer_checkpoint_t cp = lexer_checkpoint(lx); /* before "ef" */
-  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "ef");
-  const location_t *loc = token_get_location(t);
-  EXPECT_EQ(loc->begin.line, 3u);
-  EXPECT_EQ(loc->begin.column, 1u);
-  token_free(a, &t);
-
-  lexer_rewind(lx, cp);
-  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "ef");
-  loc = token_get_location(t);
-  EXPECT_EQ(loc->begin.offset, 6u);
-  EXPECT_EQ(loc->begin.line, 3u); /* line/col recomputed by the seek */
-  EXPECT_EQ(loc->begin.column, 1u);
-  token_free(a, &t);
-  lexer_close(&lx);
-  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
-}
-
-TEST(Lexer, NestedCheckpoints) {
-  allocator_t *a = create_allocator(test_alloc, test_free);
-  lexer_t *lx = make_lexer(a, "a b c d", "rw.cx");
-  lexer_checkpoint_t cp_a = lexer_checkpoint(lx); /* before "a" */
-  token_t *t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "a");
-  token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
-  token_free(a, &t);
-
-  lexer_checkpoint_t cp_b = lexer_checkpoint(lx); /* before "b" */
-  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "b");
-  token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
-  token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "c");
-  token_free(a, &t);
-
-  lexer_rewind(lx, cp_b); /* inner rewind: back to before "b" */
-  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "b");
-  token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
-  token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "c");
-  token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
-  token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "d");
-  token_free(a, &t);
-
-  lexer_rewind(lx, cp_a); /* outer rewind: back to the very start */
-  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "a");
-  token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
-  token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "b");
-  token_free(a, &t);
   lexer_close(&lx);
   EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
@@ -831,7 +527,7 @@ TEST(Lexer, HexELetterIsDigitNotExponent) {
   EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
-TEST(Lexer, NumericErrorsAreFatal) {
+TEST(Lexer, NumericErrorsAreErrorTokens) {
   struct {
     const char *src;
     const char *needle;
@@ -851,16 +547,13 @@ TEST(Lexer, NumericErrorsAreFatal) {
   allocator_t *a = create_allocator(test_alloc, test_free);
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
     lexer_t *lx = make_lexer(a, cases[i].src, "num.cx");
-    token_t *t = lexer_next(lx);
-    EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_ERROR) << cases[i].src;
-    token_free(a, &t);
-    const char *msg = lexer_error(lx, nullptr);
+    token_t *t = first_error(a, lx);
+    ASSERT_NE(t, nullptr) << cases[i].src;
+    const char *msg = token_get_error_message(t);
     ASSERT_NE(msg, nullptr) << cases[i].src;
     EXPECT_NE(strstr(msg, cases[i].needle), nullptr) << cases[i].src;
-    /* fail-fast: EOF afterwards */
-    t = lexer_next(lx);
-    EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF) << cases[i].src;
     token_free(a, &t);
+    drain(a, lx);
     lexer_close(&lx);
   }
   EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
@@ -882,7 +575,7 @@ TEST(Lexer, CharLiterals) {
   EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
-TEST(Lexer, CharErrorsAreFatal) {
+TEST(Lexer, CharErrorsAreErrorTokens) {
   struct {
     const char *src;
     const char *needle;
@@ -902,12 +595,13 @@ TEST(Lexer, CharErrorsAreFatal) {
   allocator_t *a = create_allocator(test_alloc, test_free);
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
     lexer_t *lx = make_lexer(a, cases[i].src, "chr.cx");
-    token_t *t = lexer_next(lx);
-    EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_ERROR) << cases[i].src;
-    token_free(a, &t);
-    const char *msg = lexer_error(lx, nullptr);
+    token_t *t = first_error(a, lx);
+    ASSERT_NE(t, nullptr) << cases[i].src;
+    const char *msg = token_get_error_message(t);
     ASSERT_NE(msg, nullptr) << cases[i].src;
     EXPECT_NE(strstr(msg, cases[i].needle), nullptr) << cases[i].src;
+    token_free(a, &t);
+    drain(a, lx);
     lexer_close(&lx);
   }
   EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
@@ -930,7 +624,7 @@ TEST(Lexer, StringLiteralsRawText) {
   EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
-TEST(Lexer, StringErrorsAreFatal) {
+TEST(Lexer, StringErrorsAreErrorTokens) {
   struct {
     const char *src;
     const char *needle;
@@ -946,12 +640,13 @@ TEST(Lexer, StringErrorsAreFatal) {
   allocator_t *a = create_allocator(test_alloc, test_free);
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
     lexer_t *lx = make_lexer(a, cases[i].src, "str.cx");
-    token_t *t = lexer_next(lx);
-    EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_ERROR) << cases[i].src;
-    token_free(a, &t);
-    const char *msg = lexer_error(lx, nullptr);
+    token_t *t = first_error(a, lx);
+    ASSERT_NE(t, nullptr) << cases[i].src;
+    const char *msg = token_get_error_message(t);
     ASSERT_NE(msg, nullptr) << cases[i].src;
     EXPECT_NE(strstr(msg, cases[i].needle), nullptr) << cases[i].src;
+    token_free(a, &t);
+    drain(a, lx);
     lexer_close(&lx);
   }
   EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
@@ -1006,15 +701,16 @@ TEST(Lexer, NestedBlockComment) {
   EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
-TEST(Lexer, UnterminatedBlockCommentIsFatal) {
+TEST(Lexer, UnterminatedBlockCommentIsError) {
   allocator_t *a = create_allocator(test_alloc, test_free);
   lexer_t *lx = make_lexer(a, "/* abc", "cmt.cx");
-  token_t *t = lexer_next(lx);
-  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_ERROR);
-  token_free(a, &t);
-  const char *msg = lexer_error(lx, nullptr);
+  token_t *t = first_error(a, lx);
+  ASSERT_NE(t, nullptr);
+  const char *msg = token_get_error_message(t);
   ASSERT_NE(msg, nullptr);
   EXPECT_NE(strstr(msg, "unterminated block comment"), nullptr);
+  token_free(a, &t);
+  drain(a, lx);
   lexer_close(&lx);
   EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
@@ -1131,5 +827,51 @@ TEST(Lexer, Utf8BomIsSkipped) {
   EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
   token_free(a, &t);
   lexer_close(&only);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+/* ==== Token pool (the parser-side abstraction over lexer_next) ==== */
+
+/**
+ * The lexer only exposes lexer_next; the pipeline assembles a plain
+ * vec<token*> on top of it. The Parser then walks that vec by index and
+ * may move forwards or backwards freely — no re-lexing, no lookahead
+ * buffer inside the lexer. This test shows the whole shape.
+ */
+TEST(Lexer, TokenPoolSupportsBacktracking) {
+  allocator_t *a = create_allocator(test_alloc, test_free);
+
+  /* Build the pool exactly as the pipeline would. */
+  lexer_t *lx = make_lexer(a, "func foo", "pool.cx");
+  vec_t *pool = vec_new(a, true); /* owns_element: frees the tokens */
+  for (;;) {
+    token_t *t = lexer_next(lx);
+    token_kind_t k = token_get_kind(t);
+    vec_push(pool, a, t);
+    if (k == TOKEN_TYPE_EOF) break;
+  }
+  lexer_close(&lx); /* tokens live on in the pool */
+
+  /* pool = [func, " ", foo, EOF] */
+  EXPECT_EQ(vec_len(pool), 4u);
+  token_t *k0 = (token_t *)vec_get(pool, 0);
+  EXPECT_EQ(token_get_kind(k0), TOKEN_TYPE_KEYWORD);
+  EXPECT_TRUE(token_is(k0, "func"));
+
+  /* Forward walk. */
+  token_t *f = (token_t *)vec_get(pool, 2);
+  EXPECT_TRUE(token_is(f, "foo"));
+
+  /* Backward walk — the Parser can revisit an earlier token at will. */
+  token_t *b = (token_t *)vec_get(pool, 0);
+  EXPECT_TRUE(token_is(b, "func"));
+
+  /* EOF sentinel is the last element. */
+  token_t *eof = (token_t *)vec_get(pool, vec_len(pool) - 1);
+  EXPECT_EQ(token_get_kind(eof), TOKEN_TYPE_EOF);
+
+  /* A single vec_free releases every token (no manual token_free). */
+  vec_free(a, &pool);
+  EXPECT_EQ(pool, nullptr);
   EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
