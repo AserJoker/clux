@@ -10,15 +10,17 @@ extern "C" {
 /* ---- Token kinds ---- */
 
 typedef enum {
-  TOKEN_TYPE_ERROR, /* lexer error: unrecognized input */
+  TOKEN_TYPE_ERROR, /* lexer error: unrecognized input (fatal, fail-fast) */
   TOKEN_TYPE_IDENTIFIER,
   TOKEN_TYPE_CHARACTER, /* character literal, e.g. 'a' (value type: u8) */
   TOKEN_TYPE_STRING,    /* string literal, e.g. "abc" */
-  TOKEN_TYPE_NUMERIC,   /* integer/float literal; value parsed later */
+  TOKEN_TYPE_NUMERIC,   /* integer/float literal, incl. base prefix and type
+                           suffix; value parsed later by the Parser */
   TOKEN_TYPE_KEYWORD,
-  TOKEN_TYPE_SYMBOL,
-  TOKEN_TYPE_COMMENT,           /* line comment: // ... */
-  TOKEN_TYPE_MULTILINE_COMMENT, /* block comment: slash-star ... star-slash */
+  TOKEN_TYPE_SYMBOL,  /* operator or punctuation (maximal munch, 1-2 chars) */
+  TOKEN_TYPE_COMMENT, /* line comment: // ... */
+  TOKEN_TYPE_MULTILINE_COMMENT, /* block comment: slash-star ... star-slash
+                                   (nestable) */
   TOKEN_TYPE_WHITESPACE,        /* one merged run of whitespace */
   TOKEN_TYPE_EOF,
 } token_kind_t;
@@ -58,6 +60,10 @@ void lexer_close(lexer_t **lexer);
  * WHITESPACE (consecutive runs merged into one token) and comments.
  * After the input is exhausted, returns TOKEN_TYPE_EOF; repeated calls
  * keep returning EOF (idempotent).
+ *
+ * On a lexical error the lexer enters its fatal (fail-fast) state:
+ * it returns exactly one TOKEN_TYPE_ERROR token, then every subsequent
+ * call returns EOF. The error message is available via lexer_error.
  *
  * The returned token is owned by the caller and must be freed with
  * token_free. Returns NULL only for a NULL lexer.
@@ -107,8 +113,26 @@ lexer_checkpoint_t lexer_checkpoint(const lexer_t *lexer);
  * Rewind seeks the underlying stream, which recomputes line/column by
  * scanning from the start of the source (O(source bytes before the
  * checkpoint)). No-op on a NULL lexer.
+ *
+ * NOTE: a rewind does NOT clear the lexer's fatal error state. Lexical
+ * errors are permanent (fail-fast): once lexer_error has been set, the
+ * lexer stays in the error state no matter where it is rewound to.
  */
 void lexer_rewind(lexer_t *lexer, lexer_checkpoint_t checkpoint);
+
+/* ---- Fatal error (fail-fast) ---- */
+
+/**
+ * Return the lexer's fatal error message, or NULL if no lexical error
+ * has occurred. If `out_loc` is non-NULL it receives the error location.
+ *
+ * Lexical errors are NOT recoverable: once an error is set, the lexer
+ * stops producing tokens (every subsequent call returns EOF) and
+ * lexer_rewind does not clear it. The offending input is surfaced once
+ * as a TOKEN_TYPE_ERROR token; the Parser must treat it as fatal and
+ * terminate compilation immediately.
+ */
+const char *lexer_error(const lexer_t *lexer, location_t *out_loc);
 
 /* ---- Token accessors ---- */
 

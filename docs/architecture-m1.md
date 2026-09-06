@@ -3,26 +3,48 @@
 ## 1. Pipeline
 
 ```
-.cx 源文件
+clux run <file.cx>
     │
     ▼
-  Lexer ──→ Token 流
-    │
-    ▼
-  Parser ──→ AST
-    │
-    ▼
-  Semantic Analysis (顶层多遍扫描)
-  ├─ Pass 1: Name Collection — 收集所有顶层名称(函数名)
-  ├─ Pass 2: Type Collection — 收集函数签名(参数类型+返回类型)
-  └─ Pass 3: Body Processing  — 处理函数体(名称解析+类型检查)
-    │
-    ▼
-  Interpreter (AST-walking)
-    │
-    ▼
-  执行结果
+  Driver (cmd/run → driver)
+  │
+  ├─ ① 加载源文件 ──→ 内存 istream（失败 → 退出码 1）
+  │
+  ├─ ② Lexer ──→ Token 流
+  │      │  词法错误：fail-fast，不可恢复（诊断后立即终止，退出码 1）
+  │
+  ├─ ③ Parser ──→ AST（挂 arena）
+  │      │  语法错误：panic mode 恢复，收集诊断（退出码 1，不进入 sema）
+  │
+  ├─ ④ Semantic Analysis (顶层多遍扫描)
+  │      ├─ Pass 1: Name Collection — 收集所有顶层名称(函数名)
+  │      ├─ Pass 2: Type Collection — 收集函数签名(参数类型+返回类型)
+  │      └─ Pass 3: Body Processing  — 处理函数体(名称解析+类型检查)
+  │      │  语义错误：收集诊断（退出码 1）
+  │
+  ├─ ⑤ Interpreter (AST-walking) ──→ 执行结果（退出码 0）
+  │      运行时错误（如 TDZ 访问）→ 退出码 2
+  │
+  ▼
+  诊断通道：所有阶段的诊断收进公共 diag 收集器，driver 统一打印到 stderr
 ```
+
+错误与退出码契约：
+
+| 错误类别 | 恢复策略 | 退出码 |
+|----------|----------|--------|
+| 词法错误（Lexer） | **fail-fast**，不可恢复，立即终止 | 1 |
+| 语法错误（Parser） | panic mode 跳到语句边界，可收集多条 | 1 |
+| 语义错误（Sema） | 收集诊断，不执行 | 1 |
+| 运行时错误（Interp） | 立即终止 | 2 |
+
+### 1.0 为什么需要 Driver
+
+`cmd_run` 只负责参数解析，真正的流水线编排在独立 `driver` 模块（`include/driver/driver.h`, `src/driver/driver.c`）：
+
+- `driver_compile_file()`：加载 + lex + parse + sema，产物是挂在 arena 上的 AST 与符号表
+- `driver_run_file()`：compile + interp，返回进程退出码
+- 未来 `clux build`（转译）复用 compile 段，`clux run` 复用 compile + execute 段
 
 ### 1.1 为什么需要多遍扫描
 
@@ -55,22 +77,39 @@ func add(a:i32, b:i32):i32 {
 
 ## 2. 模块职责
 
-### 2.1 Lexer (include/clux/lexer.h, src/clux/lexer.c)
+### 2.1 Lexer (include/parser/lexer.h, src/parser/lexer.c)
 
-输入源文件字符流，输出 Token 流。
+输入源文件字符流，输出 Token 流。**Lexer 只负责切分 token，不解析值**：数值、转义序列、字符内容等值解析全部留给 Parser（T3/T4 的 literal 解析），token 文本是对源 buffer 的零拷贝切片。
 
-- `lexer_create(source_t)` → `lexer_t*`
-- `lexer_next(lexer_t*)` → `token_t`
-- 支持所有 M1 关键字、运算符、字面量
-- 跳过注释和空白
+- `lexer_create(allocator_t*, istream_t*, filename)` → `lexer_t*`
+- `lexer_next(lexer_t*)` → `token_t`（调用者所有，需 `token_free`）
+- `lexer_peek(lexer_t*)` → `const token_t*`（借用，不消费）
+- `lexer_checkpoint()` / `lexer_rewind()`：深回溯（M1 语法无必用点，保留）
+- `lexer_error(lexer_t*, location_t*)` → `const char*`：词法错误信息（无错误返回 NULL）
+- 支持所有 M1 关键字、运算符、字面量（数字含进制与类型后缀、C 风格字符/字符串字面量、行/块注释）
 - 每个 Token 携带源码位置（文件/行/列）
 
-### 2.2 Token (include/clux/token.h, src/clux/token.c)
+**Lexer 错误不可恢复（fail-fast）**：一旦遇到无法识别字符、非法数字后缀、未闭合字符串/字符/块注释等，Lexer 立即：
+1. 记录错误信息与位置（`lexer_error` 可查）
+2. 产出 `TOKEN_TYPE_ERROR` token（Parser 看到即判定 fatal）
+3. 之后所有调用返回 EOF（不再产出任何 token）
+4. `lexer_rewind` **不撤销**错误状态——错误是永久性的，不做恢复尝试
+
+### 2.2 Token (include/parser/token.h, src/parser/token.c)
 
 ```c
 typedef enum {
-    TK_EOF, TK_IDENT, TK_INT_LIT, TK_FLOAT_LIT, TK_BOOL_LIT,
-    TK_KEYWORD, TK_PUNCT,
+    TOKEN_TYPE_ERROR,      // 词法错误：不可识别输入（fail-fast，仅此一个）
+    TOKEN_TYPE_IDENTIFIER,
+    TOKEN_TYPE_CHARACTER,  // 字符字面量 'a'（值类型 u8；文本含引号，转义原样）
+    TOKEN_TYPE_STRING,     // 字符串字面量 "abc"（文本含引号，转义原样）
+    TOKEN_TYPE_NUMERIC,    // 整数/浮点字面量，含进制与类型后缀（文本为原始切片）
+    TOKEN_TYPE_KEYWORD,
+    TOKEN_TYPE_SYMBOL,     // 运算符与标点（maximal munch，1-2 字符）
+    TOKEN_TYPE_COMMENT,           // 行注释 // ...
+    TOKEN_TYPE_MULTILINE_COMMENT, // 块注释 /* */（可嵌套）
+    TOKEN_TYPE_WHITESPACE,        // 合并的空白
+    TOKEN_TYPE_EOF,
 } token_kind_t;
 
 typedef struct {
@@ -79,18 +118,30 @@ typedef struct {
 } token_t;
 ```
 
-### 2.3 Parser (include/clux/parser.h, src/clux/parser.c)
+Token 文本语义约定：
+
+| 种类 | token 文本内容 |
+|------|----------------|
+| NUMERIC | 原始切片，如 `42`、`0xFF`、`3.14e10f64`（含后缀） |
+| STRING / CHARACTER | **含引号**的原始切片，如 `"ab\n"`、`'a'`；转义序列保持原样 |
+| SYMBOL | 1-2 个字符的运算符/标点 |
+| COMMENT / MULTILINE_COMMENT | 含注释标记，如 `// x`、`/* y */` |
+
+### 2.3 Parser (include/parser/parser.h, src/parser/parser.c)
 
 递归下降解析器，Token 流 → AST。
 
-- `parser_create(lexer_t*)` → `parser_t*`
+- `parser_create(allocator_t*, lexer_t*)` → `parser_t*`
 - `parser_parse(parser_t*)` → `ast_node_t*`（程序根节点）
-- 表达式解析用 Pratt parsing
-- 错误恢复：panic mode（跳到下一个语句边界）
+- 表达式解析用 Pratt parsing（绑定力表驱动，见 specs/parser.md）
+- 语句层：token 分派（switch），歧义由 lookahead=1 解决（IDENT 后跟 `=` 系列 → 赋值语句）
+- 语法错误恢复：panic mode（跳到语句边界 `;` `}` EOF）
+- **词法错误处理**：Parser 拉取 token 时遇到 `TOKEN_TYPE_ERROR` → 读取 `lexer_error` 记入诊断 → 置 fatal 标志 → 立即终止解析（不做 panic recovery），driver 据此直接失败
+- `parser_error(parser_t*)` → 是否已发生错误（语法或词法）
 
-### 2.4 AST (include/clux/ast.h, src/clux/ast.c)
+### 2.4 AST (include/parser/ast.h, src/parser/ast.c)
 
-M1 节点类型：
+**结构范式：公共头 + 子类化**（chibicc / lcc 范式）。所有节点共享公共头，具体节点通过 kind 区分、按子类大小分配；AST 整体挂在一个 arena 上，随编译单元释放，不做逐节点 free。
 
 ```c
 typedef enum {
@@ -117,39 +168,39 @@ typedef enum {
     AST_FLOAT_LIT,
     AST_BOOL_LIT,
     AST_STRING_LIT,
+    AST_CHAR_LIT,
     AST_IDENT,
     AST_CAST,         // <expr> as <type>
 } ast_kind_t;
-```
 
-节点统一结构：
-
-```c
+/* 公共头（所有节点首字段） */
 typedef struct ast_node {
-    ast_kind_t  kind;
-    location_t  loc;
-    type_t      resolved_type;  // 语义分析后填充
-    union {
-        // 按 kind 区分的具体数据
-    } data;
+    ast_kind_t       kind;
+    location_t       loc;
+    type_t           resolved_type;  // 语义分析后填充
+    struct ast_node *next;           // 兄弟链表：语句列表 / 参数 / 实参
 } ast_node_t;
-```
 
-变量声明节点 (AST_VAR_DEF) 细节：
-
-```c
+/* 子类示例：变量声明 */
 typedef struct {
-    char       *name;
-    type_t      type;           // 显式标注的类型（可能为 NULL 表示推断）
-    ast_node_t *init;           // 初始化表达式（NULL 表示 undefined/TDZ）
+    ast_node_t  base;
+    strslice_t  name;           // 零拷贝切片（ptr + len）
+    type_t     *annot;          // 显式标注的类型；NULL 表示推断
+    ast_node_t *init;           // 初始化表达式；NULL 表示 undefined/TDZ
     bool        is_tdz;         // 是否处于 TDZ（var x:i32 = undefined;）
 } ast_var_def_t;
+```
+
+完整节点清单与字段定义见 `specs/ast.md`。节点分配统一走工厂：
+
+```c
+ast_node_t *ast_new(allocator_t *a, ast_kind_t kind, location_t loc);
 ```
 
 赋值节点 (AST_ASSIGN) 说明：
 
 - 赋值表达式返回 void，因此不允许连续赋值 `a = b = 1;`
-- 只能作为语句使用，不能作为表达式嵌套
+- 只能作为语句使用，不能作为表达式嵌套（`=` 不在 Pratt 绑定力表中，parser 层即排除）
 
 ### 2.5 类型系统 (include/sema/type.h, src/clux/type.c)
 
@@ -224,7 +275,9 @@ typedef struct scope {
 2. 类型检查：表达式类型推断、赋值兼容性、函数调用参数匹配
 3. 结果写入 AST 节点的 `resolved_type` 字段
 
-### 2.9 诊断 (include/sema/diagnostic.h, src/sema/diagnostic.c)
+### 2.9 诊断 (include/diag/diagnostic.h, src/diag/diagnostic.c)
+
+**公共模块**：Lexer、Parser、Sema、Interp 共用同一个收集器，driver 统一在出口打印，而不是边错边打。
 
 ```c
 typedef enum { DIAG_ERROR, DIAG_WARNING, DIAG_NOTE } diag_level_t;
@@ -234,9 +287,20 @@ typedef struct {
     location_t   loc;
     char        *message;
 } diagnostic_t;
+
+typedef struct diag_buf {
+    allocator_t   *alloc;
+    diagnostic_t  *items;   // 动态数组
+    size_t         count;
+    size_t         capacity;
+} diag_buf_t;
+
+void diag_error(diag_buf_t *db, location_t loc, const char *fmt, ...);
+void diag_print_all(const diag_buf_t *db);   // 统一格式化输出到 stderr
+bool diag_has_error(const diag_buf_t *db);
 ```
 
-收集并格式化输出错误信息。
+输出格式：`<file>:<line>:<col>: error: <message>`。
 
 ### 2.10 解释器 (include/runtime/interp.h, src/runtime/interp.c)
 
@@ -269,13 +333,30 @@ typedef struct value {
 
 printf 硬编码：识别 `printf` 函数名，直接调用 C 的 printf。
 
+### 2.11 Driver (include/driver/driver.h, src/driver/driver.c)
+
+流水线编排者，见本文档第 1 节。
+
+```c
+// 编译段：加载 + lex + parse + sema。出错返回非 0，诊断已写入 diag_buf。
+int driver_compile_file(const char *path,
+                        allocator_t *arena,
+                        diag_buf_t  *diags,
+                        ast_node_t **out_program);
+
+// 完整流水线：compile + interp。返回进程退出码（0/1/2）。
+int driver_run_file(const char *path);
+```
+
+Driver 持有编译单元的 arena，所有阶段产物（AST、符号表、strslice 指向的源 buffer）在同一生命周期内有效。
+
 ## 3. 命令行接口
 
 ```
 clux run <file.cx>    解释执行 .cx 文件
 ```
 
-退出码：0 成功，1 编译错误，2 运行时错误。
+退出码：0 成功，1 编译错误（含文件打不开、词法/语法/语义错误），2 运行时错误。
 
 ## 4. 构建系统
 

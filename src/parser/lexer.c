@@ -2,6 +2,7 @@
 #include "core/allocator.h"
 #include "core/panic.h"
 #include "parser/location.h"
+#include <stdarg.h>
 #include <string.h>
 
 /* ---- Internal: token_t definition ---- */
@@ -21,6 +22,12 @@ struct _lexer_t {
   size_t source_len;
   bool eof;         /* EOF token has been produced */
   token_t *pending; /* peeked-but-not-consumed token (lexer-owned) */
+
+  /* Fatal (fail-fast) error state: once set, the lexer stops producing
+   * tokens and never recovers (rewind does not clear it). */
+  bool has_error;
+  char error_msg[160];
+  location_t error_loc;
 };
 
 /* ---- Internal: class for token_t ---- */
@@ -70,6 +77,13 @@ static bool is_whitespace(UChar32 cp) {
   return cp == ' ' || cp == '\t' || cp == '\r' || cp == '\n';
 }
 
+static bool is_digit_in_base(UChar32 cp, int base) {
+  if (cp >= '0' && cp <= '9') return (cp - '0') < base;
+  if (base == 16 && cp >= 'a' && cp <= 'f') return true;
+  if (base == 16 && cp >= 'A' && cp <= 'F') return true;
+  return false;
+}
+
 /* ---- Internal: keyword lookup (linear scan; 27 entries) ---- */
 
 static bool lookup_keyword(const char *text, size_t len) {
@@ -95,6 +109,28 @@ make_location(const lexer_t *lexer, stream_pos_t begin, stream_pos_t end) {
   return loc;
 }
 
+/* ---- Internal: fatal error (fail-fast) ---- */
+
+/**
+ * Record a lexical error and return a TOKEN_TYPE_ERROR token covering
+ * the error position. The lexer enters its permanent error state: every
+ * subsequent lexer_next / lexer_peek returns EOF, and lexer_rewind does
+ * not clear the error. The error message is available via lexer_error.
+ */
+static token_t *
+lexer_fail(lexer_t *lexer, stream_pos_t at, const char *fmt, ...) {
+  if (!lexer->has_error) {
+    lexer->has_error = true;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(lexer->error_msg, sizeof(lexer->error_msg), fmt, ap);
+    va_end(ap);
+    lexer->error_loc = make_location(lexer, at, at);
+  }
+  lexer->eof = true; /* stop: every later call returns EOF */
+  return create_token(lexer->allocator, TOKEN_TYPE_ERROR, lexer->error_loc);
+}
+
 /* ---- Lexer lifecycle ---- */
 
 lexer_t *
@@ -112,6 +148,9 @@ lexer_create(allocator_t *allocator, istream_t *stream, const char *filename) {
   lexer->source_len = istream_size(stream);
   lexer->eof = false;
   lexer->pending = NULL;
+  lexer->has_error = false;
+  lexer->error_msg[0] = '\0';
+  memset(&lexer->error_loc, 0, sizeof(lexer->error_loc));
   return lexer;
 }
 
@@ -171,6 +210,306 @@ void lexer_rewind(lexer_t *lexer, lexer_checkpoint_t checkpoint) {
   }
   istream_seek(lexer->stream, checkpoint.pos.byte_offset);
   lexer->eof = checkpoint.eof;
+  /* NOTE: has_error / error_msg are intentionally NOT cleared. Lexical
+   * errors are permanent (fail-fast); a rewind must not revive a lexer
+   * that already hit an unrecoverable error. */
+}
+
+/* ---- Fatal error accessor ---- */
+
+const char *lexer_error(const lexer_t *lexer, location_t *out_loc) {
+  if (!lexer || !lexer->has_error) return NULL;
+  if (out_loc) *out_loc = lexer->error_loc;
+  return lexer->error_msg;
+}
+
+/* ---- Internal: numeric literals ---- */
+
+static bool suffix_valid(const char *s, size_t len, bool is_float) {
+  static const char *const kIntSuffix[] = {
+      "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"};
+  static const char *const kFltSuffix[] = {"f32", "f64"};
+  size_t i;
+  if (is_float) {
+    for (i = 0; i < sizeof(kFltSuffix) / sizeof(kFltSuffix[0]); i++)
+      if (strlen(kFltSuffix[i]) == len && memcmp(s, kFltSuffix[i], len) == 0)
+        return true;
+  } else {
+    for (i = 0; i < sizeof(kIntSuffix) / sizeof(kIntSuffix[0]); i++)
+      if (strlen(kIntSuffix[i]) == len && memcmp(s, kIntSuffix[i], len) == 0)
+        return true;
+  }
+  return false;
+}
+
+static token_t *lexer_read_number(lexer_t *lexer, stream_pos_t begin) {
+  int base = 10;
+  bool is_float = false;
+  UChar32 cp = istream_read_cp(lexer->stream); /* leading digit */
+
+  /* 0x / 0o / 0b base prefix */
+  if (cp == '0') {
+    UChar32 nx = istream_peek_cp(lexer->stream);
+    if (nx == 'x' || nx == 'X') {
+      base = 16;
+      istream_read_cp(lexer->stream);
+    } else if (nx == 'o' || nx == 'O') {
+      base = 8;
+      istream_read_cp(lexer->stream);
+    } else if (nx == 'b' || nx == 'B') {
+      base = 2;
+      istream_read_cp(lexer->stream);
+    }
+  }
+
+  /* integer digits */
+  for (;;) {
+    cp = istream_peek_cp(lexer->stream);
+    if (cp == -1 || !is_digit_in_base(cp, base)) break;
+    istream_read_cp(lexer->stream);
+  }
+
+  if (base != 10) {
+    /* non-decimal literals need at least one digit after the prefix */
+    if (istream_tell(lexer->stream).byte_offset == begin.byte_offset + 2)
+      return lexer_fail(
+          lexer, begin, "invalid numeric literal: no digits after prefix");
+    goto suffix;
+  }
+
+  /* fractional part */
+  cp = istream_peek_cp(lexer->stream);
+  if (cp == '.') {
+    istream_read_cp(lexer->stream);
+    UChar32 d = istream_peek_cp(lexer->stream);
+    if (d == -1 || !is_digit_in_base(d, 10))
+      return lexer_fail(lexer, begin, "expected digit after decimal point");
+    is_float = true;
+    for (;;) {
+      d = istream_peek_cp(lexer->stream);
+      if (d == -1 || !is_digit_in_base(d, 10)) break;
+      istream_read_cp(lexer->stream);
+    }
+  }
+
+  /* exponent */
+  cp = istream_peek_cp(lexer->stream);
+  if (cp == 'e' || cp == 'E') {
+    istream_read_cp(lexer->stream);
+    is_float = true;
+    UChar32 s = istream_peek_cp(lexer->stream);
+    if (s == '+' || s == '-') istream_read_cp(lexer->stream);
+    UChar32 d = istream_peek_cp(lexer->stream);
+    if (d == -1 || !is_digit_in_base(d, 10))
+      return lexer_fail(lexer, begin, "expected digit in exponent");
+    for (;;) {
+      d = istream_peek_cp(lexer->stream);
+      if (d == -1 || !is_digit_in_base(d, 10)) break;
+      istream_read_cp(lexer->stream);
+    }
+  }
+
+suffix:
+  /* type suffix: [a-zA-Z0-9_]* immediately after the digits */
+  {
+    size_t suf_begin = istream_tell(lexer->stream).byte_offset;
+    size_t suf_len = 0;
+    for (;;) {
+      cp = istream_peek_cp(lexer->stream);
+      if (cp == -1 || !is_ident_char(cp)) break;
+      istream_read_cp(lexer->stream);
+      suf_len++;
+    }
+    if (suf_len > 0) {
+      const char *suf = lexer->source_data + suf_begin;
+      if (!suffix_valid(suf, suf_len, is_float))
+        return lexer_fail(lexer,
+                          begin,
+                          "invalid numeric literal suffix '%.*s'",
+                          (int)suf_len,
+                          suf);
+    }
+  }
+
+  stream_pos_t end = istream_tell(lexer->stream);
+  return create_token(
+      lexer->allocator, TOKEN_TYPE_NUMERIC, make_location(lexer, begin, end));
+}
+
+/* ---- Internal: string literals ---- */
+
+static token_t *lexer_read_string(lexer_t *lexer, stream_pos_t begin) {
+  istream_read_cp(lexer->stream); /* consume '"' */
+  for (;;) {
+    UChar32 cp = istream_read_cp(lexer->stream);
+    if (cp == -1)
+      return lexer_fail(lexer, begin, "unterminated string literal");
+    if (cp == '"') break;
+    if (cp == '\\') {
+      if (istream_read_cp(lexer->stream) == -1)
+        return lexer_fail(
+            lexer, begin, "unterminated string literal (dangling backslash)");
+    } else if (cp == '\n' || cp == '\r') {
+      return lexer_fail(
+          lexer, begin, "unterminated string literal (newline in string)");
+    }
+  }
+  stream_pos_t end = istream_tell(lexer->stream);
+  return create_token(
+      lexer->allocator, TOKEN_TYPE_STRING, make_location(lexer, begin, end));
+}
+
+/* ---- Internal: character literals ---- */
+
+static token_t *lexer_read_char(lexer_t *lexer, stream_pos_t begin) {
+  istream_read_cp(lexer->stream); /* consume '\'' */
+  for (;;) {
+    UChar32 cp = istream_read_cp(lexer->stream);
+    if (cp == -1)
+      return lexer_fail(lexer, begin, "unterminated character literal");
+    if (cp == '\'') break;
+    if (cp == '\\') {
+      if (istream_read_cp(lexer->stream) == -1)
+        return lexer_fail(lexer,
+                          begin,
+                          "unterminated character literal (dangling "
+                          "backslash)");
+    } else if (cp == '\n' || cp == '\r') {
+      return lexer_fail(
+          lexer, begin, "unterminated character literal (newline in literal)");
+    }
+  }
+  stream_pos_t end = istream_tell(lexer->stream);
+  return create_token(
+      lexer->allocator, TOKEN_TYPE_CHARACTER, make_location(lexer, begin, end));
+}
+
+/* ---- Internal: '/' dispatch: comments and symbol ---- */
+
+static token_t *lexer_read_slash(lexer_t *lexer, stream_pos_t begin) {
+  /* leading '/' is peeked by the caller; consume it */
+  istream_read_cp(lexer->stream);
+  UChar32 cp = istream_peek_cp(lexer->stream);
+
+  if (cp == '/') { /* line comment: // ... up to (not incl.) newline or EOF */
+    istream_read_cp(lexer->stream);
+    for (;;) {
+      cp = istream_peek_cp(lexer->stream);
+      if (cp == -1 || cp == '\n') break;
+      istream_read_cp(lexer->stream);
+    }
+    stream_pos_t end = istream_tell(lexer->stream);
+    return create_token(
+        lexer->allocator, TOKEN_TYPE_COMMENT, make_location(lexer, begin, end));
+  }
+
+  if (cp == '*') { /* block comment: slash-star ... star-slash, nestable */
+    istream_read_cp(lexer->stream);
+    int depth = 1;
+    for (;;) {
+      cp = istream_read_cp(lexer->stream);
+      if (cp == -1)
+        return lexer_fail(lexer, begin, "unterminated block comment");
+      if (cp == '/') {
+        if (istream_peek_cp(lexer->stream) == '*') {
+          istream_read_cp(lexer->stream);
+          depth++;
+        }
+      } else if (cp == '*') {
+        if (istream_peek_cp(lexer->stream) == '/') {
+          istream_read_cp(lexer->stream);
+          if (--depth == 0) break;
+        }
+      }
+    }
+    stream_pos_t end = istream_tell(lexer->stream);
+    return create_token(lexer->allocator,
+                        TOKEN_TYPE_MULTILINE_COMMENT,
+                        make_location(lexer, begin, end));
+  }
+
+  if (cp == '=') { /* '/=' */
+    istream_read_cp(lexer->stream);
+    stream_pos_t end = istream_tell(lexer->stream);
+    return create_token(
+        lexer->allocator, TOKEN_TYPE_SYMBOL, make_location(lexer, begin, end));
+  }
+
+  /* single '/' */
+  stream_pos_t end = istream_tell(lexer->stream);
+  return create_token(
+      lexer->allocator, TOKEN_TYPE_SYMBOL, make_location(lexer, begin, end));
+}
+
+/* ---- Internal: symbols (maximal munch) ---- */
+
+static bool is_single_symbol(UChar32 c) {
+  switch (c) {
+  case '+':
+  case '-':
+  case '*':
+  case '%':
+  case '<':
+  case '>':
+  case '=':
+  case '!':
+  case '&':
+  case '|':
+  case '^':
+  case '~':
+  case '(':
+  case ')':
+  case '{':
+  case '}':
+  case '[':
+  case ']':
+  case ';':
+  case ',':
+  case ':':
+    return true;
+  default:
+    return false;
+  }
+}
+
+static token_t *lexer_read_symbol(lexer_t *lexer, stream_pos_t begin) {
+  static const char *const kPairs[] = {
+      "<<",
+      ">>",
+      "<=",
+      ">=",
+      "==",
+      "!=",
+      "&&",
+      "||",
+      "+=",
+      "-=",
+      "*=",
+      "/=",
+      "%=",
+  };
+  UChar32 c1 = istream_read_cp(lexer->stream);
+  UChar32 c2 = istream_peek_cp(lexer->stream);
+
+  if (c2 != -1) {
+    for (size_t i = 0; i < sizeof(kPairs) / sizeof(kPairs[0]); i++) {
+      if ((UChar32)kPairs[i][0] == c1 && (UChar32)kPairs[i][1] == c2) {
+        istream_read_cp(lexer->stream);
+        stream_pos_t end = istream_tell(lexer->stream);
+        return create_token(lexer->allocator,
+                            TOKEN_TYPE_SYMBOL,
+                            make_location(lexer, begin, end));
+      }
+    }
+  }
+
+  if (is_single_symbol(c1)) {
+    stream_pos_t end = istream_tell(lexer->stream);
+    return create_token(
+        lexer->allocator, TOKEN_TYPE_SYMBOL, make_location(lexer, begin, end));
+  }
+
+  return lexer_fail(lexer, begin, "unrecognized character U+%04X", (int)c1);
 }
 
 /* ---- Internal: read the next raw token from the stream ---- */
@@ -214,14 +553,18 @@ static token_t *lexer_read_token(lexer_t *lexer) {
         lexer->allocator, kind, make_location(lexer, begin, end));
   }
 
-  /* ---- Not yet implemented categories (numeric / string / character /
-   * symbol / comment). For now, consume one codepoint and emit an ERROR
-   * token; these branches are replaced in later steps. ---- */
+  if (cp >= '0' && cp <= '9') return lexer_read_number(lexer, begin);
 
-  if (cp != -1) istream_read_cp(lexer->stream);
-  stream_pos_t end = istream_tell(lexer->stream);
-  return create_token(
-      lexer->allocator, TOKEN_TYPE_ERROR, make_location(lexer, begin, end));
+  switch (cp) {
+  case '"':
+    return lexer_read_string(lexer, begin);
+  case '\'':
+    return lexer_read_char(lexer, begin);
+  case '/':
+    return lexer_read_slash(lexer, begin);
+  default:
+    return lexer_read_symbol(lexer, begin);
+  }
 }
 
 /* ---- Token accessors ---- */
@@ -296,6 +639,8 @@ static void lexer_dispose(void *self, allocator_t *allocator) {
   lexer->source_data = NULL;
   lexer->source_len = 0;
   lexer->eof = false;
+  lexer->has_error = false;
+  lexer->error_msg[0] = '\0';
 }
 
 static void lexer_move_cb(void *self, allocator_t *allocator, void *another) {
@@ -311,6 +656,9 @@ static void lexer_move_cb(void *self, allocator_t *allocator, void *another) {
   dst->source_len = src->source_len;
   dst->eof = src->eof;
   dst->pending = src->pending;
+  dst->has_error = src->has_error;
+  memcpy(dst->error_msg, src->error_msg, sizeof(dst->error_msg));
+  dst->error_loc = src->error_loc;
 
   src->allocator = NULL;
   src->stream = NULL;
@@ -319,4 +667,7 @@ static void lexer_move_cb(void *self, allocator_t *allocator, void *another) {
   src->source_len = 0;
   src->eof = false;
   src->pending = NULL;
+  src->has_error = false;
+  src->error_msg[0] = '\0';
+  memset(&src->error_loc, 0, sizeof(src->error_loc));
 }

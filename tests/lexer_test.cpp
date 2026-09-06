@@ -152,10 +152,14 @@ TEST(Lexer, Identifiers) {
 
 TEST(Lexer, IdentifierStopsAtNonIdent) {
   allocator_t *a = create_allocator(test_alloc, test_free);
-  /* '=' is not implemented yet -> ERROR placeholder; only check that the
-   * identifier itself stops at the boundary. */
+  /* identifier stops at the '=' boundary; '=' is a symbol */
   lexer_t *lx = make_lexer(a, "abc=", "t.cx");
   token_t *t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "abc");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_SYMBOL, "=");
+  token_free(a, &t);
+  t = lexer_next(lx);
+  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
   token_free(a, &t);
   lexer_close(&lx);
   EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
@@ -266,21 +270,79 @@ TEST(Lexer, TokenIs) {
   EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
-/* ==== Error token (unrecognized characters) ==== */
+/* ==== Error token (fail-fast, unrecoverable) ==== */
 
 TEST(Lexer, UnrecognizedCharProducesError) {
   allocator_t *a = create_allocator(test_alloc, test_free);
   lexer_t *lx = make_lexer(a, "@x", "err.cx");
-  token_t *t = take(a, lx, TOKEN_TYPE_ERROR, "@");
-  const location_t *loc = token_get_location(t);
-  EXPECT_EQ(loc->begin.offset, 0u);
-  EXPECT_EQ(loc->end.offset, 1u); /* consumes one codepoint */
+  token_t *t = take(a, lx, TOKEN_TYPE_ERROR, nullptr);
+  location_t eloc;
+  const char *msg = lexer_error(lx, &eloc);
+  ASSERT_NE(msg, nullptr);
+  EXPECT_NE(strstr(msg, "U+0040"), nullptr);
+  EXPECT_EQ(eloc.begin.offset, 0u);
   token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "x");
-  token_free(a, &t);
+  /* fail-fast: no further tokens are produced (not even "x") */
   t = lexer_next(lx);
   EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
   token_free(a, &t);
+  lexer_close(&lx);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+TEST(Lexer, ErrorMessageAndLocation) {
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "ab\ncd @", "err.cx");
+  token_t *t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "ab");
+  token_free(a, &t);
+  t = lexer_next(lx); /* "\n" */
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "cd");
+  token_free(a, &t);
+  t = lexer_next(lx); /* " " */
+  token_free(a, &t);
+
+  t = lexer_next(lx);
+  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_ERROR);
+  location_t eloc;
+  const char *msg = lexer_error(lx, &eloc);
+  ASSERT_NE(msg, nullptr);
+  EXPECT_NE(strstr(msg, "U+0040"), nullptr);
+  EXPECT_EQ(eloc.begin.line, 2u);
+  EXPECT_EQ(eloc.begin.column, 4u); /* after "cd " on line 2 */
+  token_free(a, &t);
+  lexer_close(&lx);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+TEST(Lexer, ErrorSurvivesRewind) {
+  /* A lexical error is permanent: rewinding does NOT clear it. */
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "@", "err.cx");
+  lexer_checkpoint_t cp = lexer_checkpoint(lx);
+  token_t *t = lexer_next(lx);
+  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_ERROR);
+  token_free(a, &t);
+  EXPECT_NE(lexer_error(lx, nullptr), nullptr);
+
+  lexer_rewind(lx, cp);
+  EXPECT_NE(lexer_error(lx, nullptr), nullptr); /* error state survives */
+  t = lexer_next(lx);
+  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_ERROR); /* re-lexing fails again */
+  token_free(a, &t);
+  lexer_close(&lx);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+TEST(Lexer, ErrorPeekStable) {
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "@", "err.cx");
+  const token_t *p1 = lexer_peek(lx);
+  const token_t *p2 = lexer_peek(lx);
+  ASSERT_NE(p1, nullptr);
+  EXPECT_EQ(p1, p2);
+  EXPECT_EQ(token_get_kind(p1), TOKEN_TYPE_ERROR);
+  EXPECT_NE(lexer_error(lx, nullptr), nullptr);
   lexer_close(&lx);
   EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
@@ -423,8 +485,8 @@ TEST(Lexer, RewindNullSafe) {
   allocator_t *a = create_allocator(test_alloc, test_free);
   lexer_t *lx = make_lexer(a, "foo", "rw.cx");
   lexer_checkpoint_t cp = lexer_checkpoint(lx);
-  lexer_rewind(lx, cp);        /* no-op-ish: rewind to the same point */
-  lexer_rewind(nullptr, cp);   /* no-op */
+  lexer_rewind(lx, cp);      /* no-op-ish: rewind to the same point */
+  lexer_rewind(nullptr, cp); /* no-op */
   token_t *t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "foo");
   token_free(a, &t);
   lexer_close(&lx);
@@ -629,5 +691,320 @@ TEST(Lexer, MoveTransfersOwnership) {
   EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
   token_free(a, &t);
   lexer_close(&moved);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+/* ==== Numeric literals ==== */
+
+TEST(Lexer, IntegerLiterals) {
+  const char *cases[] = {
+      "0", "42", "12345", "0xFF", "0Xff", "0o77", "0O17", "0b1010", "0B1"};
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    lexer_t *lx = make_lexer(a, cases[i], "num.cx");
+    token_t *t = take(a, lx, TOKEN_TYPE_NUMERIC, cases[i]);
+    token_free(a, &t);
+    t = lexer_next(lx);
+    EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
+    token_free(a, &t);
+    lexer_close(&lx);
+  }
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+TEST(Lexer, IntegerLiteralsWithSuffix) {
+  const char *cases[] = {
+      "1i8", "100i32", "42u64", "0xFFu8", "0b1010u16", "7i16", "9u32"};
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    lexer_t *lx = make_lexer(a, cases[i], "num.cx");
+    token_t *t = take(a, lx, TOKEN_TYPE_NUMERIC, cases[i]);
+    token_free(a, &t);
+    lexer_close(&lx);
+  }
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+TEST(Lexer, FloatLiterals) {
+  const char *cases[] = {"3.14",
+                         "1.0e10",
+                         "1e10",
+                         "0.5",
+                         "1e-3",
+                         "2E+5",
+                         "3.14f32",
+                         "1.0e10f64",
+                         "0.0"};
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    lexer_t *lx = make_lexer(a, cases[i], "num.cx");
+    token_t *t = take(a, lx, TOKEN_TYPE_NUMERIC, cases[i]);
+    token_free(a, &t);
+    lexer_close(&lx);
+  }
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+TEST(Lexer, NumericSuffixBindsToLiteral) {
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "42 i8", "num.cx");
+  token_t *t = take(a, lx, TOKEN_TYPE_NUMERIC, "42");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_KEYWORD, "i8"); /* i8 is a keyword */
+  token_free(a, &t);
+  lexer_close(&lx);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+TEST(Lexer, HexELetterIsDigitNotExponent) {
+  /* In hex literals 'e' is a digit; 0x1e+5 splits into 0x1e and + and 5. */
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "0x1e+5", "num.cx");
+  token_t *t = take(a, lx, TOKEN_TYPE_NUMERIC, "0x1e");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_SYMBOL, "+");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_NUMERIC, "5");
+  token_free(a, &t);
+  lexer_close(&lx);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+TEST(Lexer, NumericErrorsAreFatal) {
+  struct {
+    const char *src;
+    const char *needle;
+  } cases[] = {
+      {"1f32", "invalid numeric literal suffix"}, /* int form + float suffix */
+      {"1i8x", "invalid numeric literal suffix"}, /* unknown suffix */
+      {"1zz", "invalid numeric literal suffix"},
+      {"0x", "no digits after prefix"},
+      {"0o", "no digits after prefix"},
+      {"0b2", "no digits after prefix"}, /* '2' is not binary */
+      {"1.", "expected digit after decimal point"},
+      {"1.a", "expected digit after decimal point"},
+      {"1e", "expected digit in exponent"},
+      {"1e+", "expected digit in exponent"},
+      {"1.5e", "expected digit in exponent"},
+  };
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    lexer_t *lx = make_lexer(a, cases[i].src, "num.cx");
+    token_t *t = lexer_next(lx);
+    EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_ERROR) << cases[i].src;
+    token_free(a, &t);
+    const char *msg = lexer_error(lx, nullptr);
+    ASSERT_NE(msg, nullptr) << cases[i].src;
+    EXPECT_NE(strstr(msg, cases[i].needle), nullptr) << cases[i].src;
+    /* fail-fast: EOF afterwards */
+    t = lexer_next(lx);
+    EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF) << cases[i].src;
+    token_free(a, &t);
+    lexer_close(&lx);
+  }
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+/* ==== Character literals ==== */
+
+TEST(Lexer, CharLiterals) {
+  const char *cases[] = {"'a'", "'\\n'", "'\\''", "'\\\\'", "'\\x41'", "' '"};
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    lexer_t *lx = make_lexer(a, cases[i], "chr.cx");
+    token_t *t = take(a, lx, TOKEN_TYPE_CHARACTER, cases[i]);
+    token_free(a, &t);
+    lexer_close(&lx);
+  }
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+TEST(Lexer, CharErrorsAreFatal) {
+  struct {
+    const char *src;
+    const char *needle;
+  } cases[] = {
+      {"'a", "unterminated character literal"},
+      {"'\\", "unterminated character literal"},
+      {"'\n'", "unterminated character literal"},
+  };
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    lexer_t *lx = make_lexer(a, cases[i].src, "chr.cx");
+    token_t *t = lexer_next(lx);
+    EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_ERROR) << cases[i].src;
+    token_free(a, &t);
+    const char *msg = lexer_error(lx, nullptr);
+    ASSERT_NE(msg, nullptr) << cases[i].src;
+    EXPECT_NE(strstr(msg, cases[i].needle), nullptr) << cases[i].src;
+    lexer_close(&lx);
+  }
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+/* ==== String literals ==== */
+
+TEST(Lexer, StringLiteralsRawText) {
+  /* The token text keeps the quotes and escapes verbatim; decoding is
+   * the Parser's job. */
+  const char *cases[] = {
+      "\"hello\"", "\"\"", "\"a\\nb\"", "\"say \\\"hi\\\"\"", "\"\\x41\\0\""};
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    lexer_t *lx = make_lexer(a, cases[i], "str.cx");
+    token_t *t = take(a, lx, TOKEN_TYPE_STRING, cases[i]);
+    token_free(a, &t);
+    lexer_close(&lx);
+  }
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+TEST(Lexer, StringErrorsAreFatal) {
+  struct {
+    const char *src;
+    const char *needle;
+  } cases[] = {
+      {"\"abc", "unterminated string literal"},
+      {"\"ab\\", "unterminated string literal"},
+      {"\"ab\ncd\"", "unterminated string literal"},
+  };
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    lexer_t *lx = make_lexer(a, cases[i].src, "str.cx");
+    token_t *t = lexer_next(lx);
+    EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_ERROR) << cases[i].src;
+    token_free(a, &t);
+    const char *msg = lexer_error(lx, nullptr);
+    ASSERT_NE(msg, nullptr) << cases[i].src;
+    EXPECT_NE(strstr(msg, cases[i].needle), nullptr) << cases[i].src;
+    lexer_close(&lx);
+  }
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+/* ==== Comments ==== */
+
+TEST(Lexer, LineComment) {
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "// hello\nx", "cmt.cx");
+  token_t *t = take(a, lx, TOKEN_TYPE_COMMENT, "// hello");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_WHITESPACE, "\n");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "x");
+  token_free(a, &t);
+  lexer_close(&lx);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+TEST(Lexer, LineCommentToEof) {
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "// no newline", "cmt.cx");
+  token_t *t = take(a, lx, TOKEN_TYPE_COMMENT, "// no newline");
+  token_free(a, &t);
+  t = lexer_next(lx);
+  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_EOF);
+  token_free(a, &t);
+  lexer_close(&lx);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+TEST(Lexer, BlockComment) {
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "/* a */x", "cmt.cx");
+  token_t *t = take(a, lx, TOKEN_TYPE_MULTILINE_COMMENT, "/* a */");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "x");
+  token_free(a, &t);
+  lexer_close(&lx);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+TEST(Lexer, NestedBlockComment) {
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "/* a /* b */ c */x", "cmt.cx");
+  token_t *t = take(a, lx, TOKEN_TYPE_MULTILINE_COMMENT, "/* a /* b */ c */");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "x");
+  token_free(a, &t);
+  lexer_close(&lx);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+TEST(Lexer, UnterminatedBlockCommentIsFatal) {
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "/* abc", "cmt.cx");
+  token_t *t = lexer_next(lx);
+  EXPECT_EQ(token_get_kind(t), TOKEN_TYPE_ERROR);
+  token_free(a, &t);
+  const char *msg = lexer_error(lx, nullptr);
+  ASSERT_NE(msg, nullptr);
+  EXPECT_NE(strstr(msg, "unterminated block comment"), nullptr);
+  lexer_close(&lx);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+/* ==== Symbols ==== */
+
+TEST(Lexer, SingleSymbols) {
+  const char *syms[] = {"+", "-", "*", "%", "<", ">", "=", "!", "&", "|", "^",
+                        "~", "(", ")", "{", "}", "[", "]", ";", ",", ":"};
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  for (size_t i = 0; i < sizeof(syms) / sizeof(syms[0]); i++) {
+    lexer_t *lx = make_lexer(a, syms[i], "sym.cx");
+    token_t *t = take(a, lx, TOKEN_TYPE_SYMBOL, syms[i]);
+    token_free(a, &t);
+    lexer_close(&lx);
+  }
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+TEST(Lexer, TwoCharSymbolsMaximalMunch) {
+  const char *syms[] = {"<<",
+                        ">>",
+                        "<=",
+                        ">=",
+                        "==",
+                        "!=",
+                        "&&",
+                        "||",
+                        "+=",
+                        "-=",
+                        "*=",
+                        "/=",
+                        "%="};
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  for (size_t i = 0; i < sizeof(syms) / sizeof(syms[0]); i++) {
+    lexer_t *lx = make_lexer(a, syms[i], "sym.cx");
+    token_t *t = take(a, lx, TOKEN_TYPE_SYMBOL, syms[i]);
+    token_free(a, &t);
+    lexer_close(&lx);
+  }
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+TEST(Lexer, MaximalMunchSplitsLongerRuns) {
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "<<<", "sym.cx");
+  token_t *t = take(a, lx, TOKEN_TYPE_SYMBOL, "<<");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_SYMBOL, "<");
+  token_free(a, &t);
+  lexer_close(&lx);
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+TEST(Lexer, SymbolMixedWithTokens) {
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "a<b", "sym.cx");
+  token_t *t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "a");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_SYMBOL, "<");
+  token_free(a, &t);
+  t = take(a, lx, TOKEN_TYPE_IDENTIFIER, "b");
+  token_free(a, &t);
+  lexer_close(&lx);
   EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
