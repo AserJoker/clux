@@ -6,6 +6,7 @@ extern "C" {
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 
 /* ---- Non-owning string slice ---- */
@@ -60,11 +61,11 @@ static inline int strslice_cmp(strslice_t a, strslice_t b) {
 }
 
 /** FNV-1a hash for use in hash tables (strmap, etc.). */
-static inline unsigned long strslice_hash(strslice_t s) {
-    unsigned long h = 14695981039346656037UL;
+static inline uint64_t strslice_hash(strslice_t s) {
+    uint64_t h = 14695981039346656037ULL;
     for (size_t i = 0; i < s.len; i++) {
         h ^= (unsigned char)s.ptr[i];
-        h *= 1099511628211UL;
+        h *= 1099511628211ULL;
     }
     return h;
 }
