@@ -22,17 +22,25 @@ typedef struct strslice {
     size_t      len;
 } strslice_t;
 
-/* ---- Constructor macros ---- */
+/* ---- Constructor helpers ---- */
+
+/** Construct a slice from ptr and len. C/C++ portable (no compound literal). */
+static inline strslice_t strslice_make(const char *ptr, size_t len) {
+    strslice_t s;
+    s.ptr = ptr;
+    s.len = len;
+    return s;
+}
 
 /** Empty slice (NULL pointer, zero length). */
-#define STRSLICE_EMPTY ((strslice_t){ .ptr = NULL, .len = 0 })
+#define STRSLICE_EMPTY strslice_make(NULL, 0)
 
 /**
  * Construct a slice from a string literal (compile-time).
  * Usage: STRSLICE_LIT("hello")  — length is computed by sizeof, which
  * includes the NUL terminator; the macro subtracts 1.
  */
-#define STRSLICE_LIT(s) ((strslice_t){ .ptr = (s), .len = sizeof(s) - 1 })
+#define STRSLICE_LIT(s) strslice_make((s), sizeof(s) - 1)
 
 /* ---- Inline helpers ---- */
 
@@ -73,12 +81,12 @@ static inline uint64_t strslice_hash(strslice_t s) {
 /** Construct a slice from a NUL-terminated C string. */
 static inline strslice_t strslice_from_cstr(const char *cstr) {
     if (!cstr) return STRSLICE_EMPTY;
-    return (strslice_t){ .ptr = cstr, .len = strlen(cstr) };
+    return strslice_make(cstr, strlen(cstr));
 }
 
 /** Construct a slice from `len` bytes starting at `data`. */
 static inline strslice_t strslice_from_bytes(const char *data, size_t len) {
-    return (strslice_t){ .ptr = data, .len = len };
+    return strslice_make(data, len);
 }
 
 /** Return a sub-slice [start, start+length), clamped to bounds. */
@@ -86,7 +94,7 @@ static inline strslice_t strslice_substr(strslice_t s, size_t start, size_t leng
     if (start >= s.len) return STRSLICE_EMPTY;
     size_t avail = s.len - start;
     if (length > avail) length = avail;
-    return (strslice_t){ .ptr = s.ptr + start, .len = length };
+    return strslice_make(s.ptr + start, length);
 }
 
 /** Return true if `s` starts with `prefix`. */

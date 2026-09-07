@@ -280,24 +280,51 @@ typedef struct {
 
 ```c
 ast_node_t *parse_expr_prec(parser_t *p, int min_prec) {
-    uint32_t tb = p->pos;
+    // 前缀：一元或原子
+    ast_node_t *left = parse_unary(p);
+    if (!left || left->kind == AST_ERROR) return left;
 
-    // 前缀：primary 或一元
-    ast_node_t *left = parse_unary_or_primary(p);
-    if (!left) return NULL;
+    // 中缀/后缀循环
+    for (;;) {
+        skip_trivia(p);
 
-    // 中缀循环
-    while (!at_end(p)) {
+        // 后缀绑定力最高(25)，贪婪消费
+        if (check_symbol(p, "(") || check_symbol(p, ".") || check_symbol(p, "[")) {
+            if (POSTFIX_LEFT_PREC < min_prec) break;
+            left = parse_postfix(p, left);
+            if (left->kind == AST_ERROR) return left;
+            continue;
+        }
+
+        // 中缀运算符查表
         const token_t *op = cur_token(p);
         int lp, rp;
         if (!infix_binding(op, &lp, &rp)) break;  // 不是中缀运算符
         if (lp < min_prec) break;                   // 绑定力不够
 
         advance(p);  // 消费运算符
-        ast_node_t *rhs = parse_expr_prec(p, rp);  // 递归右侧
+        skip_trivia(p);
 
-        ast_node_t *bin = ast_binary_new(p->arena, tb, p->pos);
-        ((ast_binary_t *)bin)->op  = op_symbol_as_int(op);
+        // as 特殊处理：右侧是类型名，不是表达式
+        if (lp == 21) {
+            if (!check_kind(p, TOKEN_TYPE_KEYWORD)) {
+                parse_error(p, "expected type name after 'as'");
+                return ast_error_new(p->arena, ...);
+            }
+            strslice_t target_type = token_strslice(cur_token(p));
+            advance(p);
+            ast_node_t *node = ast_cast_new(p->arena, ...);
+            ((ast_cast_t *)node)->expr        = left;
+            ((ast_cast_t *)node)->target_type = target_type;
+            left = node;
+            continue;
+        }
+
+        // 递归解析右侧
+        ast_node_t *rhs = parse_expr_prec(p, rp);
+
+        ast_node_t *bin = ast_binary_new(p->arena, ...);
+        ((ast_binary_t *)bin)->op  = op;   // 直接存储 token 指针
         ((ast_binary_t *)bin)->lhs = left;
         ((ast_binary_t *)bin)->rhs = rhs;
         left = bin;
@@ -308,6 +335,9 @@ ast_node_t *parse_expr_prec(parser_t *p, int min_prec) {
 ```
 
 `as` 运算符特殊处理：右侧不是表达式而是类型文本，在 Pratt 循环中单独分支。
+
+`ast_binary_t.op` 直接存储 `const token_t *`（零拷贝引用 token pool），
+后续阶段通过 `token_strslice(op)` 或 `token_get_kind(op)` 获取运算符文本和类型。
 
 ## 5. AST_ERROR 节点构造
 

@@ -27,6 +27,7 @@ extern "C" {
 #include "parser/ast_char_lit.h"
 #include "parser/ast_ident.h"
 #include "parser/ast_unary.h"
+#include "parser/ast_binary.h"
 #include "parser/ast_error.h"
 }
 
@@ -1007,6 +1008,364 @@ TEST_F(ParseExprTest, ParseUnary_MinusIntLit) {
     EXPECT_EQ(unary->op, '-');
     ASSERT_NE(unary->operand, nullptr);
     EXPECT_EQ(unary->operand->kind, AST_INT_LIT);
+
+    cleanup_parser(p);
+}
+
+/* ================================================================ */
+/* 位运算 / 逻辑运算 / 移位 运算符测试                                */
+/* ================================================================ */
+
+/**
+ * 辅助：断言 binary 节点的 op token 文本与 expected 匹配
+ */
+static void expect_op_text(const token_t *op, const char *expected) {
+    ASSERT_NE(op, nullptr);
+    strslice_t s = token_strslice(op);
+    EXPECT_EQ(s.len, strlen(expected));
+    EXPECT_EQ(memcmp(s.ptr, expected, s.len), 0);
+}
+
+/**
+ * Scenario: a || b — 逻辑或（绑定力 1/2）
+ * Expected: AST_BINARY with op="||", lhs=ident("a"), rhs=ident("b")
+ */
+TEST_F(ParseExprTest, Binary_LogicalOr) {
+    parser_t *p = make_parser("a || b");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_expr(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_BINARY);
+
+    auto *bin = (ast_binary_t *)node;
+    expect_op_text(bin->op, "||");
+    ASSERT_NE(bin->lhs, nullptr);
+    EXPECT_EQ(bin->lhs->kind, AST_IDENT);
+    ASSERT_NE(bin->rhs, nullptr);
+    EXPECT_EQ(bin->rhs->kind, AST_IDENT);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: a && b — 逻辑与（绑定力 3/4）
+ * Expected: AST_BINARY with op="&&"
+ */
+TEST_F(ParseExprTest, Binary_LogicalAnd) {
+    parser_t *p = make_parser("a && b");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_expr(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_BINARY);
+
+    auto *bin = (ast_binary_t *)node;
+    expect_op_text(bin->op, "&&");
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: a | b — 位或（绑定力 5/6）
+ * Expected: AST_BINARY with op="|"
+ */
+TEST_F(ParseExprTest, Binary_BitwiseOr) {
+    parser_t *p = make_parser("a | b");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_expr(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_BINARY);
+
+    auto *bin = (ast_binary_t *)node;
+    expect_op_text(bin->op, "|");
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: a ^ b — 位异或（绑定力 7/8）
+ * Expected: AST_BINARY with op="^"
+ */
+TEST_F(ParseExprTest, Binary_BitwiseXor) {
+    parser_t *p = make_parser("a ^ b");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_expr(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_BINARY);
+
+    auto *bin = (ast_binary_t *)node;
+    expect_op_text(bin->op, "^");
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: a & b — 位与（绑定力 9/10）
+ * Expected: AST_BINARY with op="&"
+ */
+TEST_F(ParseExprTest, Binary_BitwiseAnd) {
+    parser_t *p = make_parser("a & b");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_expr(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_BINARY);
+
+    auto *bin = (ast_binary_t *)node;
+    expect_op_text(bin->op, "&");
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: a == b — 等于（绑定力 11/12）
+ * Expected: AST_BINARY with op="=="
+ */
+TEST_F(ParseExprTest, Binary_Equal) {
+    parser_t *p = make_parser("a == b");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_expr(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_BINARY);
+
+    auto *bin = (ast_binary_t *)node;
+    expect_op_text(bin->op, "==");
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: a != b — 不等于（绑定力 11/12）
+ * Expected: AST_BINARY with op="!="
+ */
+TEST_F(ParseExprTest, Binary_NotEqual) {
+    parser_t *p = make_parser("a != b");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_expr(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_BINARY);
+
+    auto *bin = (ast_binary_t *)node;
+    expect_op_text(bin->op, "!=");
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: a << b — 左移（绑定力 15/16）
+ * Expected: AST_BINARY with op="<<"
+ */
+TEST_F(ParseExprTest, Binary_ShiftLeft) {
+    parser_t *p = make_parser("a << b");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_expr(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_BINARY);
+
+    auto *bin = (ast_binary_t *)node;
+    expect_op_text(bin->op, "<<");
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: a >> b — 右移（绑定力 15/16）
+ * Expected: AST_BINARY with op=">>"
+ */
+TEST_F(ParseExprTest, Binary_ShiftRight) {
+    parser_t *p = make_parser("a >> b");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_expr(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_BINARY);
+
+    auto *bin = (ast_binary_t *)node;
+    expect_op_text(bin->op, ">>");
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: 绑定力验证 — a || b && c 应解析为 a || (b && c)
+ * 因为 || 绑定力(1/2) < && 绑定力(3/4)
+ * Expected: 顶层是 ||，右侧是 &&
+ */
+TEST_F(ParseExprTest, Binary_Precedence_OrAnd) {
+    parser_t *p = make_parser("a || b && c");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_expr(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_BINARY);
+
+    auto *bin = (ast_binary_t *)node;
+    expect_op_text(bin->op, "||");
+    ASSERT_NE(bin->lhs, nullptr);
+    EXPECT_EQ(bin->lhs->kind, AST_IDENT);  /* a */
+    ASSERT_NE(bin->rhs, nullptr);
+    EXPECT_EQ(bin->rhs->kind, AST_BINARY); /* (b && c) */
+
+    auto *rhs = (ast_binary_t *)bin->rhs;
+    expect_op_text(rhs->op, "&&");
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: 绑定力验证 — a | b ^ c 应解析为 a | (b ^ c)
+ * 因为 | 绑定力(5/6) < ^ 绑定力(7/8)
+ * Expected: 顶层是 |，右侧是 ^
+ */
+TEST_F(ParseExprTest, Binary_Precedence_BitOrXor) {
+    parser_t *p = make_parser("a | b ^ c");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_expr(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_BINARY);
+
+    auto *bin = (ast_binary_t *)node;
+    expect_op_text(bin->op, "|");
+    ASSERT_NE(bin->rhs, nullptr);
+    EXPECT_EQ(bin->rhs->kind, AST_BINARY);
+
+    auto *rhs = (ast_binary_t *)bin->rhs;
+    expect_op_text(rhs->op, "^");
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: 绑定力验证 — a & b << c 应解析为 a & (b << c)
+ * 因为 & 绑定力(9/10) < << 绑定力(15/16)
+ * Expected: 顶层是 &，右侧是 <<
+ */
+TEST_F(ParseExprTest, Binary_Precedence_BitAndShift) {
+    parser_t *p = make_parser("a & b << c");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_expr(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_BINARY);
+
+    auto *bin = (ast_binary_t *)node;
+    expect_op_text(bin->op, "&");
+    ASSERT_NE(bin->rhs, nullptr);
+    EXPECT_EQ(bin->rhs->kind, AST_BINARY);
+
+    auto *rhs = (ast_binary_t *)bin->rhs;
+    expect_op_text(rhs->op, "<<");
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: 绑定力验证 — a + b * c 应解析为 a + (b * c)
+ * 因为 + 绑定力(17/18) < * 绑定力(19/20)
+ * Expected: 顶层是 +，右侧是 *
+ */
+TEST_F(ParseExprTest, Binary_Precedence_AddMul) {
+    parser_t *p = make_parser("a + b * c");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_expr(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_BINARY);
+
+    auto *bin = (ast_binary_t *)node;
+    expect_op_text(bin->op, "+");
+    ASSERT_NE(bin->rhs, nullptr);
+    EXPECT_EQ(bin->rhs->kind, AST_BINARY);
+
+    auto *rhs = (ast_binary_t *)bin->rhs;
+    expect_op_text(rhs->op, "*");
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: 左结合验证 — a - b - c 应解析为 (a - b) - c
+ * Expected: 顶层是 -，lhs 是 (a - b)
+ */
+TEST_F(ParseExprTest, Binary_LeftAssociativity_Sub) {
+    parser_t *p = make_parser("a - b - c");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_expr(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_BINARY);
+
+    auto *bin = (ast_binary_t *)node;
+    expect_op_text(bin->op, "-");
+    ASSERT_NE(bin->lhs, nullptr);
+    EXPECT_EQ(bin->lhs->kind, AST_BINARY); /* (a - b) */
+
+    auto *lhs = (ast_binary_t *)bin->lhs;
+    expect_op_text(lhs->op, "-");
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: 混合运算 — a + b == c && d | e
+ * 绑定力：+(17) < ==(11? no, ==11 > +17? no)
+ * 等一下，==(11) < +(17)，所以 + 先绑定
+ * 完整解析：((a + b) == c) && (d | e)
+ * Expected: 顶层 &&，lhs 是 ==，rhs 是 |
+ */
+TEST_F(ParseExprTest, Binary_MixedPrecedence) {
+    parser_t *p = make_parser("a + b == c && d | e");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_expr(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_BINARY);
+
+    auto *bin = (ast_binary_t *)node;
+    expect_op_text(bin->op, "&&");
+    ASSERT_NE(bin->lhs, nullptr);
+    EXPECT_EQ(bin->lhs->kind, AST_BINARY); /* (a + b) == c */
+    ASSERT_NE(bin->rhs, nullptr);
+    EXPECT_EQ(bin->rhs->kind, AST_BINARY); /* d | e */
+
+    /* lhs: == */
+    auto *lhs = (ast_binary_t *)bin->lhs;
+    expect_op_text(lhs->op, "==");
+
+    /* rhs: | */
+    auto *rhs = (ast_binary_t *)bin->rhs;
+    expect_op_text(rhs->op, "|");
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: 前缀一元与位运算 — !a & b 应解析为 (!a) & b
+ * 前缀绑定力 23 > 位与绑定力 9/10
+ * Expected: 顶层 &，lhs 是 AST_UNARY
+ */
+TEST_F(ParseExprTest, Binary_PrefixWithBitAnd) {
+    parser_t *p = make_parser("!a & b");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_expr(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_BINARY);
+
+    auto *bin = (ast_binary_t *)node;
+    expect_op_text(bin->op, "&");
+    ASSERT_NE(bin->lhs, nullptr);
+    EXPECT_EQ(bin->lhs->kind, AST_UNARY);
+
+    auto *unary = (ast_unary_t *)bin->lhs;
+    EXPECT_EQ(unary->op, '!');
 
     cleanup_parser(p);
 }

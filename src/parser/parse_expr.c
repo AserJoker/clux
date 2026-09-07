@@ -16,60 +16,58 @@
 
 /* ---- Pratt parser 绑定力表 ---- */
 
-/** 左绑定力（中缀运算符左侧的绑定力） */
-static int left_bp(int op) {
-    switch (op) {
-        /* 赋值 */   case '=':       return 2;
-        /* 逻辑或 */ case '|':       return 4;
-        /* 逻辑与 */ case '&':       return 6;
-        /* 相等 */   case '=' + 256: return 10;  /* == */
-                    case '!' + 256: return 10;  /* != */
-        /* 比较 */   case '<':       return 12;
-                    case '>':       return 12;
-                    case '<' + 256: return 12;  /* <= */
-                    case '>' + 256: return 12;  /* >= */
-        /* 范围 */   case '.' + 256: return 14;  /* .. */
-        /* 加减 */   case '+':       return 16;
-                    case '-':       return 16;
-        /* 乘除模 */ case '*':       return 18;
-                    case '/':       return 18;
-                    case '%':       return 18;
-        /* 幂 */     case '^':       return 20;
-        /* as */     case 'a' + 256: return 22;
-        default:     return 0;
-    }
-}
-
-/** 右绑定力（赋值右结合 → lbp+1；其余左结合 → lbp） */
-static int right_bp(int op) {
-    if (op == '=') return left_bp(op) + 1;
-    return left_bp(op);
-}
-
 /**
- * 识别当前 token 的中缀运算符。
- * 返回 0 表示不是中缀运算符。
- * 使用 +256 编码区分复合运算符。
+ * 查询中缀运算符的左右绑定力。
+ * 遵循 M1 文档 4.1 节定义。
+ *
+ * 左结合运算符：right_prec = left_prec + 1
+ * 返回 false 表示当前 token 不是中缀运算符。
  */
-static int infix_op(parser_t *p) {
-    if (check_symbol(p, "==")) return '=' + 256;
-    if (check_symbol(p, "!=")) return '!' + 256;
-    if (check_symbol(p, "<=")) return '<' + 256;
-    if (check_symbol(p, ">=")) return '>' + 256;
-    if (check_symbol(p, "..")) return '.' + 256;
-    if (check_keyword(p, "as")) return 'a' + 256;
-    if (check_symbol(p, "="))  return '=';
-    if (check_symbol(p, "+"))  return '+';
-    if (check_symbol(p, "-"))  return '-';
-    if (check_symbol(p, "*"))  return '*';
-    if (check_symbol(p, "/"))  return '/';
-    if (check_symbol(p, "%"))  return '%';
-    if (check_symbol(p, "^"))  return '^';
-    if (check_symbol(p, "<"))  return '<';
-    if (check_symbol(p, ">"))  return '>';
-    if (check_symbol(p, "&"))  return '&';
-    if (check_symbol(p, "|"))  return '|';
-    return 0;
+static bool infix_binding(const token_t *tok, int *lp, int *rp) {
+    if (token_get_kind(tok) != TOKEN_TYPE_SYMBOL &&
+        token_get_kind(tok) != TOKEN_TYPE_KEYWORD) {
+        return false;
+    }
+
+    strslice_t s = token_strslice(tok);
+
+    /* 关键字运算符 */
+    if (s.len == 2 && s.ptr[0] == 'a' && s.ptr[1] == 's') {
+        *lp = 21; *rp = 22;
+        return true;
+    }
+
+    /* 双字符符号运算符 */
+    if (s.len == 2) {
+        if (s.ptr[0] == '|' && s.ptr[1] == '|') { *lp = 1;  *rp = 2;  return true; }  /* || */
+        if (s.ptr[0] == '&' && s.ptr[1] == '&') { *lp = 3;  *rp = 4;  return true; }  /* && */
+        if (s.ptr[0] == '=' && s.ptr[1] == '=') { *lp = 11; *rp = 12; return true; }  /* == */
+        if (s.ptr[0] == '!' && s.ptr[1] == '=') { *lp = 11; *rp = 12; return true; }  /* != */
+        if (s.ptr[0] == '<' && s.ptr[1] == '=') { *lp = 13; *rp = 14; return true; }  /* <= */
+        if (s.ptr[0] == '>' && s.ptr[1] == '=') { *lp = 13; *rp = 14; return true; }  /* >= */
+        if (s.ptr[0] == '<' && s.ptr[1] == '<') { *lp = 15; *rp = 16; return true; }  /* << */
+        if (s.ptr[0] == '>' && s.ptr[1] == '>') { *lp = 15; *rp = 16; return true; }  /* >> */
+        return false;
+    }
+
+    /* 单字符符号运算符 */
+    if (s.len == 1) {
+        switch (s.ptr[0]) {
+        case '|': *lp = 5;  *rp = 6;  return true;   /* 位或 */
+        case '^': *lp = 7;  *rp = 8;  return true;   /* 位异或 */
+        case '&': *lp = 9;  *rp = 10; return true;   /* 位与 */
+        case '<': *lp = 13; *rp = 14; return true;   /* 小于 */
+        case '>': *lp = 13; *rp = 14; return true;   /* 大于 */
+        case '+': *lp = 17; *rp = 18; return true;   /* 加 */
+        case '-': *lp = 17; *rp = 18; return true;   /* 减 */
+        case '*': *lp = 19; *rp = 20; return true;   /* 乘 */
+        case '/': *lp = 19; *rp = 20; return true;   /* 除 */
+        case '%': *lp = 19; *rp = 20; return true;   /* 模 */
+        default:  return false;
+        }
+    }
+
+    return false;
 }
 
 /* ---- parse_primary: 原子表达式入口 ---- */
@@ -93,6 +91,7 @@ ast_node_t *parse_primary(parser_t *p) {
         if (!inner) {
             return ast_error_new(p->arena, tb, p->pos);
         }
+        if (inner->kind == AST_ERROR) return inner;
         skip_trivia(p);
         if (!expect_symbol(p, ")")) {
             return ast_error_new(p->arena, tb, p->pos);
@@ -104,6 +103,9 @@ ast_node_t *parse_primary(parser_t *p) {
 }
 
 /* ---- parse_unary: 前缀一元表达式 ---- */
+
+/** 前缀运算符右绑定力 = 23（M1 文档） */
+#define PREFIX_RIGHT_PREC 23
 
 ast_node_t *parse_unary(parser_t *p) {
     uint32_t tb = p->pos;
@@ -118,7 +120,8 @@ ast_node_t *parse_unary(parser_t *p) {
     advance(p);
     skip_trivia(p);
 
-    ast_node_t *operand = parse_unary(p);
+    /* 递归：前缀绑定力 23，右侧以相同绑定力递归 */
+    ast_node_t *operand = parse_expr_prec(p, PREFIX_RIGHT_PREC);
     if (!operand || operand->kind == AST_ERROR) {
         if (!operand) {
             parse_error(p, "expected expression after unary operator");
@@ -133,7 +136,10 @@ ast_node_t *parse_unary(parser_t *p) {
     return node;
 }
 
-/* ---- parse_postfix: 后缀表达式（贪婪循环） ---- */
+/* ---- parse_postfix: 后缀表达式（绑定力 25，贪婪循环） ---- */
+
+/** 后缀绑定力 = 25（M1 文档，函数调用最高） */
+#define POSTFIX_LEFT_PREC 25
 
 static ast_node_t *parse_postfix(parser_t *p, ast_node_t *lhs) {
     for (;;) {
@@ -189,7 +195,6 @@ static ast_node_t *parse_postfix(parser_t *p, ast_node_t *lhs) {
 
         /* 成员访问：.field（注意排除 ".." 范围运算符） */
         if (check_symbol(p, ".")) {
-            /* 判断是否是 ".."：下一个 token 也可能是 "." 组成 ".." */
             /* lexer 使用 maximal munch，所以 ".." 是一个 token，
                当前 token 是 "." 则不会是 ".." */
             uint32_t tb = p->pos;
@@ -263,74 +268,73 @@ static ast_node_t *parse_postfix(parser_t *p, ast_node_t *lhs) {
     return lhs;
 }
 
-/* ---- parse_expr_bp: Pratt 核心（内部，带最小绑定力） ---- */
+/* ---- parse_expr_prec: Pratt 核心 ---- */
 
-static ast_node_t *parse_expr_bp(parser_t *p, int min_bp) {
-    /* 1. 解析左侧：前缀 */
-    ast_node_t *lhs = parse_unary(p);
-    if (!lhs || lhs->kind == AST_ERROR) return lhs;
+ast_node_t *parse_expr_prec(parser_t *p, int min_prec) {
+    /* 1. 前缀：一元或原子 */
+    ast_node_t *left = parse_unary(p);
+    if (!left || left->kind == AST_ERROR) return left;
 
-    /* 2. 后缀绑定力最高，贪婪消费 */
-    lhs = parse_postfix(p, lhs);
-    if (lhs->kind == AST_ERROR) return lhs;
-
-    /* 3. 中缀循环 */
+    /* 2. 中缀/后缀循环 */
     for (;;) {
         skip_trivia(p);
-        int op = infix_op(p);
-        if (op == 0) break;
 
-        int lbp = left_bp(op);
-        if (lbp < min_bp) break;  /* 绑定力不够，让给上层 */
+        /* 2a. 后缀绑定力最高(25)，贪婪消费 */
+        if (check_symbol(p, "(") || check_symbol(p, ".") || check_symbol(p, "[")) {
+            if (POSTFIX_LEFT_PREC < min_prec) break;
+            left = parse_postfix(p, left);
+            if (left->kind == AST_ERROR) return left;
+            continue;
+        }
 
-        uint32_t tb = p->pos;
+        /* 2b. 中缀运算符查表 */
+        const token_t *op_tok = cur_token(p);
+        int lp, rp;
+        if (!infix_binding(op_tok, &lp, &rp)) break;
+        if (lp < min_prec) break;
+
+        uint32_t op_pos = p->pos;
         advance(p);
         skip_trivia(p);
 
-        if (op == 'a' + 256) {
-            /* as 类型转换：右侧是类型名 */
+        /* as 特殊处理：右侧是类型名，不是表达式 */
+        if (lp == 21) {
             if (!check_kind(p, TOKEN_TYPE_KEYWORD)) {
                 parse_error(p, "expected type name after 'as'");
-                return ast_error_new(p->arena, tb, p->pos);
+                return ast_error_new(p->arena, op_pos, p->pos);
             }
             strslice_t target_type = token_strslice(cur_token(p));
             advance(p);
 
-            ast_node_t *node = ast_cast_new(p->arena, tb, p->pos);
-            ((ast_cast_t *)node)->expr        = lhs;
+            ast_node_t *node = ast_cast_new(p->arena, op_pos, p->pos);
+            ((ast_cast_t *)node)->expr        = left;
             ((ast_cast_t *)node)->target_type = target_type;
-            lhs = node;
-
-            lhs = parse_postfix(p, lhs);
-            if (lhs->kind == AST_ERROR) return lhs;
+            left = node;
             continue;
         }
 
-        /* 递归解析右侧，传入 right_bp 作为最小绑定力 */
-        ast_node_t *rhs = parse_expr_bp(p, right_bp(op));
+        /* 递归解析右侧，传入右绑定力作为最小绑定力 */
+        ast_node_t *rhs = parse_expr_prec(p, rp);
         if (!rhs || rhs->kind == AST_ERROR) {
             if (!rhs) {
                 parse_error(p, "expected expression after operator");
-                return ast_error_new(p->arena, tb, p->pos);
+                return ast_error_new(p->arena, op_pos, p->pos);
             }
             return rhs;
         }
 
-        ast_node_t *node = ast_binary_new(p->arena, tb, p->pos);
-        ((ast_binary_t *)node)->op  = op;
-        ((ast_binary_t *)node)->lhs = lhs;
+        ast_node_t *node = ast_binary_new(p->arena, op_pos, p->pos);
+        ((ast_binary_t *)node)->op  = op_tok;
+        ((ast_binary_t *)node)->lhs = left;
         ((ast_binary_t *)node)->rhs = rhs;
-        lhs = node;
-
-        lhs = parse_postfix(p, lhs);
-        if (lhs->kind == AST_ERROR) return lhs;
+        left = node;
     }
 
-    return lhs;
+    return left;
 }
 
 /* ---- parse_expr: Pratt parser 公开入口 ---- */
 
 ast_node_t *parse_expr(parser_t *p) {
-    return parse_expr_bp(p, 0);
+    return parse_expr_prec(p, 0);
 }

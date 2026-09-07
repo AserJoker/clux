@@ -7,6 +7,15 @@ extern "C" {
 #include "core/allocator.h"
 #include <stddef.h>
 
+/* Portable alignof: C++ has alignof keyword, C11 has _Alignof (via <stdalign.h> alignof macro).
+ * Define a short macro so AST node headers can use it in both C and C++ translation units. */
+#ifdef __cplusplus
+#define ALIGNOF(type) alignof(type)
+#else
+#include <stdalign.h>
+#define ALIGNOF(type) alignof(type)
+#endif
+
 /* ---- Arena (bump-pointer region allocator) ---- */
 
 /**

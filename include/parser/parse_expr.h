@@ -14,6 +14,12 @@ extern "C" {
 ast_node_t *parse_expr(parser_t *p);
 
 /**
+ * Pratt 核心，绑定力驱动。
+ * min_prec = 0 时等价于 parse_expr。
+ */
+ast_node_t *parse_expr_prec(parser_t *p, int min_prec);
+
+/**
  * 解析原子表达式（字面量 / 标识符 / 分组）。
  * 不匹配返回 NULL，错误返回 AST_ERROR。
  */

@@ -48,7 +48,7 @@ const char *ast_kind_name(ast_kind_t kind);
 static inline ast_node_t *ast_node_new(arena_t *arena, ast_kind_t kind,
                                        uint32_t tok_begin, uint32_t tok_end) {
     ast_node_t *n = (ast_node_t *)arena_calloc(
-        arena, 1, sizeof(ast_node_t), _Alignof(max_align_t));
+        arena, 1, sizeof(ast_node_t), ALIGNOF(max_align_t));
     if (!n) return NULL;
     n->kind      = kind;
     n->tok_begin = tok_begin;

@@ -17,7 +17,7 @@ typedef struct {
 static inline ast_node_t *ast_member_new(arena_t *arena,
                                          uint32_t tok_begin, uint32_t tok_end) {
     ast_member_t *n = (ast_member_t *)arena_calloc(
-        arena, 1, sizeof(ast_member_t), _Alignof(max_align_t));
+        arena, 1, sizeof(ast_member_t), ALIGNOF(max_align_t));
     if (!n) return NULL;
     n->base.kind      = AST_MEMBER;
     n->base.tok_begin = tok_begin;
