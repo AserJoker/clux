@@ -41,9 +41,6 @@ void ast_append(ast_node_t **head, ast_node_t **last,
 /** 返回 kind 的人类可读名称。 */
 const char *ast_kind_name(ast_kind_t kind);
 
-/** 返回 kind 对应子类的 sizeof。 */
-size_t ast_kind_size(ast_kind_t kind);
-
 /**
  * 创建无额外字段的基础节点（用于 AST_BREAK / AST_CONTINUE）。
  * 从 arena 分配，零初始化。

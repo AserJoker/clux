@@ -9,7 +9,7 @@ extern "C" {
 
 typedef struct {
     ast_node_t  base;
-    strslice_t  name;        /* 函数名 */
+    ast_node_t *callee;      /* 被调表达式（可以是任意 expr，如 a.b） */
     ast_node_t *args;        /* 实参兄弟链 */
     ast_node_t *args_last;   /* O(1) 追加 */
 } ast_call_t;

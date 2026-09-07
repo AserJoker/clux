@@ -22,12 +22,14 @@ typedef enum {
     /* --- 表达式 --- */
     AST_BINARY,          /* lhs op rhs */
     AST_UNARY,           /* op expr */
-    AST_CALL,            /* name(args...) */
-    AST_INT_LIT,         /* 整数字面量（原始文本切片，含后缀） */
-    AST_FLOAT_LIT,       /* 浮点字面量（原始文本切片，含后缀） */
+    AST_CALL,            /* callee(args...) */
+    AST_MEMBER,          /* expr.field */
+    AST_INDEX,           /* expr[expr, ...]（下标 / 泛型实例化，语义阶段区分） */
+    AST_INT_LIT,         /* 整数字面量 */
+    AST_FLOAT_LIT,       /* 浮点字面量 */
     AST_BOOL_LIT,        /* true / false */
-    AST_STRING_LIT,      /* "..."（原始文本含引号，转义原样） */
-    AST_CHAR_LIT,        /* 'a'（原始文本含引号，转义原样） */
+    AST_STRING_LIT,      /* "..."（escape 展开后文本） */
+    AST_CHAR_LIT,        /* 'a'（u8 码点值） */
     AST_IDENT,           /* 标识符引用 */
     AST_CAST,            /* expr as type */
 
