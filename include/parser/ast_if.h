@@ -5,12 +5,13 @@ extern "C" {
 #endif
 
 #include "parser/ast_node.h"
+#include "parser/parser.h"
 
 typedef struct {
     ast_node_t  base;
     ast_node_t *cond;
     ast_node_t *then_body;   /* AST_BLOCK */
-    ast_node_t *else_body;   /* AST_BLOCK 或 NULL */
+    ast_node_t *else_body;   /* AST_BLOCK / AST_IF 或 NULL */
 } ast_if_t;
 
 static inline ast_node_t *ast_if_new(arena_t *arena,
@@ -23,6 +24,9 @@ static inline ast_node_t *ast_if_new(arena_t *arena,
     n->base.tok_end   = tok_end;
     return &n->base;
 }
+
+/** 解析 if 语句，支持 else-if 链。 */
+ast_node_t *parse_if(parser_t *p);
 
 #ifdef __cplusplus
 }

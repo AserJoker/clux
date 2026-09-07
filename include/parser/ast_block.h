@@ -5,6 +5,7 @@ extern "C" {
 #endif
 
 #include "parser/ast_node.h"
+#include "parser/parser.h"
 
 typedef struct {
     ast_node_t  base;
@@ -22,6 +23,9 @@ static inline ast_node_t *ast_block_new(arena_t *arena,
     n->base.tok_end   = tok_end;
     return &n->base;
 }
+
+/** 解析块语句 { stmt; stmt; ... }。不匹配返回 NULL，错误返回 AST_ERROR。 */
+ast_node_t *parse_block(parser_t *p);
 
 #ifdef __cplusplus
 }

@@ -5,6 +5,7 @@ extern "C" {
 #endif
 
 #include "parser/ast_node.h"
+#include "parser/parser.h"
 
 typedef struct {
     ast_node_t  base;
@@ -22,6 +23,9 @@ static inline ast_node_t *ast_while_new(arena_t *arena,
     n->base.tok_end   = tok_end;
     return &n->base;
 }
+
+/** 解析 while cond { body }。 */
+ast_node_t *parse_while(parser_t *p);
 
 #ifdef __cplusplus
 }

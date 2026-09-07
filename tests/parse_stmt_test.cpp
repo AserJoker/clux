@@ -24,6 +24,12 @@ extern "C" {
 #include "parser/ast_assign.h"
 #include "parser/ast_expr_stmt.h"
 #include "parser/ast_discard.h"
+#include "parser/ast_var_def.h"
+#include "parser/ast_block.h"
+#include "parser/ast_if.h"
+#include "parser/ast_while.h"
+#include "parser/ast_for.h"
+#include "parser/ast_return.h"
 #include "parser/ast_int_lit.h"
 #include "parser/ast_call.h"
 #include "parser/ast_binary.h"
@@ -467,6 +473,583 @@ TEST_F(ParseStmtTest, Underscore_CompoundAssignIsNotDiscard) {
     EXPECT_EQ(assign->name.len, 1u);
     EXPECT_EQ(assign->name.ptr[0], '_');
     expect_token_text(assign->op, "+=");
+
+    cleanup_parser(p);
+}
+
+/* ================================================================ */
+/* Var Definition: var name[:type] = init;  (init required)          */
+/* ================================================================ */
+
+/**
+ * Scenario: var without initializer: var x;
+ * Expected: AST_ERROR (initializer is required)
+ */
+TEST_F(ParseStmtTest, VarDef_MissingInitializer) {
+    parser_t *p = make_parser("var x;");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_var_def(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_ERROR);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: var with type but no initializer: var count:i32;
+ * Expected: AST_ERROR (initializer is required)
+ */
+TEST_F(ParseStmtTest, VarDef_WithTypeNoInit) {
+    parser_t *p = make_parser("var count:i32;");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_var_def(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_ERROR);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: var with init: var x = 42;
+ * Expected: AST_VAR_DEF, name="x", no type, init is AST_INT_LIT(42)
+ */
+TEST_F(ParseStmtTest, VarDef_WithInit) {
+    parser_t *p = make_parser("var x = 42;");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_var_def(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_VAR_DEF);
+
+    auto *vd = (ast_var_def_t *)node;
+    EXPECT_TRUE(strslice_is_empty(vd->type_name));
+    ASSERT_NE(vd->init, nullptr);
+    EXPECT_EQ(vd->init->kind, AST_INT_LIT);
+    EXPECT_EQ(((ast_int_lit_t *)vd->init)->value, 42ULL);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: var with type and init: var pi:f64 = 3.14;
+ * Expected: AST_VAR_DEF, type_name="f64", init is AST_FLOAT_LIT
+ */
+TEST_F(ParseStmtTest, VarDef_WithTypeAndInit) {
+    parser_t *p = make_parser("var pi:f64 = 3.14;");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_var_def(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_VAR_DEF);
+
+    auto *vd = (ast_var_def_t *)node;
+    EXPECT_TRUE(strslice_eq(vd->type_name, strslice_from_cstr("f64")));
+    ASSERT_NE(vd->init, nullptr);
+    EXPECT_EQ(vd->init->kind, AST_FLOAT_LIT);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: var with complex init expression: var result = a + b * c;
+ * Expected: AST_VAR_DEF, init is AST_BINARY
+ */
+TEST_F(ParseStmtTest, VarDef_ComplexInit) {
+    parser_t *p = make_parser("var result = a + b * c;");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_var_def(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_VAR_DEF);
+
+    auto *vd = (ast_var_def_t *)node;
+    ASSERT_NE(vd->init, nullptr);
+    EXPECT_EQ(vd->init->kind, AST_BINARY);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: Missing variable name: var ;
+ * Expected: AST_ERROR
+ */
+TEST_F(ParseStmtTest, VarDef_MissingName) {
+    parser_t *p = make_parser("var ;");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_var_def(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_ERROR);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: Missing semicolon: var x = 1
+ * Expected: AST_ERROR
+ */
+TEST_F(ParseStmtTest, VarDef_MissingSemicolon) {
+    parser_t *p = make_parser("var x = 1");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_var_def(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_ERROR);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: Type annotation without type name: var x:;
+ * Expected: AST_ERROR
+ */
+TEST_F(ParseStmtTest, VarDef_MissingTypeName) {
+    parser_t *p = make_parser("var x:;");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_var_def(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_ERROR);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: Init without expression: var x = ;
+ * Expected: AST_ERROR
+ */
+TEST_F(ParseStmtTest, VarDef_MissingInitExpr) {
+    parser_t *p = make_parser("var x = ;");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_var_def(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_ERROR);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: Non-var input returns NULL (mismatch)
+ */
+TEST_F(ParseStmtTest, VarDef_Mismatch) {
+    parser_t *p = make_parser("x = 1;");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_var_def(p);
+    EXPECT_EQ(node, nullptr);
+
+    cleanup_parser(p);
+}
+
+/* ================================================================ */
+/* Block: { stmt; stmt; ... }                                        */
+/* ================================================================ */
+
+/**
+ * Scenario: Empty block
+ * Expected: AST_BLOCK with no stmts
+ */
+TEST_F(ParseStmtTest, Block_Empty) {
+    parser_t *p = make_parser("{}");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_block(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_BLOCK);
+
+    auto *blk = (ast_block_t *)node;
+    EXPECT_EQ(blk->stmts, nullptr);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: Block with one statement
+ * Expected: AST_BLOCK with one stmt
+ */
+TEST_F(ParseStmtTest, Block_OneStmt) {
+    parser_t *p = make_parser("{ var x = 1; }");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_block(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_BLOCK);
+
+    auto *blk = (ast_block_t *)node;
+    ASSERT_NE(blk->stmts, nullptr);
+    EXPECT_EQ(blk->stmts->kind, AST_VAR_DEF);
+    EXPECT_EQ(blk->stmts->next, nullptr);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: Block with multiple statements
+ * Expected: AST_BLOCK with stmts linked via next
+ */
+TEST_F(ParseStmtTest, Block_MultipleStmts) {
+    parser_t *p = make_parser("{ var x = 1; x + 2; }");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_block(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_BLOCK);
+
+    auto *blk = (ast_block_t *)node;
+    ASSERT_NE(blk->stmts, nullptr);
+    EXPECT_EQ(blk->stmts->kind, AST_VAR_DEF);
+    ASSERT_NE(blk->stmts->next, nullptr);
+    EXPECT_EQ(blk->stmts->next->kind, AST_EXPR_STMT);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: Missing closing brace
+ * Expected: AST_ERROR
+ */
+TEST_F(ParseStmtTest, Block_MissingCloseBrace) {
+    parser_t *p = make_parser("{ var x = 1; ");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_block(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_ERROR);
+
+    cleanup_parser(p);
+}
+
+/* ================================================================ */
+/* Return: return [expr];                                            */
+/* ================================================================ */
+
+/**
+ * Scenario: return with expression
+ * Expected: AST_RETURN with value
+ */
+TEST_F(ParseStmtTest, Return_WithExpr) {
+    parser_t *p = make_parser("return 42;");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_return(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_RETURN);
+
+    auto *ret = (ast_return_t *)node;
+    ASSERT_NE(ret->value, nullptr);
+    EXPECT_EQ(ret->value->kind, AST_INT_LIT);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: return without expression
+ * Expected: AST_RETURN with value = NULL
+ */
+TEST_F(ParseStmtTest, Return_Void) {
+    parser_t *p = make_parser("return;");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_return(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_RETURN);
+
+    auto *ret = (ast_return_t *)node;
+    EXPECT_EQ(ret->value, nullptr);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: return missing semicolon
+ * Expected: AST_ERROR
+ */
+TEST_F(ParseStmtTest, Return_MissingSemicolon) {
+    parser_t *p = make_parser("return 42");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_return(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_ERROR);
+
+    cleanup_parser(p);
+}
+
+/* ================================================================ */
+/* Break / Continue                                                  */
+/* ================================================================ */
+
+TEST_F(ParseStmtTest, Break) {
+    parser_t *p = make_parser("break;");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_break(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_BREAK);
+
+    cleanup_parser(p);
+}
+
+TEST_F(ParseStmtTest, Continue) {
+    parser_t *p = make_parser("continue;");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_continue(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_CONTINUE);
+
+    cleanup_parser(p);
+}
+
+TEST_F(ParseStmtTest, Break_MissingSemicolon) {
+    parser_t *p = make_parser("break");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_break(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_ERROR);
+
+    cleanup_parser(p);
+}
+
+/* ================================================================ */
+/* If: if cond { then } [else { else }]                              */
+/* ================================================================ */
+
+/**
+ * Scenario: Simple if with block
+ * Expected: AST_IF with cond and then_body, no else_body
+ */
+TEST_F(ParseStmtTest, If_Simple) {
+    parser_t *p = make_parser("if (x) { var y = 1; }");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_if(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_IF);
+
+    auto *if_node = (ast_if_t *)node;
+    ASSERT_NE(if_node->cond, nullptr);
+    EXPECT_EQ(if_node->cond->kind, AST_IDENT);
+    ASSERT_NE(if_node->then_body, nullptr);
+    EXPECT_EQ(if_node->then_body->kind, AST_BLOCK);
+    EXPECT_EQ(if_node->else_body, nullptr);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: if-else
+ * Expected: AST_IF with else_body
+ */
+TEST_F(ParseStmtTest, If_WithElse) {
+    parser_t *p = make_parser("if (x) { var y = 1; } else { var z = 2; }");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_if(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_IF);
+
+    auto *if_node = (ast_if_t *)node;
+    ASSERT_NE(if_node->else_body, nullptr);
+    EXPECT_EQ(if_node->else_body->kind, AST_BLOCK);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: else-if chain
+ * Expected: else_body is another AST_IF
+ */
+TEST_F(ParseStmtTest, If_ElseIfChain) {
+    parser_t *p = make_parser("if (a) { var x = 1; } else if (b) { var y = 2; } else { var z = 3; }");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_if(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_IF);
+
+    auto *if_node = (ast_if_t *)node;
+    ASSERT_NE(if_node->else_body, nullptr);
+    EXPECT_EQ(if_node->else_body->kind, AST_IF);
+
+    auto *else_if = (ast_if_t *)if_node->else_body;
+    ASSERT_NE(else_if->else_body, nullptr);
+    EXPECT_EQ(else_if->else_body->kind, AST_BLOCK);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: if missing block
+ * Expected: AST_ERROR
+ */
+TEST_F(ParseStmtTest, If_MissingBlock) {
+    parser_t *p = make_parser("if (x) var y = 1;");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_if(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_ERROR);
+
+    cleanup_parser(p);
+}
+
+/* ================================================================ */
+/* While: while cond { body }                                        */
+/* ================================================================ */
+
+TEST_F(ParseStmtTest, While_Simple) {
+    parser_t *p = make_parser("while (x) { var y = 1; }");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_while(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_WHILE);
+
+    auto *wh = (ast_while_t *)node;
+    ASSERT_NE(wh->cond, nullptr);
+    EXPECT_EQ(wh->cond->kind, AST_IDENT);
+    ASSERT_NE(wh->body, nullptr);
+    EXPECT_EQ(wh->body->kind, AST_BLOCK);
+
+    cleanup_parser(p);
+}
+
+TEST_F(ParseStmtTest, While_MissingBlock) {
+    parser_t *p = make_parser("while (x) var y = 1;");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_while(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_ERROR);
+
+    cleanup_parser(p);
+}
+
+/* ================================================================ */
+/* For: for (init; cond; update) { body }                            */
+/* ================================================================ */
+
+TEST_F(ParseStmtTest, For_WithVarInit) {
+    parser_t *p = make_parser("for (var i:i32 = 0; i < 10; i + 1) { var x = i; }");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_for(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_FOR);
+
+    auto *fr = (ast_for_t *)node;
+    ASSERT_NE(fr->init, nullptr);
+    EXPECT_EQ(fr->init->kind, AST_VAR_DEF);
+    ASSERT_NE(fr->cond, nullptr);
+    ASSERT_NE(fr->update, nullptr);
+    ASSERT_NE(fr->body, nullptr);
+    EXPECT_EQ(fr->body->kind, AST_BLOCK);
+
+    cleanup_parser(p);
+}
+
+TEST_F(ParseStmtTest, For_EmptyInit) {
+    parser_t *p = make_parser("for (; x < 10; x + 1) { var y = 1; }");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_for(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_FOR);
+
+    auto *fr = (ast_for_t *)node;
+    EXPECT_EQ(fr->init, nullptr);
+    ASSERT_NE(fr->cond, nullptr);
+    ASSERT_NE(fr->update, nullptr);
+
+    cleanup_parser(p);
+}
+
+TEST_F(ParseStmtTest, For_MissingParens) {
+    parser_t *p = make_parser("for var i:i32 = 0; i < 10; i + 1 { }");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_for(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_ERROR);
+
+    cleanup_parser(p);
+}
+
+/* ================================================================ */
+/* parse_stmt: dispatcher                                            */
+/* ================================================================ */
+
+/**
+ * Scenario: parse_stmt dispatches to var_def
+ */
+TEST_F(ParseStmtTest, Stmt_DispatchVar) {
+    parser_t *p = make_parser("var x = 1;");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_stmt(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_VAR_DEF);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: parse_stmt dispatches to if
+ */
+TEST_F(ParseStmtTest, Stmt_DispatchIf) {
+    parser_t *p = make_parser("if (x) { }");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_stmt(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_IF);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: parse_stmt dispatches to return
+ */
+TEST_F(ParseStmtTest, Stmt_DispatchReturn) {
+    parser_t *p = make_parser("return 42;");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_stmt(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_RETURN);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: parse_stmt dispatches to break
+ */
+TEST_F(ParseStmtTest, Stmt_DispatchBreak) {
+    parser_t *p = make_parser("break;");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_stmt(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_BREAK);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: parse_stmt falls through to assign_or_expr_stmt
+ */
+TEST_F(ParseStmtTest, Stmt_FallThroughExpr) {
+    parser_t *p = make_parser("foo();");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_stmt(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_EXPR_STMT);
 
     cleanup_parser(p);
 }

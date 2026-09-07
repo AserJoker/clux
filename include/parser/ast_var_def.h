@@ -6,13 +6,14 @@ extern "C" {
 
 #include "core/strslice.h"
 #include "parser/ast_node.h"
+#include "parser/parser.h"
 #include <stdbool.h>
 
 typedef struct {
     ast_node_t  base;
     strslice_t  name;        /* 变量名 */
     strslice_t  type_name;   /* 类型标注（空切片 = 推断） */
-    ast_node_t *init;        /* 初始化表达式（NULL = undefined/TDZ） */
+    ast_node_t *init;        /* 初始化表达式（必须存在） */
     bool        is_tdz;      /* var x:i32 = undefined; */
 } ast_var_def_t;
 
@@ -26,6 +27,9 @@ static inline ast_node_t *ast_var_def_new(arena_t *arena,
     n->base.tok_end   = tok_end;
     return &n->base;
 }
+
+/** 解析变量定义 var name[:type] = init; 初始化必须存在。 */
+ast_node_t *parse_var_def(parser_t *p);
 
 #ifdef __cplusplus
 }
