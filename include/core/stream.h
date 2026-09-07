@@ -8,7 +8,6 @@ extern "C" {
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 #include "unicode/utypes.h"
 
 /* ---- Position info ---- */
@@ -129,45 +128,6 @@ const char *stream_sink_mem_data(const stream_sink_t *sink);
  * Return the number of bytes written to a memory sink.
  */
 size_t stream_sink_mem_size(const stream_sink_t *sink);
-
-/* ---- File-backed source/sink ---- */
-
-/**
- * Create a file-backed source that reads from the file at `path`.
- * Opens the file in binary read mode ("rb").
- * The source is seekable; size() returns the file size.
- * data() returns NULL (no direct access).
- * Returns a zero-initialized source on failure.
- */
-stream_source_t stream_source_file(allocator_t *allocator, const char *path);
-
-/**
- * Create a file-backed source wrapping an existing FILE*.
- * If `owns_fp` is true, fclose(fp) is called on close.
- * The FILE* must be seekable and opened in binary mode.
- * Returns a zero-initialized source on failure (NULL args).
- */
-stream_source_t
-stream_source_file_fp(allocator_t *allocator, FILE *fp, bool owns_fp);
-
-/**
- * Create a file-backed sink that writes to the file at `path`.
- * Opens the file in binary write mode ("wb"), creating or truncating.
- * data() returns NULL (no direct access).
- * reset() seeks to the beginning of the file.
- * Returns a zero-initialized sink on failure.
- */
-stream_sink_t stream_sink_file(allocator_t *allocator, const char *path);
-
-/**
- * Create a file-backed sink wrapping an existing FILE*.
- * If `owns_fp` is true, fclose(fp) is called on close.
- * data() returns NULL (no direct access).
- * reset() seeks to the beginning of the file.
- * Returns a zero-initialized sink on failure (NULL args).
- */
-stream_sink_t
-stream_sink_file_fp(allocator_t *allocator, FILE *fp, bool owns_fp);
 
 /* ================================================================ */
 /* istream_t — UTF-8 read stream                                     */

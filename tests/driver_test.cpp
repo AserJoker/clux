@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <cstdio>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -12,17 +13,21 @@ extern "C" {
 
 #include "test_common.h"
 
-/* ---- helpers ---- */
+namespace {
 
-static std::string write_temp_file(const char *content) {
-  char tmpbuf[256];
-  tmpnam(tmpbuf);
-  std::string path = tmpbuf;
-  FILE *fp = fopen(path.c_str(), "wb");
-  fwrite(content, 1, strlen(content), fp);
+std::string write_temp_file(const std::string &content) {
+  auto path = std::filesystem::temp_directory_path() / "clux_test_XXXXXX";
+  auto path_str = path.string();
+  /* mkstemps is not available on Windows; use a simple unique name. */
+  static int counter = 0;
+  path_str += std::to_string(counter++);
+  FILE *fp = fopen(path_str.c_str(), "wb");
+  fwrite(content.data(), 1, content.size(), fp);
   fclose(fp);
-  return path;
+  return path_str;
 }
+
+} // namespace
 
 /* ---- Stage ①: load source ---- */
 
@@ -37,10 +42,9 @@ TEST(Driver, LoadSource) {
   EXPECT_EQ(len, 14u);
   EXPECT_EQ(std::string(data, len), "func main() {}");
 
-  /* The buffer is allocator-managed; release it before teardown. */
   allocator_free(alloc, (void **)&data);
   EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
-  remove(path.c_str());
+  std::remove(path.c_str());
 }
 
 TEST(Driver, LoadSourceMissingFile) {
@@ -76,7 +80,7 @@ TEST(Driver, LexFileProducesTokens) {
 
   vec_free(alloc, &pool);
   EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
-  remove(path.c_str());
+  std::remove(path.c_str());
 }
 
 /* ---- Stage ①+②+③: run entry point ---- */
@@ -84,7 +88,7 @@ TEST(Driver, LexFileProducesTokens) {
 TEST(Driver, RunFileValidReturnsZero) {
   std::string path = write_temp_file("func main() { return 0; }\n");
   EXPECT_EQ(driver_run_file(path.c_str()), 0);
-  remove(path.c_str());
+  std::remove(path.c_str());
 }
 
 TEST(Driver, RunFileMissingReturnsOne) {
@@ -94,5 +98,5 @@ TEST(Driver, RunFileMissingReturnsOne) {
 TEST(Driver, RunFileLexErrorReturnsOne) {
   std::string path = write_temp_file("@ not a token\n");
   EXPECT_EQ(driver_run_file(path.c_str()), 1);
-  remove(path.c_str());
+  std::remove(path.c_str());
 }

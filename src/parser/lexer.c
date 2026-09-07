@@ -2,6 +2,7 @@
 #include "core/allocator.h"
 #include "parser/location.h"
 #include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 #include <unicode/uchar.h>
 
