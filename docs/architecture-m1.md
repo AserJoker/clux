@@ -144,65 +144,238 @@ Token 文本语义约定：
 
 **结构范式：公共头 + 子类化**（chibicc / lcc 范式）。所有节点共享公共头，具体节点通过 kind 区分、按子类大小分配；AST 整体挂在一个 arena 上，随编译单元释放，不做逐节点 free。
 
+**位置信息**：节点不嵌入 `location_t`（~56 字节），而是存储 token pool 下标（`tok_begin` / `tok_end`，共 8 字节）。诊断时通过 `vec_get(tokens, node->tok_begin)->location` 取得完整源码位置。
+
+#### 2.4.1 公共头
+
+```c
+typedef struct ast_node {
+    ast_kind_t       kind;        // 节点种类
+    uint32_t         tok_begin;   // token pool 起始下标（inclusive）
+    uint32_t         tok_end;     // token pool 结束下标（exclusive）
+    struct ast_node *parent;      // 父节点（构建时填充）
+    struct ast_node *next;        // 兄弟链（语句列表/参数/实参）
+} ast_node_t;
+```
+
+- `tok_begin` / `tok_end` 是 Parser 持有的 token pool（`vec_t*`）中的下标
+- 诊断时：`vec_get(tokens, node->tok_begin)` → `token_t*` → `token_get_location()` → `location_t`
+- `uint32_t` 足够（单文件不可能超过 4G tokens）
+
+#### 2.4.2 节点种类
+
 ```c
 typedef enum {
-    // 顶层
-    AST_PROGRAM,
-    AST_FUNC_DEF,
-    // 语句
-    AST_VAR_DEF,
-    AST_ASSIGN,
-    AST_IF,
-    AST_WHILE,
-    AST_FOR,
-    AST_RETURN,
-    AST_BREAK,
-    AST_CONTINUE,
-    AST_BLOCK,
-    AST_EXPR_STMT,
-    AST_DISCARD,        // _ = <expr> 显式丢弃返回值
-    // 表达式
-    AST_BINARY,
-    AST_UNARY,
-    AST_CALL,
-    AST_INT_LIT,
-    AST_FLOAT_LIT,
-    AST_BOOL_LIT,
-    AST_STRING_LIT,
-    AST_CHAR_LIT,
-    AST_IDENT,
-    AST_CAST,         // <expr> as <type>
+    // --- 顶层 ---
+    AST_PROGRAM,         // 函数定义列表
+    AST_FUNC_DEF,        // func name(params):type { body }
+
+    // --- 语句 ---
+    AST_VAR_DEF,         // var name[:type] [= init];
+    AST_ASSIGN,          // name = expr; / name += expr;
+    AST_IF,              // if cond { then } [else { else_body }]
+    AST_WHILE,           // while cond { body }
+    AST_FOR,             // for (init; cond; update) { body }
+    AST_RETURN,          // return [expr];
+    AST_BREAK,           // break;
+    AST_CONTINUE,        // continue;
+    AST_BLOCK,           // { stmts... }
+    AST_EXPR_STMT,       // expr;（表达式作为语句）
+    AST_DISCARD,         // _ = expr;（显式丢弃返回值）
+
+    // --- 表达式 ---
+    AST_BINARY,          // lhs op rhs
+    AST_UNARY,           // op expr
+    AST_CALL,            // name(args...)
+    AST_INT_LIT,         // 整数字面量（原始文本切片，含后缀）
+    AST_FLOAT_LIT,       // 浮点字面量（原始文本切片，含后缀）
+    AST_BOOL_LIT,        // true / false
+    AST_STRING_LIT,      // "..."（原始文本含引号，转义原样）
+    AST_CHAR_LIT,        // 'a'（原始文本含引号，转义原样）
+    AST_IDENT,           // 标识符引用
+    AST_CAST,            // expr as type
+
+    AST_ERROR,           // 解析错误恢复节点（记录错误位置，占位）
+
+    AST_KIND_COUNT,      // 哨兵值，用于数组索引
 } ast_kind_t;
-
-/* 公共头（所有节点首字段） */
-typedef struct ast_node {
-    ast_kind_t       kind;
-    location_t       loc;
-    struct ast_node *parent;         // 父节点（构建 AST 时填充）
-    struct ast_node *next;           // 兄弟链表：语句列表 / 参数 / 实参
-    struct ast_node *last;           // 兄弟链表尾节点（用于 O(1) 追加）
-} ast_node_t;
-
-/* 子类示例：变量声明 */
-typedef struct {
-    ast_node_t  base;
-    strslice_t  name;           // 零拷贝切片（ptr + len）
-    type_t     *annot;          // 显式标注的类型；NULL 表示推断
-    ast_node_t *init;           // 初始化表达式；NULL 表示 undefined/TDZ
-    bool        is_tdz;         // 是否处于 TDZ（var x:i32 = undefined;）
-} ast_var_def_t;
 ```
 
-节点分配统一走工厂：
+#### 2.4.3 子类定义
+
+**顶层节点**：
 
 ```c
-ast_node_t *ast_new(allocator_t *a, ast_kind_t kind, location_t loc);
+typedef struct {
+    ast_node_t  base;
+    ast_node_t *funcs;       // 函数定义兄弟链首
+    ast_node_t *funcs_last;  // O(1) 追加
+} ast_program_t;
+
+typedef struct {
+    ast_node_t  base;
+    strslice_t  name;        // 函数名
+    ast_node_t *params;      // AST_VAR_DEF 兄弟链
+    ast_node_t *params_last; // O(1) 追加
+    strslice_t  return_type; // 返回类型文本（空切片 = void）
+    ast_node_t *body;        // AST_BLOCK
+} ast_func_def_t;
 ```
 
-赋值节点 (AST_ASSIGN) 说明：
+**语句节点**：
 
-- 赋值表达式返回 void，因此不允许连续赋值 `a = b = 1;`
-- 只能作为语句使用，不能作为表达式嵌套（`=` 不在 Pratt 绑定力表中，parser 层即排除）
+```c
+typedef struct {
+    ast_node_t  base;
+    strslice_t  name;        // 变量名
+    strslice_t  type_name;   // 类型标注（空切片 = 推断）
+    ast_node_t *init;        // 初始化表达式（NULL = undefined/TDZ）
+    bool        is_tdz;      // var x:i32 = undefined;
+} ast_var_def_t;
+
+typedef struct {
+    ast_node_t  base;
+    strslice_t  name;        // 赋值目标标识符
+    int         op;          // '=' / '+=' / '-=' / '*=' / '/=' / '%='
+    ast_node_t *value;       // 右值
+} ast_assign_t;
+
+typedef struct {
+    ast_node_t  base;
+    ast_node_t *cond;
+    ast_node_t *then_body;   // AST_BLOCK
+    ast_node_t *else_body;   // AST_BLOCK 或 NULL
+} ast_if_t;
+
+typedef struct {
+    ast_node_t  base;
+    ast_node_t *cond;
+    ast_node_t *body;        // AST_BLOCK
+} ast_while_t;
+
+typedef struct {
+    ast_node_t  base;
+    ast_node_t *init;        // AST_VAR_DEF / AST_ASSIGN / NULL
+    ast_node_t *cond;        // 表达式 / NULL
+    ast_node_t *update;      // AST_ASSIGN / NULL
+    ast_node_t *body;        // AST_BLOCK
+} ast_for_t;
+
+typedef struct {
+    ast_node_t  base;
+    ast_node_t *value;       // NULL = return;
+} ast_return_t;
+
+// AST_BREAK / AST_CONTINUE — 无额外字段
+
+typedef struct {
+    ast_node_t  base;
+    ast_node_t *stmts;       // 语句兄弟链首
+    ast_node_t *stmts_last;  // O(1) 追加
+} ast_block_t;
+
+typedef struct {
+    ast_node_t  base;
+    ast_node_t *expr;
+} ast_expr_stmt_t;
+
+typedef struct {
+    ast_node_t  base;
+    ast_node_t *expr;        // 被丢弃的表达式
+} ast_discard_t;
+```
+
+**表达式节点**：
+
+```c
+typedef struct {
+    ast_node_t  base;
+    int         op;          // 运算符（对应 token symbol 文本）
+    ast_node_t *lhs;
+    ast_node_t *rhs;
+} ast_binary_t;
+
+typedef struct {
+    ast_node_t  base;
+    int         op;          // '!' / '~' / '-'
+    ast_node_t *operand;
+} ast_unary_t;
+
+typedef struct {
+    ast_node_t  base;
+    strslice_t  name;        // 函数名
+    ast_node_t *args;        // 实参兄弟链
+    ast_node_t *args_last;   // O(1) 追加
+} ast_call_t;
+
+typedef struct {
+    ast_node_t  base;
+    strslice_t  text;        // 原始切片（含后缀，如 "42u64"）
+} ast_int_lit_t;
+
+typedef struct {
+    ast_node_t  base;
+    strslice_t  text;        // 原始切片（含后缀，如 "3.14f32"）
+} ast_float_lit_t;
+
+typedef struct {
+    ast_node_t  base;
+    bool        value;
+} ast_bool_lit_t;
+
+typedef struct {
+    ast_node_t  base;
+    strslice_t  text;        // 含引号的原始切片
+} ast_string_lit_t;
+
+typedef struct {
+    ast_node_t  base;
+    strslice_t  text;        // 含引号的原始切片
+} ast_char_lit_t;
+
+typedef struct {
+    ast_node_t  base;
+    strslice_t  name;        // 标识符文本
+} ast_ident_t;
+
+typedef struct {
+    ast_node_t  base;
+    ast_node_t *expr;
+    strslice_t  target_type; // 目标类型文本
+} ast_cast_t;
+
+typedef struct {
+    ast_node_t  base;
+    strslice_t  message;     // 错误描述信息
+    ast_node_t *node;        // 发生错误的子节点（可为 NULL）
+} ast_error_t;
+```
+
+#### 2.4.4 工厂与辅助
+
+```c
+// 根据 kind 分配正确大小的子类，填充 kind + tok_begin/tok_end
+ast_node_t *ast_new(arena_t *arena, ast_kind_t kind,
+                    uint32_t tok_begin, uint32_t tok_end);
+
+// 追加 node 到 *head / *last 兄弟链尾，设置 node->parent
+void ast_append(ast_node_t **head, ast_node_t **last,
+                ast_node_t *parent, ast_node_t *node);
+
+// 查询
+const char *ast_kind_name(ast_kind_t kind);
+size_t      ast_kind_size(ast_kind_t kind);
+```
+
+#### 2.4.5 设计约束
+
+1. **禁止** 在 AST 节点中嵌入 `location_t`——位置通过 token 下标间接访问
+2. **禁止** 逐节点 free——AST 挂 arena，整体释放
+3. **禁止** 在 Parser 阶段解码字面量值——保留原始 `strslice_t` 文本，解码是 Sema 的事
+4. **禁止** 在 `ast_node_t` 中放 `last` 指针——尾指针属于容器节点（block/func_def/call/program）
+5. 赋值节点 (AST_ASSIGN) 返回 void，不允许连续赋值，不能作为表达式嵌套
+6. `AST_BREAK` / `AST_CONTINUE` 无子类结构，仅需 kind + tok range
+7. `AST_ERROR` 是完整的错误报告节点，含 `message`（错误描述）和 `node`（发生错误的子节点范围），用于 panic mode 恢复时占位及后续诊断
 
 ### 2.5 类型系统 (include/sema/type.h, src/sema/type.c) —— 尚未实现（sema/ 目录为空）
 
