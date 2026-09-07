@@ -280,26 +280,8 @@ token_t *lexer_next(lexer_t *lexer) {
 
 /* ---- Internal: numeric literals ---- */
 
-static bool suffix_valid(const char *s, size_t len, bool is_float) {
-  static const char *const kIntSuffix[] = {
-      "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"};
-  static const char *const kFltSuffix[] = {"f32", "f64"};
-  size_t i;
-  if (is_float) {
-    for (i = 0; i < sizeof(kFltSuffix) / sizeof(kFltSuffix[0]); i++)
-      if (strlen(kFltSuffix[i]) == len && memcmp(s, kFltSuffix[i], len) == 0)
-        return true;
-  } else {
-    for (i = 0; i < sizeof(kIntSuffix) / sizeof(kIntSuffix[0]); i++)
-      if (strlen(kIntSuffix[i]) == len && memcmp(s, kIntSuffix[i], len) == 0)
-        return true;
-  }
-  return false;
-}
-
 static token_t *lexer_read_number(lexer_t *lexer, stream_pos_t begin) {
   int base = 10;
-  bool is_float = false;
   UChar32 cp = istream_read_cp(lexer->stream); /* leading digit */
 
   /* 0x / 0o / 0b base prefix */
@@ -329,7 +311,7 @@ static token_t *lexer_read_number(lexer_t *lexer, stream_pos_t begin) {
     if (istream_tell(lexer->stream).byte_offset == begin.byte_offset + 2)
       return lexer_fail(
           lexer, begin, "invalid numeric literal: no digits after prefix");
-    goto suffix;
+    goto done;
   }
 
   /* fractional part */
@@ -339,7 +321,6 @@ static token_t *lexer_read_number(lexer_t *lexer, stream_pos_t begin) {
     UChar32 d = istream_peek_cp(lexer->stream);
     if (d == -1 || !is_digit_in_base(d, 10))
       return lexer_fail(lexer, begin, "expected digit after decimal point");
-    is_float = true;
     for (;;) {
       d = istream_peek_cp(lexer->stream);
       if (d == -1 || !is_digit_in_base(d, 10)) break;
@@ -351,7 +332,6 @@ static token_t *lexer_read_number(lexer_t *lexer, stream_pos_t begin) {
   cp = istream_peek_cp(lexer->stream);
   if (cp == 'e' || cp == 'E') {
     istream_read_cp(lexer->stream);
-    is_float = true;
     UChar32 s = istream_peek_cp(lexer->stream);
     if (s == '+' || s == '-') istream_read_cp(lexer->stream);
     UChar32 d = istream_peek_cp(lexer->stream);
@@ -364,28 +344,7 @@ static token_t *lexer_read_number(lexer_t *lexer, stream_pos_t begin) {
     }
   }
 
-suffix:
-  /* type suffix: [a-zA-Z0-9_]* immediately after the digits */
-  {
-    size_t suf_begin = istream_tell(lexer->stream).byte_offset;
-    size_t suf_len = 0;
-    for (;;) {
-      cp = istream_peek_cp(lexer->stream);
-      if (cp == -1 || !is_ident_char(cp)) break;
-      istream_read_cp(lexer->stream);
-      suf_len++;
-    }
-    if (suf_len > 0) {
-      const char *suf = lexer->source_data + suf_begin;
-      if (!suffix_valid(suf, suf_len, is_float))
-        return lexer_fail(lexer,
-                          begin,
-                          "invalid numeric literal suffix '%.*s'",
-                          (int)suf_len,
-                          suf);
-    }
-  }
-
+done:
   stream_pos_t end = istream_tell(lexer->stream);
   return lexer_make_token(lexer, TOKEN_TYPE_NUMERIC, begin, end);
 }

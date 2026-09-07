@@ -468,12 +468,17 @@ TEST(Lexer, IntegerLiterals) {
 }
 
 TEST(Lexer, IntegerLiteralsWithSuffix) {
-  const char *cases[] = {
-      "1i8", "100i32", "42u64", "0xFFu8", "0b1010u16", "7i16", "9u32"};
+  /* 后缀是独立 token：1i8 → NUMERIC "1" + IDENTIFIER "i8" */
+  struct { const char *src; const char *num; const char *suf; } cases[] = {
+      {"1i8", "1", "i8"}, {"100i32", "100", "i32"}, {"42u64", "42", "u64"},
+      {"0xFFu8", "0xFF", "u8"}, {"0b1010u16", "0b1010", "u16"},
+      {"7i16", "7", "i16"}, {"9u32", "9", "u32"}};
   allocator_t *a = create_allocator(test_alloc, test_free);
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-    lexer_t *lx = make_lexer(a, cases[i], "num.cx");
-    token_t *t = take(a, lx, TOKEN_TYPE_NUMERIC, cases[i]);
+    lexer_t *lx = make_lexer(a, cases[i].src, "num.cx");
+    token_t *t = take(a, lx, TOKEN_TYPE_NUMERIC, cases[i].num);
+    token_free(a, &t);
+    t = take(a, lx, TOKEN_TYPE_KEYWORD, cases[i].suf);
     token_free(a, &t);
     lexer_close(&lx);
   }
@@ -481,15 +486,8 @@ TEST(Lexer, IntegerLiteralsWithSuffix) {
 }
 
 TEST(Lexer, FloatLiterals) {
-  const char *cases[] = {"3.14",
-                         "1.0e10",
-                         "1e10",
-                         "0.5",
-                         "1e-3",
-                         "2E+5",
-                         "3.14f32",
-                         "1.0e10f64",
-                         "0.0"};
+  /* 纯浮点数（无后缀） */
+  const char *cases[] = {"3.14", "1.0e10", "1e10", "0.5", "1e-3", "2E+5", "0.0"};
   allocator_t *a = create_allocator(test_alloc, test_free);
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
     lexer_t *lx = make_lexer(a, cases[i], "num.cx");
@@ -500,14 +498,29 @@ TEST(Lexer, FloatLiterals) {
   EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
 }
 
-TEST(Lexer, NumericSuffixBindsToLiteral) {
+TEST(Lexer, FloatLiteralsWithSuffix) {
+  /* 浮点数 + 后缀：3.14f32 → NUMERIC "3.14" + IDENTIFIER "f32" */
+  struct { const char *src; const char *num; const char *suf; } cases[] = {
+      {"3.14f32", "3.14", "f32"}, {"1.0e10f64", "1.0e10", "f64"}};
   allocator_t *a = create_allocator(test_alloc, test_free);
-  lexer_t *lx = make_lexer(a, "42 i8", "num.cx");
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    lexer_t *lx = make_lexer(a, cases[i].src, "num.cx");
+    token_t *t = take(a, lx, TOKEN_TYPE_NUMERIC, cases[i].num);
+    token_free(a, &t);
+    t = take(a, lx, TOKEN_TYPE_KEYWORD, cases[i].suf);
+    token_free(a, &t);
+    lexer_close(&lx);
+  }
+  EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
+}
+
+TEST(Lexer, NumericSuffixBindsToLiteral) {
+  /* 后缀紧贴数字，无空格：42i8 → NUMERIC + IDENTIFIER */
+  allocator_t *a = create_allocator(test_alloc, test_free);
+  lexer_t *lx = make_lexer(a, "42i8", "num.cx");
   token_t *t = take(a, lx, TOKEN_TYPE_NUMERIC, "42");
   token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_WHITESPACE, " ");
-  token_free(a, &t);
-  t = take(a, lx, TOKEN_TYPE_KEYWORD, "i8"); /* i8 is a keyword */
+  t = take(a, lx, TOKEN_TYPE_KEYWORD, "i8");
   token_free(a, &t);
   lexer_close(&lx);
   EXPECT_ALLOCATOR_EMPTY_DELETE(&a);
@@ -532,9 +545,6 @@ TEST(Lexer, NumericErrorsAreErrorTokens) {
     const char *src;
     const char *needle;
   } cases[] = {
-      {"1f32", "invalid numeric literal suffix"}, /* int form + float suffix */
-      {"1i8x", "invalid numeric literal suffix"}, /* unknown suffix */
-      {"1zz", "invalid numeric literal suffix"},
       {"0x", "no digits after prefix"},
       {"0o", "no digits after prefix"},
       {"0b2", "no digits after prefix"}, /* '2' is not binary */

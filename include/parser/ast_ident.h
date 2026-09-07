@@ -6,6 +6,7 @@ extern "C" {
 
 #include "core/strslice.h"
 #include "parser/ast_node.h"
+#include "parser/parser.h"
 
 typedef struct {
     ast_node_t  base;
@@ -22,6 +23,12 @@ static inline ast_node_t *ast_ident_new(arena_t *arena,
     n->base.tok_end   = tok_end;
     return &n->base;
 }
+
+/**
+ * 解析标识符。
+ * 不匹配返回 NULL，错误返回 AST_ERROR。
+ */
+ast_node_t *parse_ident(parser_t *p);
 
 #ifdef __cplusplus
 }

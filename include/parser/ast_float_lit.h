@@ -6,10 +6,12 @@ extern "C" {
 
 #include "core/strslice.h"
 #include "parser/ast_node.h"
+#include "parser/parser.h"
 
 typedef struct {
     ast_node_t  base;
-    strslice_t  text;        /* 原始切片（含后缀，如 "3.14f32"） */
+    double      value;       /* 解析后的浮点值 */
+    strslice_t  type;        /* 类型后缀（"f32"/"f64" 等），可为空 */
 } ast_float_lit_t;
 
 static inline ast_node_t *ast_float_lit_new(arena_t *arena,
@@ -22,6 +24,12 @@ static inline ast_node_t *ast_float_lit_new(arena_t *arena,
     n->base.tok_end   = tok_end;
     return &n->base;
 }
+
+/**
+ * 解析浮点字面量。
+ * 不匹配返回 NULL，错误返回 AST_ERROR。
+ */
+ast_node_t *parse_float_lit(parser_t *p);
 
 #ifdef __cplusplus
 }

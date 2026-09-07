@@ -6,10 +6,11 @@ extern "C" {
 
 #include "core/strslice.h"
 #include "parser/ast_node.h"
+#include "parser/parser.h"
 
 typedef struct {
     ast_node_t  base;
-    strslice_t  text;        /* 含引号的原始切片 */
+    strslice_t  text;        /* escape 展开后的文本，arena 分配 */
 } ast_string_lit_t;
 
 static inline ast_node_t *ast_string_lit_new(arena_t *arena,
@@ -22,6 +23,12 @@ static inline ast_node_t *ast_string_lit_new(arena_t *arena,
     n->base.tok_end   = tok_end;
     return &n->base;
 }
+
+/**
+ * 解析字符串字面量。
+ * 不匹配返回 NULL，错误返回 AST_ERROR。
+ */
+ast_node_t *parse_string_lit(parser_t *p);
 
 #ifdef __cplusplus
 }

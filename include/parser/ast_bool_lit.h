@@ -5,6 +5,7 @@ extern "C" {
 #endif
 
 #include "parser/ast_node.h"
+#include "parser/parser.h"
 #include <stdbool.h>
 
 typedef struct {
@@ -22,6 +23,12 @@ static inline ast_node_t *ast_bool_lit_new(arena_t *arena,
     n->base.tok_end   = tok_end;
     return &n->base;
 }
+
+/**
+ * 解析布尔字面量（true / false）。
+ * 不匹配返回 NULL，错误返回 AST_ERROR。
+ */
+ast_node_t *parse_bool_lit(parser_t *p);
 
 #ifdef __cplusplus
 }
