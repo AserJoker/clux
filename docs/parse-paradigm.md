@@ -8,7 +8,7 @@ typedef struct {
     arena_t     *arena;       // AST 节点分配
     vec_t       *tokens;      // token pool（由 driver 构建）
     uint32_t     pos;         // 当前游标（token pool 下标）
-    bool         has_error;   // 已发生语法/词法错误
+    bool         has_error;   // 已发生语法/词法错误（语法错误即终止，仅词法检查用）
 } parser_t;
 ```
 
@@ -25,8 +25,8 @@ parse 函数有两种截然不同的失败语义：
 |---|---|---|
 | 含义 | 当前 token 序列不属于这个构造 | 已确认是此构造，但内部语法有误 |
 | 游标 | **恢复到入口位置** `p->pos = tb` | **不恢复**，停在出错处 |
-| 返回值 | **NULL**，`has_error` 不变 | **`AST_ERROR` 节点**，`has_error = true` |
-| 上层行为 | 尝试其他分支 (failback) | 传播 AST_ERROR，语句层调 `synchronize` |
+| 返回值 | **NULL** | **`AST_ERROR` 节点** |
+| 上层行为 | 尝试其他分支 (failback) | 向上传播，`parse_program` 终止解析 |
 | 典型场景 | `parse_primary` 看到非 primary token | `parse_if` 看到 `if` 但缺少 `{` |
 
 返回值区分：调用方检查 `node == NULL` 表示不匹配，`node->kind == AST_ERROR` 表示错误。两者都不会被误判为成功。
@@ -38,8 +38,8 @@ ast_node_t *parse_xxxx(parser_t *p);
 ```
 
 - **成功**：返回 AST 节点，游标指向构造之后
-- **不匹配**：返回 NULL，`has_error` 不变，**游标恢复到入口位置**
-- **错误**：返回 NULL，`has_error = true`，游标停在出错处
+- **不匹配**：返回 NULL，**游标恢复到入口位置**
+- **错误**：返回 AST_ERROR 节点，游标停在出错处
 - **tok_begin / tok_end 约定**：`tok_begin = 进入时的 p->pos`，`tok_end = 返回时的 p->pos`
 
 ### 2.3 函数骨架
@@ -95,7 +95,7 @@ ast_node_t *make_error_node(parser_t *p, uint32_t tb, const char *msg) {
 
 上层调用方通过返回值类型判断：
 - `node == NULL` → 不匹配，尝试 failback
-- `node != NULL && node->kind == AST_ERROR` → 错误，传播或 synchronize
+- `node != NULL && node->kind == AST_ERROR` → 错误，向上传播终止解析
 - `node != NULL && node->kind != AST_ERROR` → 成功
 
 ```c
@@ -217,50 +217,32 @@ void expect_keyword(parser_t *p, const char *kw);
 void expect_symbol(parser_t *p, const char *sym);
 ```
 
-`expect_*` 失败时：报告语法错误 → 置 `has_error` → **不推进游标**（让 synchronize 决定跳到哪里）。
+`expect_*` 失败时：报告语法错误 → 构造 AST_ERROR 节点 → **立即向上传播，解析终止**。
 
-### 3.3 错误处理
+### 3.5 错误处理策略
 
-```c
-// 报告语法错误（不改变游标，不触发 panic recovery）
-void parse_error(parser_t *p, const char *fmt, ...);
+**语法阶段 fail-fast**：遇到第一个语法错误即构造 AST_ERROR 节点并向上传播，
+`parse_program` 检测到 AST_ERROR → 终止解析 → 输出诊断 → 返回错误。
 
-// panic mode 恢复：跳过 token 直到遇到同步集合中的符号
-void synchronize(parser_t *p);
+不做 panic mode 恢复（不调 synchronize、不跳 token）：
+- 与词法错误的 fail-fast 策略一致，用户心智模型统一
+- 避免 synchronize 的复杂度（同步集合随上下文变化、级联假错误）
+- M1 极简语言，一次报一个清晰错误更有价值
+
+**语义阶段可恢复**：语法阶段保证 AST 结构完整（每个节点都是合法构造），
+语义分析遇到错误时可以以语句为单位跳过子树继续分析，不影响其余代码。
+这是因为 AST 的父子/兄弟关系提供了天然的边界，无需 synchronize 猜测跳多少 token。
+
+```
+语法阶段：一个错误 → 终止（AST 结构未完成，无法可靠恢复）
+语义阶段：一个错误 → 跳过该语句子树 → 继续分析（AST 结构完整，跳过是安全的）
 ```
 
-**同步集合**（语句边界）：`;` `}` `)` EOF
-
-**panic mode 触发时机**：`expect_*` 失败后，由调用方决定是否调用 `synchronize`。
-- 语句级 parse 函数（parse_stmt 等）在 expect 失败后调用 synchronize
-- 表达式级 parse 函数在 expect 失败后直接返回 NULL（不跳 token，让上层处理）
-
-## 2.4 游标恢复策略
-
-**parse 函数失败时不恢复游标** — 游标只向前，从不回退。
-
-理由：
-- 递归下降 parser 不做回溯，一旦确认关键字即 commit，恢复后无其他分支可试
-- 恢复到入口位置会导致 dispatcher 看到同一关键字再次分派，产生无限循环
-- 失败后由 `synchronize` 跳到下一个同步点，行为可预测
-
-**dispatch 阶段用 `check_*` 而非 `match_*`**：
-
-```c
-// ❌ match 消费了 "var"，parse_var_def 失败后首 token 已丢失
-if (match_keyword(p, "var")) return parse_var_def(p);
-
-// ✅ check 只看不消费，由 parse_var_def 自己负责消费首 token
-if (check_keyword(p, "var")) return parse_var_def(p);
-```
-
-这样各 `parse_xxxx` 对自己的首 token 负责，失败时游标一定在构造内部，而非被 dispatcher 提前消费。
-
-### 3.4 词法错误处理
+### 3.6 词法错误处理
 
 ```c
 // 在 parse 入口（parse_program）检查 token pool 是否含 TOKEN_TYPE_ERROR
-// 如有：输出诊断 → 置 has_error → 直接返回 NULL（不做任何解析）
+// 如有：输出诊断 → 直接返回 NULL（不做任何解析）
 ```
 
 词法错误不可恢复，parser 不尝试继续。
@@ -329,7 +311,7 @@ ast_node_t *parse_expr_prec(parser_t *p, int min_prec) {
 
 ## 5. AST_ERROR 节点构造
 
-当 panic mode 恢复后，在恢复点构造 AST_ERROR 节点占位：
+当 parse 函数 commit 后遇到错误，构造 `AST_ERROR` 节点返回并终止解析：
 
 ```c
 ast_node_t *make_error_node(parser_t *p, uint32_t tb, const char *msg) {
@@ -347,7 +329,7 @@ include/parser/
   parser.h           — parser_t + 公开 API（create/destroy/parse/error）
   parse_stmt.h       — parse_stmt / parse_block / parse_var_def / parse_if / ...
   parse_expr.h       — parse_expr / parse_expr_prec / parse_unary / parse_primary
-  parse_utils.h      — cur_token / advance / match_*/expect_*/synchronize
+  parse_utils.h      — cur_token / advance / match_*/expect_*/check_*/skip_trivia
 
 src/parser/
   parser.c           — parser_create / parser_destroy / parser_parse / parse_program
@@ -361,12 +343,12 @@ src/parser/
 1. parse 函数**不直接调用 malloc/free** — 所有内存走 alloc 或 arena
 2. parse 函数**不关闭/释放 tokens/arena** — 生命周期由 driver 管理
 3. **tok_begin 在函数入口保存，tok_end 在构造节点时取 p->pos** — 统一模式
-4. **expect 失败不推进游标** — 由 synchronize 决定跳到哪里
-5. **表达式不调用 synchronize** — 返回 AST_ERROR，由语句层决定恢复策略
-6. **词法错误 (TOKEN_TYPE_ERROR) 在 parse_program 入口一次性检查** — 不在 parse 循环中处理
+4. **expect 失败不推进游标** — 构造 AST_ERROR 向上传播终止解析
+5. **语法阶段 fail-fast** — 一个错误即终止，不做 panic mode 恢复
+6. **语义阶段可恢复** — AST 结构完整，可以语句为单位跳过子树继续分析
 7. parse_xxxx 的子节点赋值通过强制转换 `(ast_xxx_t *)node` 完成，不复用 ast_new 中央工厂
 8. **不匹配时恢复游标** — `p->pos = tb`，返回 NULL，让父节点 failback
-9. **错误时不恢复游标** — 返回 AST_ERROR 节点，由 synchronize 跳到同步点
+9. **错误时不恢复游标** — 返回 AST_ERROR 节点，向上传播终止解析
 10. **dispatch 用 check_* 不用 match_*** — 不在分派阶段消费 token，由具体 parse 函数自行消费首 token
 11. **首 token 是 mismatch/error 的分水岭** — 匹配并消费首 token 后 commit，后续失败都是 error
 12. **父节点负责跳过 trivia** — 子节点的入口和出口都应指向有效 token（非空白/非注释），parse_program 入口自行 skip_trivia
