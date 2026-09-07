@@ -16,8 +16,9 @@ ast_node_t *parse_primary(parser_t *p) {
 
     /* bool 必须在 ident 前检查（true/false 是 keyword 不是 identifier） */
     node = parse_bool_lit(p);    if (node) return node;
-    node = parse_int_lit(p);     if (node) return node;
+    /* float 必须在 int 前检查：1f32 数字部分不是浮点但整体是浮点字面量 */
     node = parse_float_lit(p);   if (node) return node;
+    node = parse_int_lit(p);     if (node) return node;
     node = parse_string_lit(p);  if (node) return node;
     node = parse_char_lit(p);    if (node) return node;
     node = parse_ident(p);       if (node) return node;

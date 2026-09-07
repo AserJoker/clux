@@ -458,7 +458,7 @@ TEST_F(ParseExprTest, ParseFloatLit_Scientific) {
  * Expected: returns AST_FLOAT_LIT with value 3.14 and type "f32"
  */
 TEST_F(ParseExprTest, ParseFloatLit_WithSuffix) {
-    /* 3.14f32 → NUMERIC "3.14" + IDENTIFIER "f32" */
+    /* 3.14f32 → NUMERIC "3.14" + KEYWORD "f32" */
     parser_t *p = make_parser("3.14f32");
     ASSERT_NE(p, nullptr);
 
@@ -468,6 +468,26 @@ TEST_F(ParseExprTest, ParseFloatLit_WithSuffix) {
 
     auto *lit = (ast_float_lit_t *)node;
     EXPECT_DOUBLE_EQ(lit->value, 3.14);
+    EXPECT_EQ(lit->type.len, 3u);
+    EXPECT_EQ(memcmp(lit->type.ptr, "f32", 3), 0);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: Integer-number with float suffix is a float literal
+ * Expected: 1f32 → value 1.0, type "f32"
+ */
+TEST_F(ParseExprTest, ParseFloatLit_IntNumWithFloatSuffix) {
+    parser_t *p = make_parser("1f32");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_float_lit(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_FLOAT_LIT);
+
+    auto *lit = (ast_float_lit_t *)node;
+    EXPECT_DOUBLE_EQ(lit->value, 1.0);
     EXPECT_EQ(lit->type.len, 3u);
     EXPECT_EQ(memcmp(lit->type.ptr, "f32", 3), 0);
 

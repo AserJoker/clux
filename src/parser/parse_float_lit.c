@@ -28,6 +28,24 @@ static const float_type_info_t *find_float_type(strslice_t s) {
 }
 
 /**
+ * 判断当前 token 后是否紧跟浮点类型后缀（f32/f64 keyword）。
+ * 注意：不消费任何 token。
+ */
+static bool peek_float_type_suffix(parser_t *p) {
+    /* 保存当前 pos，偷看下一个 token */
+    uint32_t saved = p->pos;
+    advance(p);
+    skip_trivia(p);
+    bool result = false;
+    if (check_kind(p, TOKEN_TYPE_KEYWORD)) {
+        strslice_t next = token_strslice(cur_token(p));
+        result = find_float_type(next) != NULL;
+    }
+    p->pos = saved;
+    return result;
+}
+
+/**
  * 解析浮点字面量的值（数字 token 不含后缀）。
  */
 static double parse_float_value(strslice_t text) {
@@ -49,7 +67,14 @@ ast_node_t *parse_float_lit(parser_t *p) {
     const token_t *t = cur_token(p);
     strslice_t text = token_strslice(t);
 
-    if (!numeric_is_float(text.ptr, text.len)) { p->pos = tb; return NULL; }
+    /*
+     * 两种匹配路径：
+     * 1. numeric_is_float → 数字本身含 . 或 e/E（如 3.14, 1e10, 3.14f32）
+     * 2. !numeric_is_float 但紧跟 f32/f64 后缀（如 1f32, 42f64）
+     */
+    bool is_float_num = numeric_is_float(text.ptr, text.len);
+    bool has_float_suffix = peek_float_type_suffix(p);
+    if (!is_float_num && !has_float_suffix) { p->pos = tb; return NULL; }
 
     advance(p);
     skip_trivia(p);
