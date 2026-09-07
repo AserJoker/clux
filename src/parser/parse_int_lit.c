@@ -109,11 +109,10 @@ ast_node_t *parse_int_lit(parser_t *p) {
         if (ti) {
             /* 校验 value 是否在 type 值域内 */
             if (value > ti->max_val) {
-                parse_error(p, "integer literal %llu out of range for type %.*s",
-                            (unsigned long long)value, (int)next.len, next.ptr);
                 advance(p);
-                ast_node_t *err = ast_error_new(p->arena, tb, p->pos);
-                return err;
+                return ast_error_new(p->arena, tb, p->pos,
+                                     "integer literal %llu out of range for type %.*s",
+                                     (unsigned long long)value, (int)next.len, next.ptr);
             }
             type = next;
             advance(p);

@@ -89,11 +89,10 @@ ast_node_t *parse_float_lit(parser_t *p) {
         if (ti) {
             /* 校验 value 是否超出 type 表示范围 */
             if (value > ti->max_val) {
-                parse_error(p, "float literal out of range for type %.*s",
-                            (int)next.len, next.ptr);
                 advance(p);
-                ast_node_t *err = ast_error_new(p->arena, tb, p->pos);
-                return err;
+                return ast_error_new(p->arena, tb, p->pos,
+                                     "float literal out of range for type %.*s",
+                                     (int)next.len, next.ptr);
             }
             type = next;
             advance(p);

@@ -39,30 +39,30 @@ static bool infix_binding(const token_t *tok, int *lp, int *rp) {
 
     /* 双字符符号运算符 */
     if (s.len == 2) {
-        if (s.ptr[0] == '|' && s.ptr[1] == '|') { *lp = 1;  *rp = 2;  return true; }  /* || */
-        if (s.ptr[0] == '&' && s.ptr[1] == '&') { *lp = 3;  *rp = 4;  return true; }  /* && */
-        if (s.ptr[0] == '=' && s.ptr[1] == '=') { *lp = 11; *rp = 12; return true; }  /* == */
-        if (s.ptr[0] == '!' && s.ptr[1] == '=') { *lp = 11; *rp = 12; return true; }  /* != */
-        if (s.ptr[0] == '<' && s.ptr[1] == '=') { *lp = 13; *rp = 14; return true; }  /* <= */
-        if (s.ptr[0] == '>' && s.ptr[1] == '=') { *lp = 13; *rp = 14; return true; }  /* >= */
-        if (s.ptr[0] == '<' && s.ptr[1] == '<') { *lp = 15; *rp = 16; return true; }  /* << */
-        if (s.ptr[0] == '>' && s.ptr[1] == '>') { *lp = 15; *rp = 16; return true; }  /* >> */
+        if (s.ptr[0] == '|' && s.ptr[1] == '|') { *lp = 1;  *rp = 2;  return true; }
+        if (s.ptr[0] == '&' && s.ptr[1] == '&') { *lp = 3;  *rp = 4;  return true; }
+        if (s.ptr[0] == '=' && s.ptr[1] == '=') { *lp = 11; *rp = 12; return true; }
+        if (s.ptr[0] == '!' && s.ptr[1] == '=') { *lp = 11; *rp = 12; return true; }
+        if (s.ptr[0] == '<' && s.ptr[1] == '=') { *lp = 13; *rp = 14; return true; }
+        if (s.ptr[0] == '>' && s.ptr[1] == '=') { *lp = 13; *rp = 14; return true; }
+        if (s.ptr[0] == '<' && s.ptr[1] == '<') { *lp = 15; *rp = 16; return true; }
+        if (s.ptr[0] == '>' && s.ptr[1] == '>') { *lp = 15; *rp = 16; return true; }
         return false;
     }
 
     /* 单字符符号运算符 */
     if (s.len == 1) {
         switch (s.ptr[0]) {
-        case '|': *lp = 5;  *rp = 6;  return true;   /* 位或 */
-        case '^': *lp = 7;  *rp = 8;  return true;   /* 位异或 */
-        case '&': *lp = 9;  *rp = 10; return true;   /* 位与 */
-        case '<': *lp = 13; *rp = 14; return true;   /* 小于 */
-        case '>': *lp = 13; *rp = 14; return true;   /* 大于 */
-        case '+': *lp = 17; *rp = 18; return true;   /* 加 */
-        case '-': *lp = 17; *rp = 18; return true;   /* 减 */
-        case '*': *lp = 19; *rp = 20; return true;   /* 乘 */
-        case '/': *lp = 19; *rp = 20; return true;   /* 除 */
-        case '%': *lp = 19; *rp = 20; return true;   /* 模 */
+        case '|': *lp = 5;  *rp = 6;  return true;
+        case '^': *lp = 7;  *rp = 8;  return true;
+        case '&': *lp = 9;  *rp = 10; return true;
+        case '<': *lp = 13; *rp = 14; return true;
+        case '>': *lp = 13; *rp = 14; return true;
+        case '+': *lp = 17; *rp = 18; return true;
+        case '-': *lp = 17; *rp = 18; return true;
+        case '*': *lp = 19; *rp = 20; return true;
+        case '/': *lp = 19; *rp = 20; return true;
+        case '%': *lp = 19; *rp = 20; return true;
         default:  return false;
         }
     }
@@ -89,12 +89,14 @@ ast_node_t *parse_primary(parser_t *p) {
         skip_trivia(p);
         ast_node_t *inner = parse_expr(p);
         if (!inner) {
-            return ast_error_new(p->arena, tb, p->pos);
+            return ast_error_new(p->arena, tb, p->pos,
+                                 "expected expression after '('");
         }
         if (inner->kind == AST_ERROR) return inner;
         skip_trivia(p);
         if (!expect_symbol(p, ")")) {
-            return ast_error_new(p->arena, tb, p->pos);
+            return ast_error_new(p->arena, tb, p->pos,
+                                 "expected ')' after grouped expression");
         }
         return inner;
     }
@@ -120,12 +122,11 @@ ast_node_t *parse_unary(parser_t *p) {
     advance(p);
     skip_trivia(p);
 
-    /* 递归：前缀绑定力 23，右侧以相同绑定力递归 */
     ast_node_t *operand = parse_expr_prec(p, PREFIX_RIGHT_PREC);
     if (!operand || operand->kind == AST_ERROR) {
         if (!operand) {
-            parse_error(p, "expected expression after unary operator");
-            return ast_error_new(p->arena, tb, p->pos);
+            return ast_error_new(p->arena, tb, p->pos,
+                                 "expected expression after unary operator");
         }
         return operand;
     }
@@ -157,8 +158,8 @@ static ast_node_t *parse_postfix(parser_t *p, ast_node_t *lhs) {
                 ast_node_t *arg = parse_expr(p);
                 if (!arg || arg->kind == AST_ERROR) {
                     if (!arg) {
-                        parse_error(p, "expected expression in function call");
-                        return ast_error_new(p->arena, tb, p->pos);
+                        return ast_error_new(p->arena, tb, p->pos,
+                                             "expected expression in function call");
                     }
                     return arg;
                 }
@@ -171,8 +172,8 @@ static ast_node_t *parse_postfix(parser_t *p, ast_node_t *lhs) {
                     arg = parse_expr(p);
                     if (!arg || arg->kind == AST_ERROR) {
                         if (!arg) {
-                            parse_error(p, "expected expression after ','");
-                            return ast_error_new(p->arena, tb, p->pos);
+                            return ast_error_new(p->arena, tb, p->pos,
+                                                 "expected expression after ','");
                         }
                         return arg;
                     }
@@ -182,7 +183,8 @@ static ast_node_t *parse_postfix(parser_t *p, ast_node_t *lhs) {
             }
 
             if (!expect_symbol(p, ")")) {
-                return ast_error_new(p->arena, tb, p->pos);
+                return ast_error_new(p->arena, tb, p->pos,
+                                     "expected ')' after function call arguments");
             }
 
             ast_node_t *node = ast_call_new(p->arena, tb, p->pos);
@@ -193,17 +195,15 @@ static ast_node_t *parse_postfix(parser_t *p, ast_node_t *lhs) {
             continue;
         }
 
-        /* 成员访问：.field（注意排除 ".." 范围运算符） */
+        /* 成员访问：.field */
         if (check_symbol(p, ".")) {
-            /* lexer 使用 maximal munch，所以 ".." 是一个 token，
-               当前 token 是 "." 则不会是 ".." */
             uint32_t tb = p->pos;
-            advance(p);  /* consume '.' */
+            advance(p);
             skip_trivia(p);
 
             if (!check_kind(p, TOKEN_TYPE_IDENTIFIER)) {
-                parse_error(p, "expected field name after '.'");
-                return ast_error_new(p->arena, tb, p->pos);
+                return ast_error_new(p->arena, tb, p->pos,
+                                     "expected field name after '.'");
             }
             strslice_t field = token_strslice(cur_token(p));
             advance(p);
@@ -227,8 +227,8 @@ static ast_node_t *parse_postfix(parser_t *p, ast_node_t *lhs) {
                 ast_node_t *idx = parse_expr(p);
                 if (!idx || idx->kind == AST_ERROR) {
                     if (!idx) {
-                        parse_error(p, "expected expression in index");
-                        return ast_error_new(p->arena, tb, p->pos);
+                        return ast_error_new(p->arena, tb, p->pos,
+                                             "expected expression in index");
                     }
                     return idx;
                 }
@@ -241,8 +241,8 @@ static ast_node_t *parse_postfix(parser_t *p, ast_node_t *lhs) {
                     idx = parse_expr(p);
                     if (!idx || idx->kind == AST_ERROR) {
                         if (!idx) {
-                            parse_error(p, "expected expression after ','");
-                            return ast_error_new(p->arena, tb, p->pos);
+                            return ast_error_new(p->arena, tb, p->pos,
+                                                 "expected expression after ','");
                         }
                         return idx;
                     }
@@ -252,7 +252,8 @@ static ast_node_t *parse_postfix(parser_t *p, ast_node_t *lhs) {
             }
 
             if (!expect_symbol(p, "]")) {
-                return ast_error_new(p->arena, tb, p->pos);
+                return ast_error_new(p->arena, tb, p->pos,
+                                     "expected ']' after index expression");
             }
 
             ast_node_t *node = ast_index_new(p->arena, tb, p->pos);
@@ -300,8 +301,8 @@ ast_node_t *parse_expr_prec(parser_t *p, int min_prec) {
         /* as 特殊处理：右侧是类型名，不是表达式 */
         if (lp == 21) {
             if (!check_kind(p, TOKEN_TYPE_KEYWORD)) {
-                parse_error(p, "expected type name after 'as'");
-                return ast_error_new(p->arena, op_pos, p->pos);
+                return ast_error_new(p->arena, op_pos, p->pos,
+                                     "expected type name after 'as'");
             }
             strslice_t target_type = token_strslice(cur_token(p));
             advance(p);
@@ -317,8 +318,8 @@ ast_node_t *parse_expr_prec(parser_t *p, int min_prec) {
         ast_node_t *rhs = parse_expr_prec(p, rp);
         if (!rhs || rhs->kind == AST_ERROR) {
             if (!rhs) {
-                parse_error(p, "expected expression after operator");
-                return ast_error_new(p->arena, op_pos, p->pos);
+                return ast_error_new(p->arena, op_pos, p->pos,
+                                     "expected expression after operator");
             }
             return rhs;
         }

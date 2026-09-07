@@ -6,12 +6,13 @@ extern "C" {
 
 #include "core/strslice.h"
 #include "parser/ast_node.h"
+#include "parser/lexer.h"
 
 typedef struct {
-    ast_node_t  base;
-    strslice_t  name;        /* 赋值目标标识符 */
-    int         op;          /* '=' / '+=' / '-=' / '*=' / '/=' / '%=' */
-    ast_node_t *value;       /* 右值 */
+    ast_node_t     base;
+    strslice_t     name;        /* 赋值目标标识符 */
+    const token_t *op;          /* 赋值运算符 token（= / += / -= / *= / /= / %=） */
+    ast_node_t    *value;       /* 右值 */
 } ast_assign_t;
 
 static inline ast_node_t *ast_assign_new(arena_t *arena,
