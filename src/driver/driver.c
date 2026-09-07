@@ -105,7 +105,20 @@ static int driver_lex_into(allocator_t *alloc,
     token_t *t = lexer_next(lexer);
     if (!t) break;
     vec_push(pool, alloc, t);
-    if (token_get_kind(t) == TOKEN_TYPE_EOF) break;
+    token_kind_t kind = token_get_kind(t);
+    if (kind == TOKEN_TYPE_EOF) break;
+    if (kind == TOKEN_TYPE_ERROR) {
+      const location_t *loc = token_get_location(t);
+      const char *msg = token_get_error_message(t);
+      fprintf(stderr, "%s:%zu:%zu: error: %s\n",
+              path,
+              loc ? loc->begin.line : 0,
+              loc ? loc->begin.column : 0,
+              msg ? msg : "unrecognized input");
+      lexer_close(&lexer);
+      vec_free(alloc, &pool);
+      return -2;
+    }
   }
 
   *out_pool = pool;
@@ -136,10 +149,7 @@ static void print_escaped_text(const char *text, size_t len) {
 
 /* ---- Internal: emit the token table (one token per line) ---- */
 
-static void print_token_table(const vec_t *pool,
-                               const char *path,
-                               bool *out_has_error) {
-  bool has_error = false;
+static void print_token_table(const vec_t *pool) {
   size_t n = vec_len(pool);
   for (size_t i = 0; i < n; i++) {
     const token_t *t = (const token_t *)vec_get(pool, i);
@@ -159,21 +169,8 @@ static void print_token_table(const vec_t *pool,
            loc ? loc->end.line : 0,
            loc ? loc->end.column : 0);
     print_escaped_text(text, text_len);
-
-    if (kind == TOKEN_TYPE_ERROR) {
-      has_error = true;
-      const char *msg = token_get_error_message(t);
-      printf(" error: %s", msg ? msg : "?");
-      fprintf(stderr,
-              "%s:%zu:%zu: error: %s\n",
-              path,
-              loc ? loc->begin.line : 0,
-              loc ? loc->begin.column : 0,
-              msg ? msg : "?");
-    }
     putchar('\n');
   }
-  if (out_has_error) *out_has_error = has_error;
 }
 
 /* ---- Stage ② + ③: lex and print the token table ---- */
@@ -192,7 +189,13 @@ int driver_run_file(const char *path) {
 
   vec_t *pool = NULL;
   lexer_t *lexer = NULL;
-  if (driver_lex_into(alloc, path, &pool, &lexer) != 0) {
+  int lex_result = driver_lex_into(alloc, path, &pool, &lexer);
+  if (lex_result == -2) {
+    /* Lex error already printed to stderr; clean up and exit. */
+    delete_allocator(&alloc);
+    return 1;
+  }
+  if (lex_result != 0) {
     fprintf(stderr, "run: cannot open file '%s'\n", path);
     if (lexer) lexer_close(&lexer);
     if (pool) vec_free(alloc, &pool);
@@ -200,17 +203,13 @@ int driver_run_file(const char *path) {
     return 1;
   }
 
-  bool has_error = false;
-  print_token_table(pool, path, &has_error);
+  print_token_table(pool);
 
-  /* The lexer owns the memory source (and thus the source buffer); the
-   * token text slices are valid only while the lexer is alive, so we
-   * print first, then close. */
   lexer_close(&lexer);
   vec_free(alloc, &pool);
   delete_allocator(&alloc);
 
-  return has_error ? 1 : 0;
+  return 0;
 }
 
 /* ---- Test/utility entry: lex into a pool (text dangles after return) ---- */
