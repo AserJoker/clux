@@ -19,7 +19,7 @@ ast_node_t *parse_break(parser_t *p);
 /** continue; */
 ast_node_t *parse_continue(parser_t *p);
 
-/** 统一式：赋值 / 表达式语句 / discard 语句。 */
+/** 统一式：表达式 + ; → 语句（赋值已是表达式的一种）。 */
 ast_node_t *parse_assign_or_expr_stmt(parser_t *p);
 
 #ifdef __cplusplus

@@ -26,7 +26,7 @@ ast_node_t *parse_stmt(parser_t *p) {
     if (check_keyword(p, "return")) return parse_return(p);
     if (check_keyword(p, "break"))  return parse_break(p);
     if (check_keyword(p, "continue")) return parse_continue(p);
-    /* 最后尝试赋值或表达式语句 */
+    /* 最后尝试表达式语句（赋值已是表达式的一种） */
     return parse_assign_or_expr_stmt(p);
 }
 
@@ -65,20 +65,11 @@ ast_node_t *parse_continue(parser_t *p) {
 }
 
 /* ================================================================ */
-/* parse_assign_or_expr_stmt: 统一式                                  */
+/* parse_assign_or_expr_stmt: 表达式 + ; → 语句                      */
+/*                                                                  */
+/* 赋值已在 parse_expr 中作为表达式处理（最低优先级、右结合）。         */
+/* 此函数只负责消费末尾 ; 并将表达式包装为适当的语句节点。              */
 /* ================================================================ */
-
-static bool is_assign_op(parser_t *p) {
-    return check_symbol(p, "=")  || check_symbol(p, "+=") ||
-           check_symbol(p, "-=") || check_symbol(p, "*=") ||
-           check_symbol(p, "/=") || check_symbol(p, "%=");
-}
-
-static bool is_underscore(ast_node_t *node) {
-    if (node->kind != AST_IDENT) return false;
-    strslice_t name = ((ast_ident_t *)node)->name;
-    return name.len == 1 && name.ptr[0] == '_';
-}
 
 ast_node_t *parse_assign_or_expr_stmt(parser_t *p) {
     uint32_t tb = p->pos;
@@ -87,73 +78,25 @@ ast_node_t *parse_assign_or_expr_stmt(parser_t *p) {
     if (!expr) return NULL;
     if (expr->kind == AST_ERROR) return expr;
 
-    if (is_assign_op(p)) {
-        /* = 且左值 _ → discard */
-        if (check_symbol(p, "=") && is_underscore(expr)) {
-            advance(p);
-            skip_trivia(p);
-
-            ast_node_t *value = parse_expr(p);
-            if (!value || value->kind == AST_ERROR) {
-                if (!value) {
-                    return ast_error_new(p->arena, tb, p->pos,
-                                         "expected expression after '_ ='");
-                }
-                return value;
-            }
-
-            skip_trivia(p);
-            if (!expect_symbol(p, ";")) {
-                return ast_error_new(p->arena, tb, p->pos,
-                                     "expected ';' after discard statement");
-            }
-
-            ast_node_t *node = ast_discard_new(p->arena, tb, p->pos);
-            ((ast_discard_t *)node)->expr = value;
-            return node;
-        }
-
-        /* 赋值语句：左值必须是标识符 */
-        if (expr->kind != AST_IDENT) {
-            return ast_error_new(p->arena, tb, p->pos,
-                                 "invalid assignment target");
-        }
-
-        strslice_t name = ((ast_ident_t *)expr)->name;
-        const token_t *op = cur_token(p);
-        advance(p);
-        skip_trivia(p);
-
-        ast_node_t *value = parse_expr(p);
-        if (!value || value->kind == AST_ERROR) {
-            if (!value) {
-                return ast_error_new(p->arena, tb, p->pos,
-                                     "expected expression after assignment operator");
-            }
-            return value;
-        }
-
-        skip_trivia(p);
-        if (!expect_symbol(p, ";")) {
+    skip_trivia(p);
+    if (!expect_symbol(p, ";")) {
+        if (expr->kind == AST_ASSIGN) {
             return ast_error_new(p->arena, tb, p->pos,
                                  "expected ';' after assignment");
         }
-
-        ast_node_t *node = ast_assign_new(p->arena, tb, p->pos);
-        ((ast_assign_t *)node)->name  = name;
-        ((ast_assign_t *)node)->op    = op;
-        ((ast_assign_t *)node)->value = value;
-        return node;
-    }
-
-    /* 表达式语句 */
-    skip_trivia(p);
-    if (!expect_symbol(p, ";")) {
+        if (expr->kind == AST_DISCARD) {
+            return ast_error_new(p->arena, tb, p->pos,
+                                 "expected ';' after discard statement");
+        }
         return ast_error_new(p->arena, tb, p->pos,
                              "expected ';' after expression statement");
     }
 
-    ast_node_t *node = ast_expr_stmt_new(p->arena, tb, p->pos);
-    ((ast_expr_stmt_t *)node)->expr = expr;
-    return node;
+    /* 赋值 / discard 已经是完整语句节点 */
+    if (expr->kind == AST_ASSIGN || expr->kind == AST_DISCARD) return expr;
+
+    /* 普通表达式 → 包装为 AST_EXPR_STMT */
+    ast_node_t *stmt = ast_expr_stmt_new(p->arena, tb, p->pos);
+    ((ast_expr_stmt_t *)stmt)->expr = expr;
+    return stmt;
 }

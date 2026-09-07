@@ -58,8 +58,8 @@ ast_node_t *parse_for(parser_t *p) {
     }
     skip_trivia(p);
 
-    /* update: 表达式 / 空
-     * 注意：for 的 update 后面是 ) 不是 ;，不能使用 parse_assign_or_expr_stmt */
+    /* update: 表达式 / 空（赋值也是表达式）
+     * for 的 update 后面是 ) 不是 ;，直接用 parse_expr */
     ast_node_t *update = NULL;
     if (!check_symbol(p, ")")) {
         update = parse_expr(p);

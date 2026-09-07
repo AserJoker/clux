@@ -8,6 +8,8 @@
 #include "parser/ast_ident.h"
 #include "parser/ast_unary.h"
 #include "parser/ast_binary.h"
+#include "parser/ast_assign.h"
+#include "parser/ast_discard.h"
 #include "parser/ast_call.h"
 #include "parser/ast_member.h"
 #include "parser/ast_index.h"
@@ -22,6 +24,7 @@
  *
  * 左结合运算符：right_prec = left_prec + 1
  * 返回 false 表示当前 token 不是中缀运算符。
+ * 注意：赋值运算符不在此表中，由 parse_expr_prec 单独处理。
  */
 static bool infix_binding(const token_t *tok, int *lp, int *rp) {
     if (token_get_kind(tok) != TOKEN_TYPE_SYMBOL &&
@@ -47,6 +50,14 @@ static bool infix_binding(const token_t *tok, int *lp, int *rp) {
         if (s.ptr[0] == '>' && s.ptr[1] == '=') { *lp = 13; *rp = 14; return true; }
         if (s.ptr[0] == '<' && s.ptr[1] == '<') { *lp = 15; *rp = 16; return true; }
         if (s.ptr[0] == '>' && s.ptr[1] == '>') { *lp = 15; *rp = 16; return true; }
+        /* 复合赋值：+= -= *= /= %= */
+        if (s.ptr[1] == '=' && (s.ptr[0] == '+' || s.ptr[0] == '-' ||
+                                s.ptr[0] == '*' || s.ptr[0] == '/' ||
+                                s.ptr[0] == '%')) {
+            /* 赋值优先级：低于所有二元运算符，右结合
+             * 不返回到 binding 表，由 parse_expr_prec 单独处理 */
+            return false;
+        }
         return false;
     }
 
@@ -63,11 +74,36 @@ static bool infix_binding(const token_t *tok, int *lp, int *rp) {
         case '*': *lp = 19; *rp = 20; return true;
         case '/': *lp = 19; *rp = 20; return true;
         case '%': *lp = 19; *rp = 20; return true;
+        case '=':
+            /* 简单赋值 = ：最低优先级，右结合，单独处理 */
+            return false;
         default:  return false;
         }
     }
 
     return false;
+}
+
+/* ---- 赋值运算符判断 ---- */
+
+/** 赋值运算符的绑定力（最低，右结合） */
+#define ASSIGN_LEFT_PREC  0
+
+static bool is_assign_op_token(const token_t *tok) {
+    if (token_get_kind(tok) != TOKEN_TYPE_SYMBOL) return false;
+    strslice_t s = token_strslice(tok);
+    if (s.len == 1 && s.ptr[0] == '=') return true;
+    if (s.len == 2 && s.ptr[1] == '=') {
+        char c = s.ptr[0];
+        return c == '+' || c == '-' || c == '*' || c == '/' || c == '%';
+    }
+    return false;
+}
+
+static bool is_underscore_node(ast_node_t *node) {
+    if (node->kind != AST_IDENT) return false;
+    strslice_t name = ((ast_ident_t *)node)->name;
+    return name.len == 1 && name.ptr[0] == '_';
 }
 
 /* ---- parse_primary: 原子表达式入口 ---- */
@@ -280,7 +316,64 @@ ast_node_t *parse_expr_prec(parser_t *p, int min_prec) {
     for (;;) {
         skip_trivia(p);
 
-        /* 2a. 后缀绑定力最高(25)，贪婪消费 */
+        /* 2a. 赋值运算符：最低优先级，右结合
+         *     赋值不是普通中缀运算符，左侧必须是标识符（或 _ 表示 discard） */
+        if (is_assign_op_token(cur_token(p))) {
+            if (ASSIGN_LEFT_PREC < min_prec) break;
+
+            const token_t *op_tok = cur_token(p);
+            uint32_t op_pos = p->pos;
+            advance(p);
+            skip_trivia(p);
+
+            /* _ = expr → discard；_ += expr 等按普通赋值处理 */
+            if (is_underscore_node(left)) {
+                strslice_t op_text = token_strslice(op_tok);
+                if (op_text.len == 1 && op_text.ptr[0] == '=') {
+                    /* 纯 = 与 _ 构成 discard */
+                    ast_node_t *value = parse_expr_prec(p, ASSIGN_LEFT_PREC);
+                    if (!value || value->kind == AST_ERROR) {
+                        if (!value) {
+                            return ast_error_new(p->arena, op_pos, p->pos,
+                                                 "expected expression after '_ ='");
+                        }
+                        return value;
+                    }
+
+                    ast_node_t *node = ast_discard_new(p->arena, left->tok_begin, p->pos);
+                    ((ast_discard_t *)node)->expr = value;
+                    left = node;
+                    continue;
+                }
+                /* _ 与复合赋值 → 普通赋值（name="_"） */
+                /* fall through 到下面的普通赋值处理 */
+            }
+
+            /* 普通赋值：左值必须是标识符 */
+            if (left->kind != AST_IDENT) {
+                return ast_error_new(p->arena, left->tok_begin, p->pos,
+                                     "invalid assignment target");
+            }
+
+            strslice_t name = ((ast_ident_t *)left)->name;
+            ast_node_t *value = parse_expr_prec(p, ASSIGN_LEFT_PREC);
+            if (!value || value->kind == AST_ERROR) {
+                if (!value) {
+                    return ast_error_new(p->arena, op_pos, p->pos,
+                                         "expected expression after assignment operator");
+                }
+                return value;
+            }
+
+            ast_node_t *node = ast_assign_new(p->arena, left->tok_begin, p->pos);
+            ((ast_assign_t *)node)->name  = name;
+            ((ast_assign_t *)node)->op    = op_tok;
+            ((ast_assign_t *)node)->value = value;
+            left = node;
+            continue;
+        }
+
+        /* 2b. 后缀绑定力最高(25)，贪婪消费 */
         if (check_symbol(p, "(") || check_symbol(p, ".") || check_symbol(p, "[")) {
             if (POSTFIX_LEFT_PREC < min_prec) break;
             left = parse_postfix(p, left);
@@ -288,7 +381,7 @@ ast_node_t *parse_expr_prec(parser_t *p, int min_prec) {
             continue;
         }
 
-        /* 2b. 中缀运算符查表 */
+        /* 2c. 中缀运算符查表 */
         const token_t *op_tok = cur_token(p);
         int lp, rp;
         if (!infix_binding(op_tok, &lp, &rp)) break;

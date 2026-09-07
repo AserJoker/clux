@@ -1,4 +1,4 @@
-// literals.cx — M1 样例：整数字面量（多进制+后缀）、浮点、布尔、字符、字符串、undefined
+// literals.cx — M1 样例：整数字面量（多进制+后缀）、浮点、布尔、字符、字符串
 func main():i32 {
     // 整数：十进制 / 十六进制 / 八进制 / 二进制
     var dec:i32 = 42;
@@ -30,9 +30,6 @@ func main():i32 {
 
     // 字符串字面量（类型 str）
     var text:str = "clux language\n";
-
-    // undefined / TDZ
-    var un:i32 = undefined;
 
     // 逻辑运算符与显式丢弃
     _ = dec + hex + oct + bin + v8 + vU8 + pi + exp + frac + ch;
