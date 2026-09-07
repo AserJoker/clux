@@ -146,13 +146,14 @@ parse_for 在分号后跳过 trivia
 | 函数 | 对应 AST 节点 | 说明 |
 |------|--------------|------|
 | `parse_program` | AST_PROGRAM | 顶层入口，循环 parse_func_def |
-| `parse_func_def` | AST_FUNC_DEF | func name(params):type { body } |
+| `parse_func_def` | AST_FUNC_DEF | func name(params):type { body }（语句级，调用 parse_func_like） |
+| `parse_func_like` | AST_FUNC_DEF / M2+ AST_FUNC_LIT | func 统一入口，分歧点：name 有无 |
 | `parse_block` | AST_BLOCK | { stmt; stmt; ... } |
 | `parse_stmt` | 各种语句 | 分派：var/if/while/for/return/break/continue；赋值/表达式走统一式 |
-| `parse_var_def` | AST_VAR_DEF | var name[:type] [= init]; |
+| `parse_var_def` | AST_VAR_DEF | var name[:type] = init; |
 | `parse_assign_or_expr_stmt` | AST_ASSIGN / AST_EXPR_STMT / AST_DISCARD | 统一式：先解析左值表达式，再看后接 = += 等分派 |
-| `parse_if` | AST_IF | if cond { then } [else { else }] |
-| `parse_while` | AST_WHILE | while cond { body } |
+| `parse_if` | AST_IF | if (cond) { then } [else { else }] |
+| `parse_while` | AST_WHILE | while (cond) { body } |
 | `parse_for` | AST_FOR | for (init; cond; update) { body } |
 | `parse_return` | AST_RETURN | return [expr]; |
 | `parse_expr` | 表达式节点 | Pratt parser 入口 |

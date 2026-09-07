@@ -1,4 +1,11 @@
 #include "parser/parser.h"
+#include "parser/ast_program.h"
+#include "parser/ast_func_def.h"
+#include "parser/ast_error.h"
+#include "parser/parse_utils.h"
+#include "parser/lexer.h"
+#include "parser/ast_node.h"
+#include "core/vec.h"
 #include "core/panic.h"
 
 /* ---- Internal: class for parser_t ---- */
@@ -30,6 +37,7 @@ parser_t *parser_create(allocator_t *alloc, arena_t *arena, vec_t *tokens) {
     p->arena     = arena;
     p->tokens    = tokens;
     p->pos       = 0;
+    p->has_error = false;
     return p;
 }
 
@@ -37,4 +45,66 @@ void parser_destroy(parser_t **pp) {
     if (!pp || !*pp) return;
     parser_t *p = *pp;
     allocator_free(p->alloc, (void **)pp);
+}
+
+/* ---- parse_program: 顶层入口 ---- */
+
+/**
+ * 检查 token pool 中是否含有词法错误。
+ * 如有：输出诊断 → 置 has_error → 返回 true。
+ */
+static bool has_lexical_errors(parser_t *p) {
+    size_t count = vec_len(p->tokens);
+    for (size_t i = 0; i < count; i++) {
+        const token_t *t = (const token_t *)vec_get(p->tokens, i);
+        if (token_get_kind(t) == TOKEN_TYPE_ERROR) {
+            const location_t *loc = token_get_location(t);
+            const char *msg = token_get_error_message(t);
+            fprintf(stderr, "%s:%zu:%zu: error: %s\n",
+                    loc ? loc->filename : "<unknown>",
+                    loc ? loc->begin.line : 0,
+                    loc ? loc->begin.column : 0,
+                    msg ? msg : "lexical error");
+            p->has_error = true;
+            return true;
+        }
+    }
+    return false;
+}
+
+ast_node_t *parse_program(parser_t *p) {
+    uint32_t tb = p->pos;
+
+    /* parse_program 没有父节点，入口自行跳 trivia */
+    skip_trivia(p);
+
+    ast_node_t *funcs      = NULL;
+    ast_node_t *funcs_last = NULL;
+
+    while (!at_end(p)) {
+        ast_node_t *func = parse_func_def(p);
+        if (!func) {
+            return ast_error_new(p->arena, tb, p->pos,
+                                 "expected function definition at top level");
+        }
+        if (func->kind == AST_ERROR) return func;
+
+        ast_append(&funcs, &funcs_last, NULL, func);
+        skip_trivia(p);
+    }
+
+    ast_node_t *node = ast_program_new(p->arena, tb, p->pos);
+    ast_program_t *prog = (ast_program_t *)node;
+    prog->funcs      = funcs;
+    prog->funcs_last = funcs_last;
+    return node;
+}
+
+ast_node_t *parser_parse(parser_t *p) {
+    if (!p) return NULL;
+
+    /* 词法错误检查：有词法错误则不进入解析 */
+    if (has_lexical_errors(p)) return NULL;
+
+    return parse_program(p);
 }

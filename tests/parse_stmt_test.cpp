@@ -34,6 +34,8 @@ extern "C" {
 #include "parser/ast_call.h"
 #include "parser/ast_binary.h"
 #include "parser/ast_error.h"
+#include "parser/ast_func_def.h"
+#include "parser/ast_program.h"
 }
 
 #include "test_common.h"
@@ -1050,6 +1052,253 @@ TEST_F(ParseStmtTest, Stmt_FallThroughExpr) {
     ast_node_t *node = parse_stmt(p);
     ASSERT_NE(node, nullptr);
     EXPECT_EQ(node->kind, AST_EXPR_STMT);
+
+    cleanup_parser(p);
+}
+
+/* ================================================================ */
+/* parse_func_def 测试                                                */
+/* ================================================================ */
+
+TEST_F(ParseStmtTest, FuncDefSimple) {
+    parser_t *p = make_parser("func main():i32 { return 0; }");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_func_def(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_FUNC_DEF);
+
+    auto *fn = (ast_func_def_t *)node;
+    EXPECT_TRUE(strslice_eq(fn->name, strslice_from_cstr("main")));
+    EXPECT_TRUE(strslice_eq(fn->return_type, strslice_from_cstr("i32")));
+    EXPECT_EQ(fn->params, nullptr);
+    ASSERT_NE(fn->body, nullptr);
+    EXPECT_EQ(fn->body->kind, AST_BLOCK);
+
+    cleanup_parser(p);
+}
+
+TEST_F(ParseStmtTest, FuncDefWithParams) {
+    parser_t *p = make_parser("func add(a:i32, b:i32):i32 { return a; }");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_func_def(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_FUNC_DEF);
+
+    auto *fn = (ast_func_def_t *)node;
+    EXPECT_TRUE(strslice_eq(fn->name, strslice_from_cstr("add")));
+    EXPECT_TRUE(strslice_eq(fn->return_type, strslice_from_cstr("i32")));
+
+    /* 两个参数 */
+    ASSERT_NE(fn->params, nullptr);
+    auto *pa = (ast_var_def_t *)fn->params;
+    EXPECT_TRUE(strslice_eq(pa->name, strslice_from_cstr("a")));
+    EXPECT_TRUE(strslice_eq(pa->type_name, strslice_from_cstr("i32")));
+
+    ASSERT_NE(pa->base.next, nullptr);
+    auto *pb = (ast_var_def_t *)pa->base.next;
+    EXPECT_TRUE(strslice_eq(pb->name, strslice_from_cstr("b")));
+    EXPECT_TRUE(strslice_eq(pb->type_name, strslice_from_cstr("i32")));
+    EXPECT_EQ(pb->base.next, nullptr);
+
+    cleanup_parser(p);
+}
+
+TEST_F(ParseStmtTest, FuncDefVoidReturn) {
+    parser_t *p = make_parser("func greet(name:str) { return; }");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_func_def(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_FUNC_DEF);
+
+    auto *fn = (ast_func_def_t *)node;
+    EXPECT_TRUE(strslice_is_empty(fn->return_type));  /* void: 无返回类型 */
+    ASSERT_NE(fn->params, nullptr);
+
+    auto *param = (ast_var_def_t *)fn->params;
+    EXPECT_TRUE(strslice_eq(param->name, strslice_from_cstr("name")));
+    EXPECT_TRUE(strslice_eq(param->type_name, strslice_from_cstr("str")));
+
+    cleanup_parser(p);
+}
+
+TEST_F(ParseStmtTest, FuncDefNoParams) {
+    parser_t *p = make_parser("func foo():u64 { return 1; }");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_func_def(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_FUNC_DEF);
+
+    auto *fn = (ast_func_def_t *)node;
+    EXPECT_TRUE(strslice_eq(fn->name, strslice_from_cstr("foo")));
+    EXPECT_TRUE(strslice_eq(fn->return_type, strslice_from_cstr("u64")));
+    EXPECT_EQ(fn->params, nullptr);
+
+    cleanup_parser(p);
+}
+
+TEST_F(ParseStmtTest, FuncDefMissingName) {
+    parser_t *p = make_parser("func ():i32 { }");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_func_def(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_ERROR);
+
+    cleanup_parser(p);
+}
+
+TEST_F(ParseStmtTest, FuncDefMissingParen) {
+    parser_t *p = make_parser("func foo:i32 { }");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_func_def(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_ERROR);
+
+    cleanup_parser(p);
+}
+
+TEST_F(ParseStmtTest, FuncDefMissingBody) {
+    parser_t *p = make_parser("func foo():i32");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_func_def(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_ERROR);
+
+    cleanup_parser(p);
+}
+
+TEST_F(ParseStmtTest, FuncDefParamMissingType) {
+    parser_t *p = make_parser("func foo(a):i32 { }");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_func_def(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_ERROR);
+
+    cleanup_parser(p);
+}
+
+TEST_F(ParseStmtTest, FuncDefNotFunc) {
+    parser_t *p = make_parser("var x = 1;");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_func_def(p);
+    EXPECT_EQ(node, nullptr);
+
+    cleanup_parser(p);
+}
+
+/* ================================================================ */
+/* parse_program 测试                                                 */
+/* ================================================================ */
+
+TEST_F(ParseStmtTest, ProgramEmpty) {
+    parser_t *p = make_parser("");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_program(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_PROGRAM);
+
+    auto *prog = (ast_program_t *)node;
+    EXPECT_EQ(prog->funcs, nullptr);
+
+    cleanup_parser(p);
+}
+
+TEST_F(ParseStmtTest, ProgramSingleFunc) {
+    parser_t *p = make_parser("func main():i32 { return 0; }");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_program(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_PROGRAM);
+
+    auto *prog = (ast_program_t *)node;
+    ASSERT_NE(prog->funcs, nullptr);
+    EXPECT_EQ(prog->funcs->kind, AST_FUNC_DEF);
+    EXPECT_EQ(prog->funcs->next, nullptr);
+
+    auto *fn = (ast_func_def_t *)prog->funcs;
+    EXPECT_TRUE(strslice_eq(fn->name, strslice_from_cstr("main")));
+
+    cleanup_parser(p);
+}
+
+TEST_F(ParseStmtTest, ProgramMultipleFuncs) {
+    parser_t *p = make_parser(
+        "func add(a:i32, b:i32):i32 { return a; }\n"
+        "func main():i32 { return 0; }");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_program(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_PROGRAM);
+
+    auto *prog = (ast_program_t *)node;
+    ASSERT_NE(prog->funcs, nullptr);
+
+    auto *fn1 = (ast_func_def_t *)prog->funcs;
+    EXPECT_TRUE(strslice_eq(fn1->name, strslice_from_cstr("add")));
+
+    ASSERT_NE(fn1->base.next, nullptr);
+    auto *fn2 = (ast_func_def_t *)fn1->base.next;
+    EXPECT_TRUE(strslice_eq(fn2->name, strslice_from_cstr("main")));
+    EXPECT_EQ(fn2->base.next, nullptr);
+
+    cleanup_parser(p);
+}
+
+TEST_F(ParseStmtTest, ProgramNonFuncAtTopLevel) {
+    parser_t *p = make_parser("var x = 1;");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_program(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_ERROR);
+
+    cleanup_parser(p);
+}
+
+TEST_F(ParseStmtTest, ProgramFuncErrorPropagation) {
+    parser_t *p = make_parser("func foo():i32");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_program(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_ERROR);
+
+    cleanup_parser(p);
+}
+
+/* ================================================================ */
+/* parser_parse 公开 API 测试                                         */
+/* ================================================================ */
+
+TEST_F(ParseStmtTest, ParserParseSimple) {
+    parser_t *p = make_parser("func main():void { }");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parser_parse(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_PROGRAM);
+
+    cleanup_parser(p);
+}
+
+TEST_F(ParseStmtTest, ParserParseEmpty) {
+    parser_t *p = make_parser("");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parser_parse(p);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, AST_PROGRAM);
 
     cleanup_parser(p);
 }

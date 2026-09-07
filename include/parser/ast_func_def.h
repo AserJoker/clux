@@ -6,6 +6,7 @@ extern "C" {
 
 #include "core/strslice.h"
 #include "parser/ast_node.h"
+#include "parser/parser.h"
 
 typedef struct {
     ast_node_t  base;
@@ -26,6 +27,16 @@ static inline ast_node_t *ast_func_def_new(arena_t *arena,
     n->base.tok_end   = tok_end;
     return &n->base;
 }
+
+/** 解析函数定义：func name(params):type { body } */
+ast_node_t *parse_func_def(parser_t *p);
+
+/**
+ * func 统一入口（语句级 / 表达式级）。
+ * expected_kind = AST_FUNC_DEF → 语句级函数定义（有 name）
+ * M2+: expected_kind = AST_FUNC_LIT → 表达式级匿名函数
+ */
+ast_node_t *parse_func_like(parser_t *p, ast_kind_t expected_kind);
 
 #ifdef __cplusplus
 }
