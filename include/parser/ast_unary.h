@@ -5,11 +5,12 @@ extern "C" {
 #endif
 
 #include "parser/ast_node.h"
+#include "parser/lexer.h"
 
 typedef struct {
-    ast_node_t  base;
-    int         op;          /* '!' / '~' / '-' */
-    ast_node_t *operand;
+    ast_node_t       base;
+    const token_t   *op;         /* 前缀运算符 token（零拷贝引用 token pool） */
+    ast_node_t      *operand;
 } ast_unary_t;
 
 static inline ast_node_t *ast_unary_new(arena_t *arena,

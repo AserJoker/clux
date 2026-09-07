@@ -112,12 +112,12 @@ ast_node_t *parse_primary(parser_t *p) {
 ast_node_t *parse_unary(parser_t *p) {
     uint32_t tb = p->pos;
 
-    int op = 0;
-    if (check_symbol(p, "!"))      op = '!';
-    else if (check_symbol(p, "~")) op = '~';
-    else if (check_symbol(p, "-")) op = '-';
+    const token_t *op_tok = NULL;
+    if (check_symbol(p, "!"))      op_tok = cur_token(p);
+    else if (check_symbol(p, "~")) op_tok = cur_token(p);
+    else if (check_symbol(p, "-")) op_tok = cur_token(p);
 
-    if (op == 0) return parse_primary(p);
+    if (!op_tok) return parse_primary(p);
 
     advance(p);
     skip_trivia(p);
@@ -132,7 +132,7 @@ ast_node_t *parse_unary(parser_t *p) {
     }
 
     ast_node_t *node = ast_unary_new(p->arena, tb, p->pos);
-    ((ast_unary_t *)node)->op      = op;
+    ((ast_unary_t *)node)->op      = op_tok;
     ((ast_unary_t *)node)->operand = operand;
     return node;
 }

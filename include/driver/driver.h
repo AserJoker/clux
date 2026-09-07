@@ -16,9 +16,10 @@ typedef struct _vec_t vec_t;
  * 目前落地的阶段：
  *   ① 加载源文件  —— 读入 allocator 管理的内存缓冲
  *   ② 词法分析    —— Lexer 切分为 token 并汇入 token 池（vec<token_t*>）
- *   ③ 输出单词表  —— 打印 token 表到 stdout（由 driver_run_file 直接完成）
+ *   ③ 语法分析    —— Parser 将 token 流解析为 AST
+ *   ④ 输出 AST    —— 打印 AST 结构到 stdout（M1 阶段）
  *
- * 未来阶段（Parser / Sema / Interp）将在此框架内顺序插入。
+ * 未来阶段（Sema / Interp）将在此框架内顺序插入。
  * =========================================================================== */
 
 /**
@@ -49,14 +50,14 @@ int driver_load_source(allocator_t *alloc,
 int driver_lex_file(allocator_t *alloc, const char *path, vec_t **out_pool);
 
 /**
- * 流水线顶层入口：加载 → 词法分析 → 输出单词表。
+ * 流水线顶层入口：加载 → 词法分析 → 语法分析 → 输出 AST。
  *
- * 将 token 表逐行打印到 stdout（每个 token 一行，跳过 EOF），位置范围与文本
- * 转义见实现约定；`TOKEN_TYPE_ERROR` 的诊断打印到 stderr。
+ * 词法错误直接快速失败（返回 1）。词法通过后进入语法分析；
+ * 语法错误时输出诊断到 stderr（返回 1）。
  *
  * 返回进程退出码：
- *   0  —— 成功（无词法错误、文件可读）
- *   1  —— 编译错误（文件无法打开 / 存在词法错误）
+ *   0  —— 成功（无词法/语法错误、文件可读）
+ *   1  —— 编译错误（文件无法打开 / 词法错误 / 语法错误）
  */
 int driver_run_file(const char *path);
 

@@ -845,6 +845,16 @@ TEST_F(ParseExprTest, ParsePrimary_BoolTrueBeforeIdent) {
 /* ================================================================ */
 
 /**
+ * 辅助：断言 op token 文本与 expected 匹配（用于 binary / unary 的 op）
+ */
+static void expect_op_text(const token_t *op, const char *expected) {
+    ASSERT_NE(op, nullptr);
+    strslice_t s = token_strslice(op);
+    EXPECT_EQ(s.len, strlen(expected));
+    EXPECT_EQ(memcmp(s.ptr, expected, s.len), 0);
+}
+
+/**
  * Scenario: Logical NOT prefix operator
  * Expected: returns AST_UNARY with op='!' and identifier operand
  */
@@ -859,7 +869,7 @@ TEST_F(ParseExprTest, ParseUnary_Bang) {
     EXPECT_EQ(node->kind, AST_UNARY);
 
     auto *unary = (ast_unary_t *)node;
-    EXPECT_EQ(unary->op, '!');
+    expect_op_text(unary->op, "!");
     ASSERT_NE(unary->operand, nullptr);
     EXPECT_EQ(unary->operand->kind, AST_IDENT);
 
@@ -881,7 +891,7 @@ TEST_F(ParseExprTest, ParseUnary_Tilde) {
     EXPECT_EQ(node->kind, AST_UNARY);
 
     auto *unary = (ast_unary_t *)node;
-    EXPECT_EQ(unary->op, '~');
+    expect_op_text(unary->op, "~");
     ASSERT_NE(unary->operand, nullptr);
     EXPECT_EQ(unary->operand->kind, AST_IDENT);
 
@@ -903,7 +913,7 @@ TEST_F(ParseExprTest, ParseUnary_Minus) {
     EXPECT_EQ(node->kind, AST_UNARY);
 
     auto *unary = (ast_unary_t *)node;
-    EXPECT_EQ(unary->op, '-');
+    expect_op_text(unary->op, "-");
     ASSERT_NE(unary->operand, nullptr);
     EXPECT_EQ(unary->operand->kind, AST_IDENT);
 
@@ -925,13 +935,13 @@ TEST_F(ParseExprTest, ParseUnary_DoubleBang) {
     EXPECT_EQ(node->kind, AST_UNARY);
 
     auto *outer = (ast_unary_t *)node;
-    EXPECT_EQ(outer->op, '!');
+    expect_op_text(outer->op, "!");
 
     ASSERT_NE(outer->operand, nullptr);
     EXPECT_EQ(outer->operand->kind, AST_UNARY);
 
     auto *inner = (ast_unary_t *)outer->operand;
-    EXPECT_EQ(inner->op, '!');
+    expect_op_text(inner->op, "!");
     ASSERT_NE(inner->operand, nullptr);
     EXPECT_EQ(inner->operand->kind, AST_IDENT);
 
@@ -1005,7 +1015,7 @@ TEST_F(ParseExprTest, ParseUnary_MinusIntLit) {
     EXPECT_EQ(node->kind, AST_UNARY);
 
     auto *unary = (ast_unary_t *)node;
-    EXPECT_EQ(unary->op, '-');
+    expect_op_text(unary->op, "-");
     ASSERT_NE(unary->operand, nullptr);
     EXPECT_EQ(unary->operand->kind, AST_INT_LIT);
 
@@ -1015,16 +1025,6 @@ TEST_F(ParseExprTest, ParseUnary_MinusIntLit) {
 /* ================================================================ */
 /* 位运算 / 逻辑运算 / 移位 运算符测试                                */
 /* ================================================================ */
-
-/**
- * 辅助：断言 binary 节点的 op token 文本与 expected 匹配
- */
-static void expect_op_text(const token_t *op, const char *expected) {
-    ASSERT_NE(op, nullptr);
-    strslice_t s = token_strslice(op);
-    EXPECT_EQ(s.len, strlen(expected));
-    EXPECT_EQ(memcmp(s.ptr, expected, s.len), 0);
-}
 
 /**
  * Scenario: a || b — 逻辑或（绑定力 1/2）
@@ -1365,7 +1365,7 @@ TEST_F(ParseExprTest, Binary_PrefixWithBitAnd) {
     EXPECT_EQ(bin->lhs->kind, AST_UNARY);
 
     auto *unary = (ast_unary_t *)bin->lhs;
-    EXPECT_EQ(unary->op, '!');
+    expect_op_text(unary->op, "!");
 
     cleanup_parser(p);
 }
