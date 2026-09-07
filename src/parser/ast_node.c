@@ -15,7 +15,6 @@ static const char *g_kind_names[] = {
     [AST_CONTINUE]   = "continue",
     [AST_BLOCK]      = "block",
     [AST_EXPR_STMT]  = "expr_stmt",
-    [AST_DISCARD]    = "discard",
     [AST_BINARY]     = "binary",
     [AST_UNARY]      = "unary",
     [AST_CALL]       = "call",

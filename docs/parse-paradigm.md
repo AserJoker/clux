@@ -151,7 +151,7 @@ parse_for 在分号后跳过 trivia
 | `parse_block` | AST_BLOCK | { stmt; stmt; ... } |
 | `parse_stmt` | 各种语句 | 分派：var/if/while/for/return/break/continue；赋值/表达式走统一式 |
 | `parse_var_def` | AST_VAR_DEF | var name[:type] = init; |
-| `parse_assign_or_expr_stmt` | AST_ASSIGN / AST_EXPR_STMT / AST_DISCARD | 统一式：先解析左值表达式，再看后接 = += 等分派 |
+| `parse_assign_or_expr_stmt` | AST_ASSIGN / AST_EXPR_STMT | 赋值已在 Pratt parser 中作为表达式处理（最低优先级），此函数仅消费 ; 并包装 |
 | `parse_if` | AST_IF | if (cond) { then } [else { else }] |
 | `parse_while` | AST_WHILE | while (cond) { body } |
 | `parse_for` | AST_FOR | for (init; cond; update) { body } |
@@ -512,16 +512,14 @@ ast_node_t *parse_assign_or_expr_stmt(parser_t *p) {
 
 ### 8.4 案例三：discard 语句
 
-`_ = expr;` — `_` 是标识符但语义是丢弃。首 token 与普通标识符相同。
-
-统一在 `parse_assign_or_expr_stmt` 中处理：解析表达式后，若左值是 `_` 标识符且后接 `=`，构造 `AST_DISCARD` 而非 `AST_ASSIGN`。
+`_ = expr;` — `_` 是标识符但语义是丢弃。语法阶段不特殊处理，统一为 `AST_ASSIGN(name="_")`；语义分析时检查左值是 `_` 则丢弃值返回 void。
 
 ### 8.5 总结
 
 | 歧义场景 | 共同首 token | 统一式函数 | 分歧点 |
 |----------|-------------|-----------|--------|
 | 函数定义 vs 函数字面量 vs 函数类型 | `func` | `parse_func_like` | name 有无、`)` 后 `:` vs `->` |
-| 赋值 vs 表达式语句 vs discard | 标识符 / `_` | `parse_assign_or_expr_stmt` | 表达式后 `=` / `+=` 等 |
+| 赋值 vs 表达式语句 | 标识符 | `parse_assign_or_expr_stmt` | 表达式后 `=` / `+=` 等（赋值已在 Pratt parser 中处理） |
 
 统一式的优点：
 - **无需回溯**：解析到分歧点时上下文已足够判断，不浪费已解析的结果

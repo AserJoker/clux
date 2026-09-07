@@ -23,7 +23,6 @@ extern "C" {
 #include "parser/ast_ident.h"
 #include "parser/ast_assign.h"
 #include "parser/ast_expr_stmt.h"
-#include "parser/ast_discard.h"
 #include "parser/ast_var_def.h"
 #include "parser/ast_block.h"
 #include "parser/ast_if.h"
@@ -365,74 +364,78 @@ TEST_F(ParseStmtTest, Assign_MissingRHS) {
 }
 
 /* ================================================================ */
-/* Discard: _ = expr;                                                */
+/* Underscore assignment: _ = expr; (discard semantics in Sema)       */
 /* ================================================================ */
 
 /**
- * Scenario: Discard statement _ = foo();
- * Expected: AST_DISCARD with expr being AST_CALL
+ * Scenario: _ = foo(); is parsed as AST_ASSIGN with name="_"
+ * Expected: AST_ASSIGN, name="_", op="=", value is AST_CALL
  */
-TEST_F(ParseStmtTest, Discard_FunctionCall) {
+TEST_F(ParseStmtTest, UnderscoreAssign_FunctionCall) {
     parser_t *p = make_parser("_ = foo();");
     ASSERT_NE(p, nullptr);
 
     ast_node_t *node = parse_assign_or_expr_stmt(p);
     ASSERT_NE(node, nullptr);
-    ASSERT_EQ(node->kind, AST_DISCARD);
+    ASSERT_EQ(node->kind, AST_ASSIGN);
 
-    auto *discard = (ast_discard_t *)node;
-    ASSERT_NE(discard->expr, nullptr);
-    EXPECT_EQ(discard->expr->kind, AST_CALL);
+    auto *assign = (ast_assign_t *)node;
+    EXPECT_EQ(assign->name.len, 1u);
+    EXPECT_EQ(assign->name.ptr[0], '_');
+    expect_token_text(assign->op, "=");
+    ASSERT_NE(assign->value, nullptr);
+    EXPECT_EQ(assign->value->kind, AST_CALL);
 
     cleanup_parser(p);
 }
 
 /**
- * Scenario: Discard with integer literal: _ = 42;
- * Expected: AST_DISCARD with expr being AST_INT_LIT
+ * Scenario: _ = 42; is parsed as AST_ASSIGN with name="_"
+ * Expected: AST_ASSIGN, name="_", value is AST_INT_LIT(42)
  */
-TEST_F(ParseStmtTest, Discard_IntLiteral) {
+TEST_F(ParseStmtTest, UnderscoreAssign_IntLiteral) {
     parser_t *p = make_parser("_ = 42;");
     ASSERT_NE(p, nullptr);
 
     ast_node_t *node = parse_assign_or_expr_stmt(p);
     ASSERT_NE(node, nullptr);
-    ASSERT_EQ(node->kind, AST_DISCARD);
+    ASSERT_EQ(node->kind, AST_ASSIGN);
 
-    auto *discard = (ast_discard_t *)node;
-    ASSERT_NE(discard->expr, nullptr);
-    EXPECT_EQ(discard->expr->kind, AST_INT_LIT);
-
-    auto *lit = (ast_int_lit_t *)discard->expr;
-    EXPECT_EQ(lit->value, 42ULL);
+    auto *assign = (ast_assign_t *)node;
+    EXPECT_EQ(assign->name.len, 1u);
+    EXPECT_EQ(assign->name.ptr[0], '_');
+    ASSERT_NE(assign->value, nullptr);
+    EXPECT_EQ(assign->value->kind, AST_INT_LIT);
+    EXPECT_EQ(((ast_int_lit_t *)assign->value)->value, 42ULL);
 
     cleanup_parser(p);
 }
 
 /**
- * Scenario: Discard with binary expression: _ = a + b;
- * Expected: AST_DISCARD with expr being AST_BINARY
+ * Scenario: _ = a + b; is parsed as AST_ASSIGN with name="_"
+ * Expected: AST_ASSIGN, name="_", value is AST_BINARY
  */
-TEST_F(ParseStmtTest, Discard_BinaryExpr) {
+TEST_F(ParseStmtTest, UnderscoreAssign_BinaryExpr) {
     parser_t *p = make_parser("_ = a + b;");
     ASSERT_NE(p, nullptr);
 
     ast_node_t *node = parse_assign_or_expr_stmt(p);
     ASSERT_NE(node, nullptr);
-    ASSERT_EQ(node->kind, AST_DISCARD);
+    ASSERT_EQ(node->kind, AST_ASSIGN);
 
-    auto *discard = (ast_discard_t *)node;
-    ASSERT_NE(discard->expr, nullptr);
-    EXPECT_EQ(discard->expr->kind, AST_BINARY);
+    auto *assign = (ast_assign_t *)node;
+    EXPECT_EQ(assign->name.len, 1u);
+    EXPECT_EQ(assign->name.ptr[0], '_');
+    ASSERT_NE(assign->value, nullptr);
+    EXPECT_EQ(assign->value->kind, AST_BINARY);
 
     cleanup_parser(p);
 }
 
 /**
- * Scenario: Discard missing semicolon: _ = 42
- * Expected: AST_ERROR
+ * Scenario: _ = 42 missing semicolon → AST_ERROR
  */
-TEST_F(ParseStmtTest, Discard_MissingSemicolon) {
+TEST_F(ParseStmtTest, UnderscoreAssign_MissingSemicolon) {
     parser_t *p = make_parser("_ = 42");
     ASSERT_NE(p, nullptr);
 
@@ -444,10 +447,9 @@ TEST_F(ParseStmtTest, Discard_MissingSemicolon) {
 }
 
 /**
- * Scenario: Discard missing RHS: _ = ;
- * Expected: AST_ERROR
+ * Scenario: _ = ; missing RHS → AST_ERROR
  */
-TEST_F(ParseStmtTest, Discard_MissingRHS) {
+TEST_F(ParseStmtTest, UnderscoreAssign_MissingRHS) {
     parser_t *p = make_parser("_ = ;");
     ASSERT_NE(p, nullptr);
 
@@ -459,11 +461,10 @@ TEST_F(ParseStmtTest, Discard_MissingRHS) {
 }
 
 /**
- * Scenario: _ is NOT a discard when used as compound assignment
- * _ += 1; should be AST_ASSIGN (not DISCARD), because only plain = triggers discard
- * Expected: AST_ASSIGN with name="_"
+ * Scenario: _ += 1; is AST_ASSIGN with name="_", op="+="
+ * Compound assignment with underscore is also a normal AST_ASSIGN
  */
-TEST_F(ParseStmtTest, Underscore_CompoundAssignIsNotDiscard) {
+TEST_F(ParseStmtTest, UnderscoreAssign_CompoundAssign) {
     parser_t *p = make_parser("_ += 1;");
     ASSERT_NE(p, nullptr);
 

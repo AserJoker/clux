@@ -4,7 +4,6 @@
 #include "parser/ast_ident.h"
 #include "parser/ast_assign.h"
 #include "parser/ast_expr_stmt.h"
-#include "parser/ast_discard.h"
 #include "parser/ast_var_def.h"
 #include "parser/ast_block.h"
 #include "parser/ast_if.h"
@@ -84,16 +83,12 @@ ast_node_t *parse_assign_or_expr_stmt(parser_t *p) {
             return ast_error_new(p->arena, tb, p->pos,
                                  "expected ';' after assignment");
         }
-        if (expr->kind == AST_DISCARD) {
-            return ast_error_new(p->arena, tb, p->pos,
-                                 "expected ';' after discard statement");
-        }
         return ast_error_new(p->arena, tb, p->pos,
                              "expected ';' after expression statement");
     }
 
-    /* 赋值 / discard 已经是完整语句节点 */
-    if (expr->kind == AST_ASSIGN || expr->kind == AST_DISCARD) return expr;
+    /* 赋值已经是完整语句节点 */
+    if (expr->kind == AST_ASSIGN) return expr;
 
     /* 普通表达式 → 包装为 AST_EXPR_STMT */
     ast_node_t *stmt = ast_expr_stmt_new(p->arena, tb, p->pos);

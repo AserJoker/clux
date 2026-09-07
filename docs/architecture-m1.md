@@ -181,7 +181,7 @@ typedef enum {
     AST_CONTINUE,        // continue;
     AST_BLOCK,           // { stmts... }
     AST_EXPR_STMT,       // expr;（表达式作为语句）
-    AST_DISCARD,         // _ = expr;（显式丢弃返回值）
+    /* AST_DISCARD removed: _ = expr is AST_ASSIGN, discard semantics in Sema */
 
     // --- 表达式 ---
     AST_BINARY,          // lhs op rhs
@@ -278,11 +278,6 @@ typedef struct {
     ast_node_t  base;
     ast_node_t *expr;
 } ast_expr_stmt_t;
-
-typedef struct {
-    ast_node_t  base;
-    ast_node_t *expr;        // 被丢弃的表达式
-} ast_discard_t;
 ```
 
 **表达式节点**：

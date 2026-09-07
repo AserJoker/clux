@@ -18,7 +18,6 @@
 #include "parser/ast_return.h"
 #include "parser/ast_assign.h"
 #include "parser/ast_expr_stmt.h"
-#include "parser/ast_discard.h"
 #include "parser/ast_ident.h"
 #include "parser/ast_int_lit.h"
 #include "parser/ast_float_lit.h"
@@ -281,12 +280,6 @@ static void print_ast_json(const ast_node_t *node, int indent) {
     const ast_expr_stmt_t *es = (const ast_expr_stmt_t *)node;
     printf(",\"expr\":");
     print_ast_json(es->expr, indent + 1);
-    break;
-  }
-  case AST_DISCARD: {
-    const ast_discard_t *d = (const ast_discard_t *)node;
-    printf(",\"expr\":");
-    print_ast_json(d->expr, indent + 1);
     break;
   }
   case AST_BINARY: {

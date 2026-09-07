@@ -9,7 +9,6 @@
 #include "parser/ast_unary.h"
 #include "parser/ast_binary.h"
 #include "parser/ast_assign.h"
-#include "parser/ast_discard.h"
 #include "parser/ast_call.h"
 #include "parser/ast_member.h"
 #include "parser/ast_index.h"
@@ -98,12 +97,6 @@ static bool is_assign_op_token(const token_t *tok) {
         return c == '+' || c == '-' || c == '*' || c == '/' || c == '%';
     }
     return false;
-}
-
-static bool is_underscore_node(ast_node_t *node) {
-    if (node->kind != AST_IDENT) return false;
-    strslice_t name = ((ast_ident_t *)node)->name;
-    return name.len == 1 && name.ptr[0] == '_';
 }
 
 /* ---- parse_primary: 原子表达式入口 ---- */
@@ -317,45 +310,24 @@ ast_node_t *parse_expr_prec(parser_t *p, int min_prec) {
         skip_trivia(p);
 
         /* 2a. 赋值运算符：最低优先级，右结合
-         *     赋值不是普通中缀运算符，左侧必须是标识符（或 _ 表示 discard） */
+         *     左值必须是标识符，_ = expr 也是 AST_ASSIGN(name="_")
+         *     discard 语义由 Sema 处理 */
         if (is_assign_op_token(cur_token(p))) {
             if (ASSIGN_LEFT_PREC < min_prec) break;
 
             const token_t *op_tok = cur_token(p);
             uint32_t op_pos = p->pos;
-            advance(p);
-            skip_trivia(p);
 
-            /* _ = expr → discard；_ += expr 等按普通赋值处理 */
-            if (is_underscore_node(left)) {
-                strslice_t op_text = token_strslice(op_tok);
-                if (op_text.len == 1 && op_text.ptr[0] == '=') {
-                    /* 纯 = 与 _ 构成 discard */
-                    ast_node_t *value = parse_expr_prec(p, ASSIGN_LEFT_PREC);
-                    if (!value || value->kind == AST_ERROR) {
-                        if (!value) {
-                            return ast_error_new(p->arena, op_pos, p->pos,
-                                                 "expected expression after '_ ='");
-                        }
-                        return value;
-                    }
-
-                    ast_node_t *node = ast_discard_new(p->arena, left->tok_begin, p->pos);
-                    ((ast_discard_t *)node)->expr = value;
-                    left = node;
-                    continue;
-                }
-                /* _ 与复合赋值 → 普通赋值（name="_"） */
-                /* fall through 到下面的普通赋值处理 */
-            }
-
-            /* 普通赋值：左值必须是标识符 */
+            /* 左值必须是标识符 */
             if (left->kind != AST_IDENT) {
                 return ast_error_new(p->arena, left->tok_begin, p->pos,
                                      "invalid assignment target");
             }
 
             strslice_t name = ((ast_ident_t *)left)->name;
+            advance(p);
+            skip_trivia(p);
+
             ast_node_t *value = parse_expr_prec(p, ASSIGN_LEFT_PREC);
             if (!value || value->kind == AST_ERROR) {
                 if (!value) {

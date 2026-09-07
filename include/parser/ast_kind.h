@@ -17,7 +17,7 @@ typedef enum {
     AST_CONTINUE,        /* continue; */
     AST_BLOCK,           /* { stmts... } */
     AST_EXPR_STMT,       /* expr;（表达式作为语句） */
-    AST_DISCARD,         /* _ = expr;（显式丢弃返回值） */
+    /* AST_DISCARD removed: _ = expr is AST_ASSIGN, discard semantics in Sema */
 
     /* --- 表达式 --- */
     AST_BINARY,          /* lhs op rhs */
