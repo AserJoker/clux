@@ -1769,3 +1769,193 @@ TEST_F(ScopeMech, TrackRegistersToOwned) {
 
     vm_pop_scope(vm);
 }
+
+/* ================================================================ */
+/* 10. Shadow Value                                                  */
+/* ================================================================ */
+
+TEST_F(ValueCore, ShadowMakeAndIsShadow) {
+    value_t *s = value_make_shadow(vm, vm->type_i32);
+    EXPECT_TRUE(value_is_shadow(s));
+    EXPECT_EQ(value_type(s), vm->type_i32);
+    EXPECT_EQ(value_data(s), nullptr);
+    /* shadow auto-track 到 current_scope，vm_destroy 释放 */
+}
+
+TEST_F(ValueCore, ShadowCloneReturnsShadow) {
+    value_t *s = value_make_shadow(vm, vm->type_i32);
+    value_t *cloned = value_clone(vm, s);
+    EXPECT_TRUE(value_is_shadow(cloned));
+    EXPECT_EQ(value_type(cloned), vm->type_i32);
+    EXPECT_EQ(value_data(cloned), nullptr);
+}
+
+TEST_F(ValueCore, ShadowCloneStrReturnsShadow) {
+    value_t *s = value_make_shadow(vm, vm->type_str);
+    value_t *cloned = value_clone(vm, s);
+    EXPECT_TRUE(value_is_shadow(cloned));
+    EXPECT_EQ(value_type(cloned), vm->type_str);
+    EXPECT_EQ(value_data(cloned), nullptr);
+}
+
+TEST_F(ValueCore, ShadowAddNormalReturnsShadow) {
+    value_t *sa = value_make_shadow(vm, vm->type_i32);
+    value_t *b  = make_i32_raw(vm, 42);
+    value_t *r  = value_add(vm, sa, b);
+    EXPECT_TRUE(value_is_shadow(r));
+    EXPECT_EQ(value_type(r), vm->type_i32);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, ShadowAddShadowReturnsShadow) {
+    value_t *sa = value_make_shadow(vm, vm->type_i32);
+    value_t *sb = value_make_shadow(vm, vm->type_i32);
+    value_t *r  = value_add(vm, sa, sb);
+    EXPECT_TRUE(value_is_shadow(r));
+    EXPECT_EQ(value_type(r), vm->type_i32);
+}
+
+TEST_F(ValueCore, ShadowAddWithPromotionReturnsShadow) {
+    value_t *sa = value_make_shadow(vm, vm->type_i8);
+    value_t *b  = make_i32_raw(vm, 42);
+    value_t *r  = value_add(vm, sa, b);
+    EXPECT_TRUE(value_is_shadow(r));
+    /* i8 + i32 → promote to i32 */
+    EXPECT_EQ(value_type(r), vm->type_i32);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, ShadowComparisonReturnsBoolShadow) {
+    value_t *sa = value_make_shadow(vm, vm->type_i32);
+    value_t *sb = value_make_shadow(vm, vm->type_i32);
+    value_t *r  = value_lt(vm, sa, sb);
+    EXPECT_TRUE(value_is_shadow(r));
+    EXPECT_EQ(value_type(r), vm->type_bool);
+}
+
+TEST_F(ValueCore, ShadowFloatAddReturnsShadow) {
+    value_t *sa = value_make_shadow(vm, vm->type_f64);
+    value_t *sb = value_make_shadow(vm, vm->type_f64);
+    value_t *r  = value_add(vm, sa, sb);
+    EXPECT_TRUE(value_is_shadow(r));
+    EXPECT_EQ(value_type(r), vm->type_f64);
+}
+
+TEST_F(ValueCore, ShadowBoolLnotReturnsShadow) {
+    value_t *sa = value_make_shadow(vm, vm->type_bool);
+    value_t *r  = value_lnot(vm, sa);
+    EXPECT_TRUE(value_is_shadow(r));
+    EXPECT_EQ(value_type(r), vm->type_bool);
+}
+
+TEST_F(ValueCore, ShadowStrEqReturnsBoolShadow) {
+    value_t *sa = value_make_shadow(vm, vm->type_str);
+    value_t *sb = value_make_shadow(vm, vm->type_str);
+    value_t *r  = value_eq(vm, sa, sb);
+    EXPECT_TRUE(value_is_shadow(r));
+    EXPECT_EQ(value_type(r), vm->type_bool);
+}
+
+TEST_F(ValueCore, ShadowImplicitCastReturnsShadow) {
+    value_t *sa = value_make_shadow(vm, vm->type_i8);
+    value_t *r  = value_implicit_cast(vm, sa, vm->type_i32);
+    EXPECT_TRUE(value_is_shadow(r));
+    EXPECT_EQ(value_type(r), vm->type_i32);
+}
+
+TEST_F(ValueCore, ShadowImplicitCastSameTypeReturnsShadow) {
+    value_t *sa = value_make_shadow(vm, vm->type_i32);
+    value_t *r  = value_implicit_cast(vm, sa, vm->type_i32);
+    EXPECT_TRUE(value_is_shadow(r));
+    EXPECT_EQ(value_type(r), vm->type_i32);
+}
+
+TEST_F(ValueCore, ShadowImplicitCastF32ToF64ReturnsShadow) {
+    value_t *sa = value_make_shadow(vm, vm->type_f32);
+    value_t *r  = value_implicit_cast(vm, sa, vm->type_f64);
+    EXPECT_TRUE(value_is_shadow(r));
+    EXPECT_EQ(value_type(r), vm->type_f64);
+}
+
+TEST_F(ValueCore, ShadowExplicitCastReturnsShadow) {
+    value_t *sa = value_make_shadow(vm, vm->type_i32);
+    value_t *r  = value_explicit_cast(vm, sa, vm->type_f64);
+    EXPECT_TRUE(value_is_shadow(r));
+    EXPECT_EQ(value_type(r), vm->type_f64);
+}
+
+TEST_F(ValueCore, ShadowExplicitCastFloatToIntReturnsShadow) {
+    value_t *sa = value_make_shadow(vm, vm->type_f64);
+    value_t *r  = value_explicit_cast(vm, sa, vm->type_i32);
+    EXPECT_TRUE(value_is_shadow(r));
+    EXPECT_EQ(value_type(r), vm->type_i32);
+}
+
+TEST_F(ValueCore, ShadowExplicitCastBoolToIntReturnsShadow) {
+    value_t *sa = value_make_shadow(vm, vm->type_bool);
+    value_t *r  = value_explicit_cast(vm, sa, vm->type_i32);
+    EXPECT_TRUE(value_is_shadow(r));
+    EXPECT_EQ(value_type(r), vm->type_i32);
+}
+
+TEST_F(ValueCore, ShadowExplicitCastIncompatibleReturnsError) {
+    value_t *sa = value_make_shadow(vm, vm->type_i32);
+    value_t *r  = value_explicit_cast(vm, sa, vm->type_str);
+    EXPECT_TRUE(value_is_error(vm, r));
+}
+
+TEST_F(ValueCore, ShadowImplicitCastNotWideningReturnsError) {
+    value_t *sa = value_make_shadow(vm, vm->type_i32);
+    value_t *r  = value_implicit_cast(vm, sa, vm->type_i8);
+    EXPECT_TRUE(value_is_error(vm, r));
+}
+
+TEST_F(ValueCore, ShadowAssignReturnsDst) {
+    value_t *sa = value_make_shadow(vm, vm->type_i32);
+    value_t *b  = make_i32_raw(vm, 42);
+    value_t *r  = value_assign(vm, sa, b);
+    EXPECT_EQ(r, sa);
+    EXPECT_TRUE(value_is_shadow(sa));
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, ShadowAssignWithImplicitCast) {
+    value_t *sa = value_make_shadow(vm, vm->type_i32);
+    value_t *b  = make_i8_raw(vm, 10);
+    value_t *r  = value_assign(vm, sa, b);
+    EXPECT_EQ(r, sa);
+    EXPECT_TRUE(value_is_shadow(sa));
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, ShadowDisposeIsSafe) {
+    /* shadow value dispose 不应崩溃（无 data 需要释放） */
+    vm_push_scope(vm);
+    value_t *sa = value_make_shadow(vm, vm->type_str);
+    (void)sa;
+    vm_pop_scope(vm);  /* pop_scope 会 dispose + free shadow value */
+}
+
+TEST_F(ValueCore, ShadowNegReturnsShadow) {
+    value_t *sa = value_make_shadow(vm, vm->type_i32);
+    value_t *r  = value_neg(vm, sa);
+    EXPECT_TRUE(value_is_shadow(r));
+    EXPECT_EQ(value_type(r), vm->type_i32);
+}
+
+TEST_F(ValueCore, ShadowBnotReturnsShadow) {
+    value_t *sa = value_make_shadow(vm, vm->type_i32);
+    value_t *r  = value_bnot(vm, sa);
+    EXPECT_TRUE(value_is_shadow(r));
+    EXPECT_EQ(value_type(r), vm->type_i32);
+}
+
+TEST_F(ValueCore, ShadowMixedIntPromotion) {
+    /* shadow i8 + normal i64 → promote to i64, shadow result */
+    value_t *sa = value_make_shadow(vm, vm->type_i8);
+    value_t *b  = make_i64_raw(vm, 42);
+    value_t *r  = value_add(vm, sa, b);
+    EXPECT_TRUE(value_is_shadow(r));
+    EXPECT_EQ(value_type(r), vm->type_i64);
+    raw_free(vm, b);
+}

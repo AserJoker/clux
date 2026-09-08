@@ -16,14 +16,27 @@ clux run <file.cx>
   ├─ ③ Parser ──→ AST（挂 arena）
   │      │  语法错误：panic mode 恢复，收集诊断（退出码 1，不进入 sema）
   │
-  ├─ ④ Semantic Analysis (顶层多遍扫描)
+  ├─ ④ Semantic Analysis (shadow value 驱动)
+  │      │  使用 shadow value（is_shadow=true, data=NULL）遍历 AST，
+  │      │  复用 VM vtable 类型协商路径做类型检查与推导。
+  │      │  所有类型验证通过后才进入字节码编译。
   │      ├─ Pass 1: Name Collection — 收集所有顶层名称(函数名)
   │      ├─ Pass 2: Type Collection — 收集函数签名(参数类型+返回类型)
-  │      └─ Pass 3: Body Processing  — 处理函数体(名称解析+类型检查)
+  │      └─ Pass 3: Body Processing  — shadow value 遍历函数体(名称解析+类型检查+结果类型推导)
   │      │  语义错误：收集诊断（退出码 1）
   │
-  ├─ ⑤ Interpreter (AST-walking) ──→ 执行结果（退出码 0）
-  │      运行时错误（如 TDZ 访问）→ 退出码 2
+  ├─ ⑤ Bytecode Compiler ──→ 字节码模块（func/module 两粒度）
+  │      │  AST 编译为线性字节码指令序列，类型已由 sema 验证，
+  │      │  编译期计算（常量折叠）在表达式粒度编译→执行→嵌入。
+  │      ├─ 函数级：函数体编译为字节码，延迟到运行时执行
+  │      ├─ 表达式级：常量折叠、编译期计算（编译→执行→得到常量→嵌入上层）
+  │      └─ 模块级：全局初始化代码编译为模块入口字节码
+  │      │  编译错误：收集诊断（退出码 1）
+  │
+  ├─ ⑥ Bytecode VM ──→ 执行结果（退出码 0）
+  │      栈式字节码执行器，PC 指针驱动，支持暂停/恢复。
+  │      运行时不再做类型检查（已由 sema 完成），执行器更精简。
+  │      运行时错误（如除零、空指针）→ 退出码 2
   │
   ▼
   诊断通道：所有阶段的诊断收进公共 diag 收集器，driver 统一打印到 stderr
@@ -35,16 +48,16 @@ clux run <file.cx>
 |----------|----------|--------|
 | 词法错误（Lexer） | 产出 TOKEN_TYPE_ERROR 并继续；上层决定致命性 | 1 |
 | 语法错误（Parser） | panic mode 跳到语句边界，可收集多条 | 1 |
-| 语义错误（Sema） | 收集诊断，不执行 | 1 |
-| 运行时错误（Interp） | 立即终止 | 2 |
+| 语义错误（Sema） | 收集诊断，不编译不执行 | 1 |
+| 运行时错误（Bytecode VM） | 立即终止 | 2 |
 
 ### 1.0 为什么需要 Driver
 
 `cmd_run` 只负责参数解析，真正的流水线编排在独立 `driver` 模块（`include/driver/driver.h`, `src/driver/driver.c`）：
 
 - `driver_compile_file()`：加载 + lex + parse + sema，产物是挂在 arena 上的 AST 与符号表
-- `driver_run_file()`：compile + interp，返回进程退出码
-- 未来 `clux build`（转译）复用 compile 段，`clux run` 复用 compile + execute 段
+- `driver_run_file()`：compile + bytecode compile + execute，返回进程退出码
+- 未来 `clux build`（转译）复用 compile + bytecode compile 段，`clux run` 复用全流程
 
 ### 1.1 为什么需要多遍扫描
 
@@ -372,82 +385,171 @@ size_t      ast_kind_size(ast_kind_t kind);
 6. `AST_BREAK` / `AST_CONTINUE` 无子类结构，仅需 kind + tok range
 7. `AST_ERROR` 是完整的错误报告节点，含 `message`（错误描述）和 `node`（发生错误的子节点范围），用于 panic mode 恢复时占位及后续诊断
 
-### 2.5 类型系统 (include/sema/type.h, src/sema/type.c) —— 尚未实现（sema/ 目录为空）
+### 2.5 VM 核心 (include/vm/*.h, src/vm/*.c) —— 已实现
+
+VM 是 clux 的值计算引擎，贯穿语义分析和字节码执行两个阶段。M1 阶段 VM 的定位是**表达式求值器和作用域/变量生命周期管理工具**。
+
+#### 2.5.1 类型系统 (include/vm/type.h, src/vm/type.c)
+
+类型不是独立的 sema 子系统，而是 VM 的一部分。每个类型携带 vtable（虚表），类型行为通过 vtable 函数指针分派。
 
 ```c
-typedef enum {
-    TYPE_VOID, TYPE_BOOL,
-    TYPE_I8, TYPE_I16, TYPE_I32, TYPE_I64,
-    TYPE_U8, TYPE_U16, TYPE_U32, TYPE_U64,
-    TYPE_F32, TYPE_F64,
-    TYPE_STR,
-    TYPE_CONST,      // const T — M1 支持
-    TYPE_VOLATILE,   // volatile T — M1 忽略
-    // 以下 M1 不支持，类型定义先行
-    TYPE_POINTER,    // *T
-    TYPE_ARRAY,      // [N]T
-    TYPE_SLICE,      // []T
-    TYPE_TUPLE,      // <T1, T2, ...>
-    TYPE_FUNC,
-} type_kind_t;
-
 typedef struct type {
-    type_kind_t  kind;
-    char        *name;
-    uint64_t     size;
-    uint64_t     align;
-    bool         is_const;      // 该类型是否被 const 修饰
+    const char       *name;
+    uint64_t          size;
+    uint64_t          align;
+    const vtable_t   *vtable;
 } type_t;
 ```
 
-基础类型单例：`type_i32()`, `type_f64()`, `type_bool()` 等。
+基础类型单例：`type_i8()` … `type_i64()`, `type_u8()` … `type_u64()`, `type_f32()`, `type_f64()`, `type_bool()`, `type_str()`, `type_void()`。
 
-函数类型：
-
-```c
-typedef struct {
-    type_t      base;
-    type_t     *param_types;
-    int         param_count;
-    type_t      return_type;
-} func_type_t;
-```
-
-### 2.6 鸭子类型兼容性 (include/sema/type_compat.h, src/sema/type_compat.c) —— 尚未实现
-
-M1 实现：
+每个类型通过 vtable 暴露行为：
 
 ```c
-// 两个类型布局兼容
-bool type_layout_compatible(type_t a, type_t b);
-
-// 赋值兼容（布局兼容 + 安全隐式转换）
-bool type_assign_compatible(type_t target, type_t source);
+typedef struct vtable {
+    /* 生命周期 */
+    void    (*dispose)(vm_t *vm, value_t *v);
+    value_t *(*clone)(vm_t *vm, value_t *v);
+    value_t *(*assign)(vm_t *vm, value_t *dst, value_t *src);
+    /* 类型转换 */
+    value_t *(*implicit_cast)(vm_t *vm, value_t *v, const type_t *target);
+    value_t *(*explicit_cast)(vm_t *vm, value_t *v, const type_t *target);
+    /* 二元运算 */
+    value_t *(*binary)(vm_t *vm, int op, value_t *lhs, value_t *rhs);
+    /* 一元运算 */
+    value_t *(*unary)(vm_t *vm, int op, value_t *v);
+} vtable_t;
 ```
 
-M1 仅处理原始类型：kind 相同即布局兼容。
+- `assign`：原地赋值，向左值类型 implicit_cast + memcpy，不涉及类型协商/promote
+- `implicit_cast`：安全隐式转换（如 i8→i32 宽化）
+- `explicit_cast`：显式转换（`as` 运算符），允许窄化
+- `binary`：二元运算，内部经 promote → implicit_cast → safe_cast 协商后执行
+- vtable 槽为 NULL 表示该类型不支持此操作，调用时返回 error
 
-### 2.7 作用域 (include/sema/scope.h, src/sema/scope.c) —— 尚未实现
+类型实现各自独立文件：`type_int.c`（signed/unsigned 共享 assign）、`type_float.c`、`type_bool.c`、`type_str.c`、`type_func.c`、`type_error.c`、`type_void.c`、`type_type.c`。
+
+#### 2.5.2 值 (include/vm/value.h, src/vm/value.c)
+
+`value_t` 为**不透明类型**，`struct value_t` 定义仅在 `value.c` 中，外部通过访问器操作：
 
 ```c
-typedef struct scope {
-    struct scope *parent;
-    strmap_t      names;  // name -> symbol_t
-} scope_t;
+const type_t *value_type(const value_t *v);
+void         *value_data(const value_t *v);
 ```
 
-操作：`scope_push()`, `scope_pop()`, `scope_declare()`, `scope_lookup()`。
+值使用 `void *data` 指向按 `type->size` 分配的堆内存（非 union），支持任意宽度类型。VM 全局持有所有 type 和 function 对象。
 
-### 2.8 语义分析 (include/sema/resolver.h, src/sema/resolver.c) —— 尚未实现
+#### 2.5.3 作用域 (include/vm/scope.h, src/vm/scope.c)
 
-遍历 AST：
-1. 名称解析：绑定标识符到声明
-2. 类型检查：表达式类型推断、赋值兼容性、函数调用参数匹配
-3. 结果以类型表（kind → 类型）等外部结构记录，不写入 AST 节点
+统一所有权模型：`vars` 做名称→值的借用映射，`owned` 向量管理值生命周期。
 
-### 2.9 诊断 (include/diag/diagnostic.h, src/diag/diagnostic.c) —— 尚未实现（diag/ 目录为空）
+- `scope_define(vm, scope, name, v)`：定义变量，重复定义返回 error
+- `scope_lookup(scope, name)`：查找变量（遍历父链）
+- `scope_push(vm, parent)` / `scope_pop(vm, scope)`：进入/退出作用域
+- `value_clone` / `value_make` 自动 track 到 `vm->current_scope->owned`
+- 退出作用域时统一释放 owned 值，禁止手动 dispose
 
-**公共模块**：Lexer、Parser、Sema、Interp 共用同一个收集器，driver 统一在出口打印，而不是边错边打。
+#### 2.5.4 函数 (include/vm/function.h, src/vm/function.c)
+
+`func_t` 为透明类型（后续需继承），支持 FFI 和用户函数：
+
+```c
+struct func_t {
+    cfunc_t         cfunc;          /* C 函数指针（FFI） */
+    scope_t        *closure_scope;
+    scope_t        *root_scope;
+    const type_t  **params;
+    size_t          param_count;
+    const type_t   *return_type;
+    strslice_t      name;
+    bool            is_variadic;    /* FFI 可变参数（如 printf） */
+};
+```
+
+- `func_vcall`：函数调用，非 variadic 函数检查参数数量，variadic 函数允许 `argc > param_count`
+- 短路运算符 `&&` / `||` 不走 vtable binary 分派，在调用层按 op token 做惰性求值
+
+### 2.6 Shadow Value (include/vm/value.h) —— 尚未实现
+
+语义分析阶段使用 shadow value 做类型检查与推导。Shadow value 复用 VM vtable 运算路径，不引入独立的 sema 类型系统。
+
+**核心机制：**
+
+```c
+struct value_t {
+    const type_t *type;
+    void         *data;       /* shadow 时为 NULL */
+    bool          is_shadow;  /* true = 只做类型计算，无实际数据 */
+    /* ... */
+};
+```
+
+- `is_shadow=true` 时 `data=NULL`，所有运算只进行类型计算不操作实际数据
+- `value_make_shadow(vm, type)` 构造器：分配 value_t，设 type，data=NULL，is_shadow=true
+- shadow 标志放在 `value_t` 内部（非 type_t 层面）
+
+**传播规则：**
+
+| 运算 | 结果 |
+|------|------|
+| shadow ⊕ normal | shadow（结果只有类型，无数据） |
+| shadow ⊕ shadow | shadow |
+| assign/cast 对 shadow | 只检查类型兼容性，不拷贝数据 |
+| clone 对 shadow | 返回新的 shadow（不分配 data） |
+
+**传播位置：** 在 **vtable 函数内部**（非 DISPATCH 宏层）。Shadow value 需要经历完整的类型协商流程（VTABLE_BINARY 的 promote、implicit_cast、safe_cast），在类型检查/协商完成之后、实际读写 data 之前检查 `is_shadow`。如果是 shadow 则用结果类型构造 shadow 返回值，不分配/拷贝 data。
+
+**执行流水线中的位置：**
+
+```
+源码 → AST → 语义分析（shadow value 类型检查/推导）→ 字节码编译 → 字节码执行
+```
+
+- 每次执行脚本都先走语义分析，不是可选的
+- 语义分析用 shadow value 遍历 AST，验证类型合法性、推导结果类型、检查变量定义
+- 全部通过后才编译为字节码执行
+- 运行时不再做类型检查，字节码执行器更精简
+
+### 2.7 字节码 IR —— 尚未实现
+
+放弃 AST 直走解释，改为编译 AST 到线性字节码后执行。
+
+**核心动机：**
+- AST 直走解释无法做到暂停/恢复（如 generator、async/await、debugger 断点）
+- 线性字节码是状态机，可以保存 PC 指针随时暂停恢复
+- 编译期计算需要复用同一套执行引擎
+
+**指令集（设计阶段）：**
+- 算术运算、比较运算、跳转、调用、返回
+- load/store（变量加载/存储）
+- 类型转换（implicit_cast / explicit_cast 的编译期静态分派或运行时 vtable 分派）
+- 常量加载（编译期计算结果直接嵌入）
+
+**编译流程三粒度分级：**
+
+| 粒度 | 编译时机 | 用途 |
+|------|----------|------|
+| 表达式级 | 编译过程中 | 常量折叠、类型推导等编译期计算 |
+| 函数级 | 延迟到运行时 | 函数体编译为字节码 |
+| 模块级 | 模块加载时 | 全局初始化、模块顶层代码 |
+
+为什么需要分级：编译期计算意味着编译过程中需要执行部分字节码。表达式级编译 → 执行 → 得到常量结果 → 嵌入上层字节码。函数级编译 → 延迟到运行时执行。模块级编译 → 模块加载时执行全局初始化代码。
+
+**与现有 VM 的关系：**
+- 字节码执行时仍可通过 vtable 分派类型运算，或编译时静态分派（类型已由 sema 确定）
+- shadow value 解决类型层面编译期计算，字节码解决值层面执行和运行时
+- 两者互补：shadow value 先做（语义分析基础设施），字节码 IR 后做（大工程）
+
+**执行器设计：**
+- 栈式或寄存器式 VM，PC 指针驱动
+- 支持保存/恢复 PC 指针（暂停/恢复的基础）
+- 运行时不再做类型检查（已由 sema shadow value 完成）
+
+### 2.8 诊断 (include/diag/diagnostic.h, src/diag/diagnostic.c) —— 尚未实现（diag/ 目录为空）
+
+**公共模块**：Lexer、Parser、Sema、Bytecode Compiler、Bytecode VM 共用同一个收集器，driver 统一在出口打印，而不是边错边打。
 
 ```c
 typedef enum { DIAG_ERROR, DIAG_WARNING, DIAG_NOTE } diag_level_t;
@@ -472,38 +574,15 @@ bool diag_has_error(const diag_buf_t *db);
 
 输出格式：`<file>:<line>:<col>: error: <message>`。
 
-### 2.10 解释器 (include/runtime/interp.h, src/runtime/interp.c) —— 尚未实现（无 runtime/ 目录）
+### 2.9 语义分析 (include/sema/resolver.h, src/sema/resolver.c) —— 尚未实现
 
-AST-walking 解释器。
+遍历 AST，使用 shadow value 做类型检查与推导：
+1. **名称解析**：绑定标识符到声明，检查变量定义
+2. **类型检查**：用 shadow value 遍历表达式，复用 vtable 类型协商路径验证类型合法性
+3. **类型推导**：shadow value 运算结果携带推导出的类型信息
+4. 全部通过后才进入字节码编译，运行时不再做类型检查
 
-```c
-typedef struct interp {
-    allocator_t    alloc;
-    // 运行时作用域栈
-    // 调用栈
-} interp_t;
-
-value_t interp_run(interp_t *interp, ast_node_t *program);
-value_t interp_exec(interp_t *interp, ast_node_t *node);
-```
-
-运行时值：
-
-```c
-typedef struct value {
-    type_t  type;
-    union {
-        int64_t  int_val;
-        uint64_t uint_val;
-        double   float_val;
-        bool     bool_val;
-    };
-} value_t;
-```
-
-printf 硬编码：识别 `printf` 函数名，直接调用 C 的 printf。
-
-### 2.11 Driver（include/driver/driver.h, src/driver/driver.c）—— 已实现（当前阶段：加载 + 词法 → 单词表）
+### 2.10 Driver（include/driver/driver.h, src/driver/driver.c）—— 已实现（当前阶段：加载 + 词法 → 单词表）
 
 流水线编排者，见本文档第 1 节。当前落地阶段 ①（加载源码）与 ②（词法分析），并直接完成 ③（输出单词表）：
 
@@ -535,7 +614,7 @@ int driver_run_file(const char *path);
 
 **内存源约束**：Lexer 要求内存直读源（`istream_data != NULL`），而 `stream_source_file` 的 `data()` 为 NULL，因此阶段 ① 先把文件读入 allocator 缓冲，再用 `stream_source_mem(allocator, buf, len, owns_data=true)` 建内存源——缓冲由 istream/lexer 生命周期自动释放。token 文本切片在 lexer 存活期间有效，故单词表在 `lexer_close` 之前打印完毕。
 
-`driver_compile_file` / `driver_run_file` 的完整签名（含 parse/sema/interp）待后续阶段接入 Parser/Sema/Interp 后补全。Driver 持有的编译单元 arena 使所有阶段产物（AST、符号表、token 文本指向的源 buffer）在同一生命周期内有效。
+`driver_compile_file` / `driver_run_file` 的完整签名（含 parse/sema/bytecode compile/execute）待后续阶段接入 Parser/Sema/Bytecode 后补全。Driver 持有的编译单元 arena 使所有阶段产物（AST、符号表、token 文本指向的源 buffer）在同一生命周期内有效。
 
 ## 3. 命令行接口
 
@@ -553,8 +632,9 @@ CMake（C11；测试为 C++20 + GoogleTest）。库划分：
 |------|--------|------|
 | `clux_core` | `src/core/*.c` | allocator / stream / vec / rbtree / omap / strmap / string |
 | `clux_parser` | `src/parser/*.c` | lexer（T4 之后加入 parser.c），依赖 `clux_core` |
-| `clux_driver` | `src/driver/*.c` | 流水线编排（加载 + 词法，后续加 parse/sema/interp），依赖 `clux_core` + `clux_parser` |
-| `clux_sema` | `src/sema/*.c` | 类型系统与语义分析；**目录为空时不创建目标**（GLOB + `if`） |
+| `clux_vm` | `src/vm/*.c` | 值计算引擎：type/vtable/value/scope/function（已实现），依赖 `clux_core` + `clux_parser` + ICU |
+| `clux_driver` | `src/driver/*.c` | 流水线编排（加载 + 词法，后续加 parse/sema/bytecode），依赖 `clux_core` + `clux_parser` + `clux_vm` |
+| `clux_sema` | `src/sema/*.c` | 语义分析（shadow value 驱动）；**目录为空时不创建目标**（GLOB + `if`） |
 | `clux_diag` | `src/diag/*.c` | 诊断收集器；同上 |
 | `clux_cmd` | `src/cmd/*.c` | 子命令分发，依赖 `clux_driver` |
 
@@ -586,6 +666,6 @@ clang: error: no such file or directory: '<build>/third_party/icu/icu_data_gen.c
 
 ## 5. 测试策略
 
-- **单元测试**：Lexer、Parser、类型系统各模块独立测试
+- **单元测试**：Lexer、Parser、VM（type/vtable/value/scope/function）各模块独立测试，当前 597 测试通过
 - **集成测试**：.cx 程序端到端执行，对比输出
 - **测试用例**：hello.cx、arithmetic.cx、functions.cx、control_flow.cx、fibonacci.cx

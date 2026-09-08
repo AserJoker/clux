@@ -48,6 +48,14 @@ value_t *value_make(vm_t *vm, const type_t *type, void *data);
  * 仅供需要手动管理生命周期时使用。 */
 value_t *value_make_untracked(allocator_t *alloc, const type_t *type, void *data);
 
+/** 构造 shadow value：只携带类型信息，data=NULL，用于语义分析阶段类型计算。
+ * is_shadow=true 的 value 参与运算时只做类型计算不操作实际数据。
+ * 自动 track 到 vm->current_scope。 */
+value_t *value_make_shadow(vm_t *vm, const type_t *type);
+
+/** 判断 value 是否为 shadow（只有类型，无实际数据） */
+bool value_is_shadow(const value_t *v);
+
 /* ---- error 构造 ---- */
 
 /** 创建 error value（不带位置信息），message 为 C 字符串 */

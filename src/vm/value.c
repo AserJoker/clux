@@ -11,6 +11,7 @@
 struct value_t {
     const type_t *type;
     void        *data;
+    bool         is_shadow;
 };
 
 /* ---- 内部分配 class_t（value_t 堆分配用） ---- */
@@ -82,6 +83,21 @@ value_t *value_make(vm_t *vm, const type_t *type, void *data) {
     value_t *v = value_make_untracked(vm->alloc, type, data);
     scope_track(vm, vm->current_scope, v);
     return v;
+}
+
+/* ---- shadow value ---- */
+
+value_t *value_make_shadow(vm_t *vm, const type_t *type) {
+    value_t *v = value_alloc(vm->alloc);
+    v->type = type;
+    v->data = NULL;
+    v->is_shadow = true;
+    scope_track(vm, vm->current_scope, v);
+    return v;
+}
+
+bool value_is_shadow(const value_t *v) {
+    return v && v->is_shadow;
 }
 
 /* ---- error 工具 ---- */
@@ -168,12 +184,15 @@ value_t *value_call(vm_t *vm, value_t *callee, value_t **args, size_t argc) {
 void value_dispose(vm_t *vm, value_t *v) {
     if (!v) return;
     if (v->type) {
-        if (v->type->vtable && v->type->vtable->dispose) {
-            v->type->vtable->dispose(vm, v);
-        }
-        /* 释放 data 块 */
-        if (v->data) {
-            allocator_free(vm->alloc, (void **)&v->data);
+        /* shadow 值无 data，跳过 dispose 和 data 释放 */
+        if (!v->is_shadow) {
+            if (v->type->vtable && v->type->vtable->dispose) {
+                v->type->vtable->dispose(vm, v);
+            }
+            /* 释放 data 块 */
+            if (v->data) {
+                allocator_free(vm->alloc, (void **)&v->data);
+            }
         }
         v->type = NULL;
     }
@@ -182,19 +201,16 @@ void value_dispose(vm_t *vm, value_t *v) {
 value_t *value_clone(vm_t *vm, value_t *v) {
     if (!v || !v->type) return v;
 
-    /* 通过 vtable clone 或默认 memcpy */
-    value_t *r;
-    if (v->type->vtable && v->type->vtable->clone) {
-        r = v->type->vtable->clone(vm, v);
-    } else {
-        void *data = NULL;
-        if (v->type->size > 0 && v->data) {
-            data = value_alloc_data_copy(vm->alloc, v->type, v->data);
-        }
-        r = value_make(vm, v->type, data);
+    /* shadow 值 clone 返回新的 shadow（不分配 data） */
+    if (v->is_shadow) {
+        return value_make_shadow(vm, v->type);
     }
 
-    return r;
+    /* 通过 vtable clone，NULL clone 槽 = 不支持 */
+    if (v->type->vtable && v->type->vtable->clone) {
+        return v->type->vtable->clone(vm, v);
+    }
+    return value_make_error(vm, "type does not support clone");
 }
 
 value_t *value_assign(vm_t *vm, value_t *dst, value_t *src) {
