@@ -1,5 +1,5 @@
 #include "vm/type_error.h"
-#include "vm/value.h"
+#include "vm/value_internal.h"
 #include "vm/vm.h"
 #include "core/panic.h"
 
@@ -10,6 +10,7 @@
 /* ---- dispose ---- */
 
 static void error_dispose(vm_t *vm, value_t *v) {
+    (void)vm;
     error_data_t *ed = (error_data_t *)v->data;
     if (ed) {
         if (ed->message)  string_free(&ed->message);
@@ -19,8 +20,8 @@ static void error_dispose(vm_t *vm, value_t *v) {
 
 /* ---- clone ---- */
 
-static value_t error_clone(vm_t *vm, value_t v) {
-    error_data_t *src = (error_data_t *)v.data;
+static value_t *error_clone(vm_t *vm, value_t *v) {
+    error_data_t *src = (error_data_t *)v->data;
 
     error_data_t ed;
     ed.message  = src->message  ? string_from_string(vm->alloc, src->message)  : NULL;
@@ -28,8 +29,8 @@ static value_t error_clone(vm_t *vm, value_t v) {
     if (src->message && !ed.message)  panic("vm: out of memory cloning error message");
     if (src->location && !ed.location) panic("vm: out of memory cloning error location");
 
-    void *data = value_alloc_data_copy(vm->alloc, v.type, &ed);
-    return value_make(v.type, data);
+    void *data = value_alloc_data_copy(vm->alloc, v->type, &ed);
+    return value_make(vm, v->type, data);
 }
 
 /* ---- display ---- */

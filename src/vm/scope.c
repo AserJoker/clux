@@ -1,5 +1,6 @@
 #include "vm/scope.h"
 #include "vm/vm.h"
+#include "vm/value_internal.h"
 #include "core/strmap.h"
 #include "core/panic.h"
 
@@ -59,8 +60,8 @@ void scope_destroy(vm_t *vm, scope_t **pscope) {
     for (size_t i = 0; i < owned_n; i++) {
         value_t *v = (value_t *)vec_get(scope->owned, i);
         if (v) {
-            value_dispose(vm, v);  /* no-op if type==NULL（已被 dispose 的死条目） */
-            allocator_free(scope->alloc, (void **)&v);
+            value_dispose(vm, v);  /* 释放 data */
+            allocator_free(scope->alloc, (void **)&v);  /* 释放 value_t 结构体 */
         }
     }
     vec_free(scope->alloc, &scope->owned);
@@ -89,30 +90,26 @@ void scope_destroy_subtree(vm_t *vm, scope_t **pscope) {
     scope_destroy(vm, pscope);
 }
 
-void scope_track(vm_t *vm, scope_t *scope, value_t v) {
-    if (!scope || !v.type) return;
-    value_t *owned = value_alloc(vm->alloc);
-    *owned = v;
-    vec_push(scope->owned, vm->alloc, owned);
+void scope_track(vm_t *vm, scope_t *scope, value_t *v) {
+    (void)vm;
+    if (!scope || !v || !v->type) return;
+    vec_push(scope->owned, scope->alloc, v);
 }
 
-value_t *scope_define(vm_t *vm, scope_t *scope, const char *name, value_t v) {
+value_t *scope_define(vm_t *vm, scope_t *scope, const char *name, value_t *v) {
     if (!scope || !name) return NULL;
 
     /* 临时切换 current_scope 到目标 scope，clone 后 value 自动注册到 owned */
     scope_t *saved = vm->current_scope;
     vm->current_scope = scope;
-    value_clone(vm, v);
+    value_t *cloned = value_clone(vm, v);
     vm->current_scope = saved;
-
-    /* 在 owned 中找到刚注册的 value_t* */
-    value_t *stored = (value_t *)vec_last(scope->owned);
 
     /* 插入 vars 借用映射；若 name 已存在，旧映射被替换 */
     /* 旧 value_t* 仍在 owned 中，由 scope_destroy 统一 dispose */
-    strmap_insert(scope->vars, vm->alloc, name, stored);
+    strmap_insert(scope->vars, vm->alloc, name, cloned);
 
-    return stored;
+    return cloned;
 }
 
 value_t *scope_lookup(const scope_t *scope, strslice_t name) {
@@ -128,7 +125,7 @@ value_t *scope_lookup(const scope_t *scope, strslice_t name) {
     return NULL;
 }
 
-bool scope_assign(vm_t *vm, scope_t *scope, strslice_t name, value_t v) {
+bool scope_assign(vm_t *vm, scope_t *scope, strslice_t name, value_t *v) {
     for (scope_t *s = scope; s; s = s->parent) {
         char buf[256];
         if (name.len < sizeof(buf)) {
@@ -140,10 +137,9 @@ bool scope_assign(vm_t *vm, scope_t *scope, strslice_t name, value_t v) {
                 /* 旧值留在 owned 中，由 scope_destroy 统一 dispose */
                 scope_t *saved = vm->current_scope;
                 vm->current_scope = s;
-                value_clone(vm, v);
+                value_t *new_val = value_clone(vm, v);
                 vm->current_scope = saved;
 
-                value_t *new_val = (value_t *)vec_last(s->owned);
                 strmap_insert(s->vars, vm->alloc, buf, new_val);
                 return true;
             }

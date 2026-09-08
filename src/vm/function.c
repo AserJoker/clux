@@ -1,5 +1,6 @@
 #include "vm/function.h"
 #include "vm/vm.h"
+#include "vm/value_internal.h"
 #include "core/panic.h"
 
 #include <string.h>
@@ -45,7 +46,7 @@ void func_set_return_type(func_t *fn, const type_t *type) {
 
 /* ---- value 构造 ---- */
 
-value_t func_make_value(vm_t *vm, func_t *fn) {
+value_t *func_make_value(vm_t *vm, func_t *fn) {
     void *data = value_alloc_data_copy(vm->alloc, vm->type_func, &fn);
-    return value_make(vm->type_func, data);
+    return value_make(vm, vm->type_func, data);
 }

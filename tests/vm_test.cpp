@@ -5,7 +5,7 @@
 
 extern "C" {
 #include "vm/vm.h"
-#include "vm/value.h"
+#include "vm/value_internal.h"
 #include "vm/scope.h"
 #include "vm/type.h"
 #include "vm/type_error.h"
@@ -36,23 +36,71 @@ static double read_float(const value_t *v) {
     return *(const double *)v->data;
 }
 
-/* 构造一个 i32 value（栈上，data 堆分配，未 track 到 scope） */
-static value_t make_i32_raw(vm_t *vm, int32_t v) {
+/* 按类型宽度读取无符号整数，零扩展到 uint64_t */
+static uint64_t read_uint(const value_t *v) {
+    switch (v->type->size) {
+        case 1: return (uint64_t)*(const uint8_t  *)v->data;
+        case 2: return (uint64_t)*(const uint16_t *)v->data;
+        case 4: return (uint64_t)*(const uint32_t *)v->data;
+        default: return *(const uint64_t *)v->data;
+    }
+}
+
+/* 构造一个未 track 的 value_t*（堆分配，需手动释放） */
+static value_t *make_i32_raw(vm_t *vm, int32_t v) {
     void *data = value_alloc_data_copy(vm->alloc, vm->type_i32, &v);
-    return value_make(vm->type_i32, data);
+    return value_make_untracked(vm->alloc, vm->type_i32, data);
 }
-
-/* 构造一个 bool value（栈上，data 堆分配，未 track 到 scope） */
-[[maybe_unused]] static value_t make_bool_raw(vm_t *vm, bool v) {
+static value_t *make_i8_raw(vm_t *vm, int8_t v) {
+    void *data = value_alloc_data_copy(vm->alloc, vm->type_i8, &v);
+    return value_make_untracked(vm->alloc, vm->type_i8, data);
+}
+static value_t *make_u32_raw(vm_t *vm, uint32_t v) {
+    void *data = value_alloc_data_copy(vm->alloc, vm->type_u32, &v);
+    return value_make_untracked(vm->alloc, vm->type_u32, data);
+}
+static value_t *make_u64_raw(vm_t *vm, uint64_t v) {
+    void *data = value_alloc_data_copy(vm->alloc, vm->type_u64, &v);
+    return value_make_untracked(vm->alloc, vm->type_u64, data);
+}
+static value_t *make_f32_raw(vm_t *vm, float v) {
+    void *data = value_alloc_data_copy(vm->alloc, vm->type_f32, &v);
+    return value_make_untracked(vm->alloc, vm->type_f32, data);
+}
+static value_t *make_f64_raw(vm_t *vm, double v) {
+    void *data = value_alloc_data_copy(vm->alloc, vm->type_f64, &v);
+    return value_make_untracked(vm->alloc, vm->type_f64, data);
+}
+[[maybe_unused]] static value_t *make_bool_raw(vm_t *vm, bool v) {
     void *data = value_alloc_data_copy(vm->alloc, vm->type_bool, &v);
-    return value_make(vm->type_bool, data);
+    return value_make_untracked(vm->alloc, vm->type_bool, data);
 }
-
-/* 构造一个 str value（栈上，data 堆分配，未 track 到 scope） */
-static value_t make_str_raw(vm_t *vm, const char *s) {
+static value_t *make_str_raw(vm_t *vm, const char *s) {
     string_t *str = string_from_cstr(vm->alloc, s);
     void *data = value_alloc_data_copy(vm->alloc, vm->type_str, &str);
-    return value_make(vm->type_str, data);
+    return value_make_untracked(vm->alloc, vm->type_str, data);
+}
+[[maybe_unused]] static value_t *make_i16_raw(vm_t *vm, int16_t v) {
+    void *data = value_alloc_data_copy(vm->alloc, vm->type_i16, &v);
+    return value_make_untracked(vm->alloc, vm->type_i16, data);
+}
+[[maybe_unused]] static value_t *make_i64_raw(vm_t *vm, int64_t v) {
+    void *data = value_alloc_data_copy(vm->alloc, vm->type_i64, &v);
+    return value_make_untracked(vm->alloc, vm->type_i64, data);
+}
+[[maybe_unused]] static value_t *make_u8_raw(vm_t *vm, uint8_t v) {
+    void *data = value_alloc_data_copy(vm->alloc, vm->type_u8, &v);
+    return value_make_untracked(vm->alloc, vm->type_u8, data);
+}
+[[maybe_unused]] static value_t *make_u16_raw(vm_t *vm, uint16_t v) {
+    void *data = value_alloc_data_copy(vm->alloc, vm->type_u16, &v);
+    return value_make_untracked(vm->alloc, vm->type_u16, data);
+}
+
+/* 释放未 track 的 raw value（dispose data + free struct） */
+static void raw_free(vm_t *vm, value_t *v) {
+    value_dispose(vm, v);
+    allocator_free(vm->alloc, (void **)&v);
 }
 
 /* ================================================================ */
@@ -190,11 +238,10 @@ TEST_F(VmBuiltinTypes, TypeEqIsPointerIdentity) {
 }
 
 TEST_F(VmBuiltinTypes, TypeAsValue) {
-    value_t tv = type_as_value(vm, vm->type_i32);
-    EXPECT_EQ(tv.type, vm->type_type);
-    EXPECT_EQ(*(const type_t **)tv.data, vm->type_i32);
-    /* type_as_value 未 track，手动释放 data 避免 leak */
-    value_dispose(vm, &tv);
+    value_t *tv = type_as_value(vm, vm->type_i32);
+    EXPECT_EQ(value_type(tv), vm->type_type);
+    EXPECT_EQ(*(const type_t **)value_data(tv), vm->type_i32);
+    /* type_as_value auto-track 到 current_scope，vm_destroy 释放 */
 }
 
 /* ================================================================ */
@@ -219,88 +266,87 @@ protected:
 /* ---- value_make / value_is_void ---- */
 
 TEST_F(ValueCore, ValueMakeBasic) {
-    value_t v = make_i32_raw(vm, 42);
-    EXPECT_EQ(v.type, vm->type_i32);
-    EXPECT_NE(v.data, nullptr);
-    EXPECT_EQ(read_sint(&v), 42);
-    /* raw value 未 track，需手动释放 */
-    value_dispose(vm, &v);
+    value_t *v = make_i32_raw(vm, 42);
+    EXPECT_EQ(value_type(v), vm->type_i32);
+    EXPECT_NE(value_data(v), nullptr);
+    EXPECT_EQ(read_sint(v), 42);
+    raw_free(vm, v);
 }
 
 TEST_F(ValueCore, ValueIsVoid) {
-    value_t v = { nullptr, nullptr };
-    EXPECT_TRUE(value_is_void(&v));
+    value_t *v = NULL;
+    EXPECT_TRUE(value_is_void(v));
 
-    value_t vi = make_i32_raw(vm, 1);
-    EXPECT_FALSE(value_is_void(&vi));
-    value_dispose(vm, &vi);
+    value_t *vi = make_i32_raw(vm, 1);
+    EXPECT_FALSE(value_is_void(vi));
+    raw_free(vm, vi);
 }
 
 /* ---- value_clone auto-track ---- */
 
 TEST_F(ValueCore, CloneAutoTracksToCurrentScope) {
-    value_t raw = make_i32_raw(vm, 100);
-    value_t cloned = value_clone(vm, raw);
+    value_t *raw = make_i32_raw(vm, 100);
+    value_t *cloned = value_clone(vm, raw);
 
-    EXPECT_EQ(cloned.type, vm->type_i32);
-    EXPECT_EQ(read_sint(&cloned), 100);
+    EXPECT_EQ(value_type(cloned), vm->type_i32);
+    EXPECT_EQ(read_sint(cloned), 100);
 
     /* clone 后应自动 track 到 current_scope->owned */
     /* pop_scope 时应正确销毁 cloned，不泄漏 */
     vm_push_scope(vm);
-    value_t cloned2 = value_clone(vm, raw);
-    EXPECT_EQ(read_sint(&cloned2), 100);
+    value_t *cloned2 = value_clone(vm, raw);
+    EXPECT_EQ(read_sint(cloned2), 100);
     vm_pop_scope(vm); /* 销毁 cloned2 */
 
     /* 释放 raw */
-    value_dispose(vm, &raw);
+    raw_free(vm, raw);
 }
 
 TEST_F(ValueCore, CloneProducesIndependentCopy) {
-    value_t raw = make_i32_raw(vm, 7);
-    value_t cloned = value_clone(vm, raw);
+    value_t *raw = make_i32_raw(vm, 7);
+    value_t *cloned = value_clone(vm, raw);
 
     /* 修改 cloned 的 data 不影响 raw（独立内存） */
-    *(int32_t *)cloned.data = 999;
-    EXPECT_EQ(read_sint(&raw), 7);
-    EXPECT_EQ(read_sint(&cloned), 999);
+    *(int32_t *)value_data(cloned) = 999;
+    EXPECT_EQ(read_sint(raw), 7);
+    EXPECT_EQ(read_sint(cloned), 999);
 
-    value_dispose(vm, &raw);
+    raw_free(vm, raw);
     /* cloned 被 track 到 root_scope，vm_destroy 时释放 */
 }
 
-TEST_F(ValueCore, CloneVoidReturnsVoid) {
-    value_t v = { nullptr, nullptr };
-    value_t cloned = value_clone(vm, v);
-    EXPECT_EQ(cloned.type, nullptr);
-    EXPECT_EQ(cloned.data, nullptr);
+TEST_F(ValueCore, CloneVoidReturnsNull) {
+    value_t *v = NULL;
+    value_t *cloned = value_clone(vm, v);
+    EXPECT_EQ(cloned, nullptr);
 }
 
 /* ---- value_dispose ---- */
 
 TEST_F(ValueCore, DisposeNullIsSafe) {
-    value_t *vp = nullptr;
-    value_dispose(vm, vp); /* 不应崩溃 */
+    value_dispose(vm, nullptr); /* 不应崩溃 */
 
-    value_t v = { nullptr, nullptr };
-    value_dispose(vm, &v); /* type==NULL，no-op */
+    value_t *v = value_make_untracked(vm->alloc, nullptr, nullptr);
+    value_dispose(vm, v); /* type==NULL，no-op on data */
+    allocator_free(vm->alloc, (void **)&v);
 }
 
 TEST_F(ValueCore, DisposeSetsTypeNull) {
-    value_t v = make_i32_raw(vm, 42);
-    value_dispose(vm, &v);
-    EXPECT_EQ(v.type, nullptr);
-    EXPECT_EQ(v.data, nullptr);
+    value_t *v = make_i32_raw(vm, 42);
+    value_dispose(vm, v);
+    EXPECT_EQ(value_type(v), nullptr);
+    EXPECT_EQ(value_data(v), nullptr);
+    allocator_free(vm->alloc, (void **)&v);
 }
 
 /* ---- error 机制 ---- */
 
 TEST_F(ValueCore, MakeErrorIsTracked) {
-    value_t err = value_make_error(vm, "test error");
-    EXPECT_EQ(err.type, vm->type_error);
-    EXPECT_TRUE(value_is_error(vm, &err));
+    value_t *err = value_make_error(vm, "test error");
+    EXPECT_EQ(value_type(err), vm->type_error);
+    EXPECT_TRUE(value_is_error(vm, err));
 
-    error_data_t *ed = (error_data_t *)err.data;
+    error_data_t *ed = (error_data_t *)value_data(err);
     EXPECT_STREQ(string_cstr(ed->message), "test error");
     EXPECT_EQ(ed->location, nullptr);
 
@@ -308,150 +354,1096 @@ TEST_F(ValueCore, MakeErrorIsTracked) {
 }
 
 TEST_F(ValueCore, MakeErrorWithLocation) {
-    value_t err = value_make_error_loc(vm, "boom", "file.clux:10");
-    EXPECT_TRUE(value_is_error(vm, &err));
+    value_t *err = value_make_error_loc(vm, "boom", "file.clux:10");
+    EXPECT_TRUE(value_is_error(vm, err));
 
-    error_data_t *ed = (error_data_t *)err.data;
+    error_data_t *ed = (error_data_t *)value_data(err);
     EXPECT_STREQ(string_cstr(ed->message), "boom");
     EXPECT_STREQ(string_cstr(ed->location), "file.clux:10");
 }
 
 TEST_F(ValueCore, NonErrorIsNotError) {
-    value_t v = make_i32_raw(vm, 1);
-    EXPECT_FALSE(value_is_error(vm, &v));
-    value_dispose(vm, &v);
+    value_t *v = make_i32_raw(vm, 1);
+    EXPECT_FALSE(value_is_error(vm, v));
+    raw_free(vm, v);
 
-    value_t err = value_make_error(vm, "e");
-    EXPECT_TRUE(value_is_error(vm, &err));
-    EXPECT_FALSE(value_is_error(vm, &v)); /* v 已 dispose，type==NULL */
+    value_t *err = value_make_error(vm, "e");
+    EXPECT_TRUE(value_is_error(vm, err));
 }
 
 /* ---- 运算分派：error 短路 ---- */
 
 TEST_F(ValueCore, ErrorShortCircuitsAdd) {
-    value_t err = value_make_error(vm, "err");
-    value_t v   = make_i32_raw(vm, 1);
+    value_t *err = value_make_error(vm, "err");
+    value_t *v   = make_i32_raw(vm, 1);
 
     /* a 是 error → 直接返回 a */
-    value_t r1 = value_add(vm, err, v);
-    EXPECT_TRUE(value_is_error(vm, &r1));
+    value_t *r1 = value_add(vm, err, v);
+    EXPECT_TRUE(value_is_error(vm, r1));
 
     /* b 是 error → 直接返回 b */
-    value_t r2 = value_add(vm, v, err);
-    EXPECT_TRUE(value_is_error(vm, &r2));
+    value_t *r2 = value_add(vm, v, err);
+    EXPECT_TRUE(value_is_error(vm, r2));
 
-    value_dispose(vm, &v);
+    raw_free(vm, v);
     /* err, r1, r2 都 track 到 current_scope */
 }
 
 /* ---- 运算分派：类型不支持 → error ---- */
 
 TEST_F(ValueCore, UnsupportedOperatorReturnsError) {
-    value_t s = make_str_raw(vm, "hello");
-    value_t s2 = make_str_raw(vm, "world");
+    value_t *s = make_str_raw(vm, "hello");
+    value_t *s2 = make_str_raw(vm, "world");
 
     /* str 不支持 add */
-    value_t r = value_add(vm, s, s2);
-    EXPECT_TRUE(value_is_error(vm, &r));
+    value_t *r = value_add(vm, s, s2);
+    EXPECT_TRUE(value_is_error(vm, r));
 
     /* str 不支持 neg */
-    value_t r2 = value_neg(vm, s);
-    EXPECT_TRUE(value_is_error(vm, &r2));
+    value_t *r2 = value_neg(vm, s);
+    EXPECT_TRUE(value_is_error(vm, r2));
 
-    value_dispose(vm, &s);
-    value_dispose(vm, &s2);
+    raw_free(vm, s);
+    raw_free(vm, s2);
 }
 
 /* ---- 运算分派：正常路径 ---- */
 
 TEST_F(ValueCore, IntAdditionDispatch) {
-    value_t a = make_i32_raw(vm, 10);
-    value_t b = make_i32_raw(vm, 32);
+    value_t *a = make_i32_raw(vm, 10);
+    value_t *b = make_i32_raw(vm, 32);
 
-    value_t r = value_add(vm, a, b);
-    EXPECT_EQ(r.type, vm->type_i32);
-    EXPECT_EQ(read_sint(&r), 42);
+    value_t *r = value_add(vm, a, b);
+    EXPECT_EQ(value_type(r), vm->type_i32);
+    EXPECT_EQ(read_sint(r), 42);
 
-    value_dispose(vm, &a);
-    value_dispose(vm, &b);
-    /* r 未 track（int_add 直接 value_make），需手动释放 */
-    value_dispose(vm, &r);
+    raw_free(vm, a);
+    raw_free(vm, b);
+    /* r auto-track 到 current_scope，vm_destroy 释放 */
 }
 
 TEST_F(ValueCore, IntComparisonReturnsBool) {
-    value_t a = make_i32_raw(vm, 5);
-    value_t b = make_i32_raw(vm, 10);
+    value_t *a = make_i32_raw(vm, 5);
+    value_t *b = make_i32_raw(vm, 10);
 
-    value_t r = value_lt(vm, a, b);
-    EXPECT_EQ(r.type, vm->type_bool);
-    EXPECT_EQ(value_as(r, bool), true);
-    value_dispose(vm, &r);
+    value_t *r = value_lt(vm, a, b);
+    EXPECT_EQ(value_type(r), vm->type_bool);
+    EXPECT_TRUE(value_as(r, bool));
 
-    value_dispose(vm, &a);
-    value_dispose(vm, &b);
-    value_dispose(vm, &r);
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+/* ---- 跨类型运算：类型协商 + 隐式转换 ---- */
+
+TEST_F(ValueCore, PromoteI32PlusU32ReturnsError) {
+    value_t *a = make_i32_raw(vm, -1);
+    value_t *b = make_u32_raw(vm, 1);
+
+    /* 有符号和无符号之间不允许隐式转换 */
+    value_t *r = value_add(vm, a, b);
+    EXPECT_TRUE(value_is_error(vm, r));
+
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, PromoteI32PlusF64ReturnsError) {
+    value_t *a = make_i32_raw(vm, 10);
+    value_t *b = make_f64_raw(vm, 32.5);
+
+    /* int 和 float 之间不允许隐式转换 */
+    value_t *r = value_add(vm, a, b);
+    EXPECT_TRUE(value_is_error(vm, r));
+
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, PromoteF32PlusF64ResultsF64) {
+    value_t *a = make_f32_raw(vm, 1.5f);
+    value_t *b = make_f64_raw(vm, 2.5);
+
+    value_t *r = value_add(vm, a, b);
+    EXPECT_EQ(value_type(r), vm->type_f64);
+    EXPECT_DOUBLE_EQ(read_float(r), 4.0);
+
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, PromoteI8PlusU64ReturnsError) {
+    value_t *a = make_i8_raw(vm, 5);
+    value_t *b = make_u64_raw(vm, 1000);
+
+    /* 有符号和无符号之间不允许隐式转换 */
+    value_t *r = value_add(vm, a, b);
+    EXPECT_TRUE(value_is_error(vm, r));
+
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, PromoteI32LtU32ReturnsError) {
+    value_t *a = make_i32_raw(vm, -1);
+    value_t *b = make_u32_raw(vm, 1);
+
+    /* 有符号和无符号之间不允许隐式转换 */
+    value_t *r = value_lt(vm, a, b);
+    EXPECT_TRUE(value_is_error(vm, r));
+
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, PromoteIncompatibleTypesReturnsError) {
+    value_t *a = make_i32_raw(vm, 1);
+    value_t *b = make_str_raw(vm, "hello");
+
+    value_t *r = value_add(vm, a, b);
+    EXPECT_TRUE(value_is_error(vm, r));
+
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, StrPlusIntReturnsError) {
+    value_t *a = make_str_raw(vm, "hello");
+    value_t *b = make_i32_raw(vm, 42);
+
+    /* "str" + 42: str vtable 的 add 不存在 → error */
+    value_t *r = value_add(vm, a, b);
+    EXPECT_TRUE(value_is_error(vm, r));
+
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, IntEqStrReturnsError) {
+    value_t *a = make_i32_raw(vm, 1);
+    value_t *b = make_str_raw(vm, "1");
+
+    /* 1 == "1": int_eq 尝试将 "str" implicit_cast 到 i32 → 失败 → error */
+    value_t *r = value_eq(vm, a, b);
+    EXPECT_TRUE(value_is_error(vm, r));
+
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, BoolEqStrReturnsError) {
+    value_t *a = make_bool_raw(vm, true);
+    value_t *b = make_str_raw(vm, "true");
+
+    /* true == "true": bool_eq 尝试将 "str" implicit_cast 到 bool → 失败 → error */
+    value_t *r = value_eq(vm, a, b);
+    EXPECT_TRUE(value_is_error(vm, r));
+
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, StrEqStrSameType) {
+    value_t *a = make_str_raw(vm, "hello");
+    value_t *b = make_str_raw(vm, "hello");
+
+    value_t *r = value_eq(vm, a, b);
+    EXPECT_EQ(value_type(r), vm->type_bool);
+    EXPECT_TRUE(value_as(r, bool));
+
+    raw_free(vm, a);
+    raw_free(vm, b);
 }
 
 /* ---- value_call 分派 ---- */
 
 TEST_F(ValueCore, CallNonCallableReturnsError) {
-    value_t a = make_i32_raw(vm, 1);
-    value_t r = value_call(vm, a, nullptr, 0);
-    EXPECT_TRUE(value_is_error(vm, &r));
+    value_t *a = make_i32_raw(vm, 1);
+    value_t *r = value_call(vm, a, nullptr, 0);
+    EXPECT_TRUE(value_is_error(vm, r));
 
-    value_dispose(vm, &a);
+    raw_free(vm, a);
 }
 
 TEST_F(ValueCore, CallWithErrorArgPropagates) {
-    value_t err = value_make_error(vm, "arg error");
-    value_t a = make_i32_raw(vm, 1);
+    value_t *err = value_make_error(vm, "arg error");
+    value_t *a = make_i32_raw(vm, 1);
 
-    value_t args[] = { err, a };
-    value_t r = value_call(vm, a, args, 2);
-    EXPECT_TRUE(value_is_error(vm, &r));
+    value_t *args[] = { err, a };
+    value_t *r = value_call(vm, a, args, 2);
+    EXPECT_TRUE(value_is_error(vm, r));
 
-    value_dispose(vm, &a);
+    raw_free(vm, a);
 }
 
 /* ---- 类型转换分派 ---- */
 
 TEST_F(ValueCore, ImplicitCastSameTypeClones) {
-    value_t v = make_i32_raw(vm, 42);
-    value_t r = value_implicit_cast(vm, v, vm->type_i32);
-    EXPECT_EQ(r.type, vm->type_i32);
-    EXPECT_EQ(read_sint(&r), 42);
+    value_t *v = make_i32_raw(vm, 42);
+    value_t *r = value_implicit_cast(vm, v, vm->type_i32);
+    EXPECT_EQ(value_type(r), vm->type_i32);
+    EXPECT_EQ(read_sint(r), 42);
     /* clone 到 current_scope */
 
-    value_dispose(vm, &v);
+    raw_free(vm, v);
 }
 
 TEST_F(ValueCore, ImplicitCastUnsupportedReturnsError) {
-    value_t v = make_i32_raw(vm, 42);
+    value_t *v = make_i32_raw(vm, 42);
     /* int 没有 implicit_cast vtable 回调 */
-    value_t r = value_implicit_cast(vm, v, vm->type_str);
-    EXPECT_TRUE(value_is_error(vm, &r));
+    value_t *r = value_implicit_cast(vm, v, vm->type_str);
+    EXPECT_TRUE(value_is_error(vm, r));
 
-    value_dispose(vm, &v);
+    raw_free(vm, v);
 }
 
 TEST_F(ValueCore, ExplicitCastUnsupportedReturnsError) {
-    value_t v = make_i32_raw(vm, 42);
-    value_t r = value_explicit_cast(vm, v, vm->type_str);
-    EXPECT_TRUE(value_is_error(vm, &r));
+    value_t *v = make_i32_raw(vm, 42);
+    value_t *r = value_explicit_cast(vm, v, vm->type_str);
+    EXPECT_TRUE(value_is_error(vm, r));
 
-    value_dispose(vm, &v);
+    raw_free(vm, v);
 }
 
 TEST_F(ValueCore, ImplicitCastVoidReturnsError) {
-    value_t v = { nullptr, nullptr };
-    value_t r = value_implicit_cast(vm, v, vm->type_i32);
-    EXPECT_TRUE(value_is_error(vm, &r));
+    value_t *v = NULL;
+    value_t *r = value_implicit_cast(vm, v, vm->type_i32);
+    EXPECT_TRUE(value_is_error(vm, r));
 }
 
 TEST_F(ValueCore, ImplicitCastErrorPropagates) {
-    value_t err = value_make_error(vm, "err");
-    value_t r = value_implicit_cast(vm, err, vm->type_i32);
-    EXPECT_TRUE(value_is_error(vm, &r));
+    value_t *err = value_make_error(vm, "err");
+    value_t *r = value_implicit_cast(vm, err, vm->type_i32);
+    EXPECT_TRUE(value_is_error(vm, r));
+}
+
+/* ================================================================ */
+/* 3a. 隐式类型转换 (ImplicitCast)                                   */
+/* ================================================================ */
+
+/* ---- 有符号整数拓宽 ---- */
+
+TEST_F(ValueCore, ImplicitCastI8ToI16) {
+    value_t *v = make_i8_raw(vm, -42);
+    value_t *r = value_implicit_cast(vm, v, vm->type_i16);
+    EXPECT_EQ(value_type(r), vm->type_i16);
+    EXPECT_EQ(read_sint(r), -42);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ImplicitCastI8ToI32) {
+    value_t *v = make_i8_raw(vm, 100);
+    value_t *r = value_implicit_cast(vm, v, vm->type_i32);
+    EXPECT_EQ(value_type(r), vm->type_i32);
+    EXPECT_EQ(read_sint(r), 100);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ImplicitCastI8ToI64) {
+    value_t *v = make_i8_raw(vm, -1);
+    value_t *r = value_implicit_cast(vm, v, vm->type_i64);
+    EXPECT_EQ(value_type(r), vm->type_i64);
+    EXPECT_EQ(read_sint(r), -1);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ImplicitCastI16ToI32) {
+    value_t *v = make_i16_raw(vm, -1000);
+    value_t *r = value_implicit_cast(vm, v, vm->type_i32);
+    EXPECT_EQ(value_type(r), vm->type_i32);
+    EXPECT_EQ(read_sint(r), -1000);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ImplicitCastI16ToI64) {
+    value_t *v = make_i16_raw(vm, 30000);
+    value_t *r = value_implicit_cast(vm, v, vm->type_i64);
+    EXPECT_EQ(value_type(r), vm->type_i64);
+    EXPECT_EQ(read_sint(r), 30000);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ImplicitCastI32ToI64) {
+    value_t *v = make_i32_raw(vm, -100000);
+    value_t *r = value_implicit_cast(vm, v, vm->type_i64);
+    EXPECT_EQ(value_type(r), vm->type_i64);
+    EXPECT_EQ(read_sint(r), -100000);
+    raw_free(vm, v);
+}
+
+/* ---- 无符号整数拓宽 ---- */
+
+TEST_F(ValueCore, ImplicitCastU8ToU16) {
+    value_t *v = make_u8_raw(vm, 200);
+    value_t *r = value_implicit_cast(vm, v, vm->type_u16);
+    EXPECT_EQ(value_type(r), vm->type_u16);
+    EXPECT_EQ(read_uint(r), 200u);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ImplicitCastU8ToU32) {
+    value_t *v = make_u8_raw(vm, 255);
+    value_t *r = value_implicit_cast(vm, v, vm->type_u32);
+    EXPECT_EQ(value_type(r), vm->type_u32);
+    EXPECT_EQ(read_uint(r), 255u);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ImplicitCastU8ToU64) {
+    value_t *v = make_u8_raw(vm, 0xFF);
+    value_t *r = value_implicit_cast(vm, v, vm->type_u64);
+    EXPECT_EQ(value_type(r), vm->type_u64);
+    EXPECT_EQ(read_uint(r), 0xFFu);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ImplicitCastU16ToU32) {
+    value_t *v = make_u16_raw(vm, 60000);
+    value_t *r = value_implicit_cast(vm, v, vm->type_u32);
+    EXPECT_EQ(value_type(r), vm->type_u32);
+    EXPECT_EQ(read_uint(r), 60000u);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ImplicitCastU16ToU64) {
+    value_t *v = make_u16_raw(vm, 50000);
+    value_t *r = value_implicit_cast(vm, v, vm->type_u64);
+    EXPECT_EQ(value_type(r), vm->type_u64);
+    EXPECT_EQ(read_uint(r), 50000u);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ImplicitCastU32ToU64) {
+    value_t *v = make_u32_raw(vm, 4000000000u);
+    value_t *r = value_implicit_cast(vm, v, vm->type_u64);
+    EXPECT_EQ(value_type(r), vm->type_u64);
+    EXPECT_EQ(read_uint(r), 4000000000ull);
+    raw_free(vm, v);
+}
+
+/* ---- 浮点拓宽 ---- */
+
+TEST_F(ValueCore, ImplicitCastF32ToF64) {
+    value_t *v = make_f32_raw(vm, 3.14f);
+    value_t *r = value_implicit_cast(vm, v, vm->type_f64);
+    EXPECT_EQ(value_type(r), vm->type_f64);
+    EXPECT_NEAR(read_float(r), 3.14, 1e-6);
+    raw_free(vm, v);
+}
+
+/* ---- 隐式转换禁止场景：有符号→无符号 ---- */
+
+TEST_F(ValueCore, ImplicitCastI32ToU32ReturnsError) {
+    value_t *v = make_i32_raw(vm, 42);
+    value_t *r = value_implicit_cast(vm, v, vm->type_u32);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ImplicitCastI64ToU64ReturnsError) {
+    value_t *v = make_i64_raw(vm, 100);
+    value_t *r = value_implicit_cast(vm, v, vm->type_u64);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ImplicitCastI8ToU8ReturnsError) {
+    value_t *v = make_i8_raw(vm, 1);
+    value_t *r = value_implicit_cast(vm, v, vm->type_u8);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, v);
+}
+
+/* ---- 隐式转换禁止场景：无符号→有符号 ---- */
+
+TEST_F(ValueCore, ImplicitCastU32ToI32ReturnsError) {
+    value_t *v = make_u32_raw(vm, 42);
+    value_t *r = value_implicit_cast(vm, v, vm->type_i32);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ImplicitCastU8ToI16ReturnsError) {
+    value_t *v = make_u8_raw(vm, 200);
+    value_t *r = value_implicit_cast(vm, v, vm->type_i16);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, v);
+}
+
+/* ---- 隐式转换禁止场景：int→float ---- */
+
+TEST_F(ValueCore, ImplicitCastI32ToF64ReturnsError) {
+    value_t *v = make_i32_raw(vm, 42);
+    value_t *r = value_implicit_cast(vm, v, vm->type_f64);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ImplicitCastU32ToF32ReturnsError) {
+    value_t *v = make_u32_raw(vm, 42);
+    value_t *r = value_implicit_cast(vm, v, vm->type_f32);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, v);
+}
+
+/* ---- 隐式转换禁止场景：float→int ---- */
+
+TEST_F(ValueCore, ImplicitCastF64ToI32ReturnsError) {
+    value_t *v = make_f64_raw(vm, 3.14);
+    value_t *r = value_implicit_cast(vm, v, vm->type_i32);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, v);
+}
+
+/* ---- 隐式转换禁止场景：float 窄化 ---- */
+
+TEST_F(ValueCore, ImplicitCastF64ToF32ReturnsError) {
+    value_t *v = make_f64_raw(vm, 3.14);
+    value_t *r = value_implicit_cast(vm, v, vm->type_f32);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, v);
+}
+
+/* ---- 隐式转换禁止场景：整数窄化 ---- */
+
+TEST_F(ValueCore, ImplicitCastI32ToI8ReturnsError) {
+    value_t *v = make_i32_raw(vm, 42);
+    value_t *r = value_implicit_cast(vm, v, vm->type_i8);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ImplicitCastU64ToU32ReturnsError) {
+    value_t *v = make_u64_raw(vm, 42);
+    value_t *r = value_implicit_cast(vm, v, vm->type_u32);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ImplicitCastI64ToI16ReturnsError) {
+    value_t *v = make_i64_raw(vm, 42);
+    value_t *r = value_implicit_cast(vm, v, vm->type_i16);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, v);
+}
+
+/* ---- 隐式转换禁止场景：bool ---- */
+
+TEST_F(ValueCore, ImplicitCastBoolToI32ReturnsError) {
+    value_t *v = make_bool_raw(vm, true);
+    value_t *r = value_implicit_cast(vm, v, vm->type_i32);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ImplicitCastI32ToBoolReturnsError) {
+    value_t *v = make_i32_raw(vm, 1);
+    value_t *r = value_implicit_cast(vm, v, vm->type_bool);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, v);
+}
+
+/* ---- 隐式转换禁止场景：str ---- */
+
+TEST_F(ValueCore, ImplicitCastStrToI32ReturnsError) {
+    value_t *v = make_str_raw(vm, "hello");
+    value_t *r = value_implicit_cast(vm, v, vm->type_i32);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ImplicitCastI32ToStrReturnsError) {
+    value_t *v = make_i32_raw(vm, 42);
+    value_t *r = value_implicit_cast(vm, v, vm->type_str);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, v);
+}
+
+/* ================================================================ */
+/* 3b. 显式类型转换 (ExplicitCast)                                   */
+/* ================================================================ */
+
+/* ---- 整数互转：有符号→有符号（含窄化截断） ---- */
+
+TEST_F(ValueCore, ExplicitCastI32ToI8Truncates) {
+    value_t *v = make_i32_raw(vm, 300);
+    value_t *r = value_explicit_cast(vm, v, vm->type_i8);
+    EXPECT_EQ(value_type(r), vm->type_i8);
+    EXPECT_EQ(read_sint(r), (int8_t)300);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ExplicitCastI64ToI16Truncates) {
+    value_t *v = make_i64_raw(vm, 70000);
+    value_t *r = value_explicit_cast(vm, v, vm->type_i16);
+    EXPECT_EQ(value_type(r), vm->type_i16);
+    EXPECT_EQ(read_sint(r), (int16_t)70000);
+    raw_free(vm, v);
+}
+
+/* ---- 整数互转：有符号→无符号 ---- */
+
+TEST_F(ValueCore, ExplicitCastI32ToU32) {
+    value_t *v = make_i32_raw(vm, -1);
+    value_t *r = value_explicit_cast(vm, v, vm->type_u32);
+    EXPECT_EQ(value_type(r), vm->type_u32);
+    EXPECT_EQ(read_uint(r), (uint32_t)(-1));
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ExplicitCastI8ToU64) {
+    value_t *v = make_i8_raw(vm, -1);
+    value_t *r = value_explicit_cast(vm, v, vm->type_u64);
+    EXPECT_EQ(value_type(r), vm->type_u64);
+    EXPECT_EQ(read_uint(r), (uint64_t)(int64_t)(-1));
+    raw_free(vm, v);
+}
+
+/* ---- 整数互转：无符号→有符号 ---- */
+
+TEST_F(ValueCore, ExplicitCastU32ToI32) {
+    value_t *v = make_u32_raw(vm, 0xFFFFFFFFu);
+    value_t *r = value_explicit_cast(vm, v, vm->type_i32);
+    EXPECT_EQ(value_type(r), vm->type_i32);
+    EXPECT_EQ(read_sint(r), (int32_t)0xFFFFFFFFu);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ExplicitCastU8ToI16) {
+    value_t *v = make_u8_raw(vm, 200);
+    value_t *r = value_explicit_cast(vm, v, vm->type_i16);
+    EXPECT_EQ(value_type(r), vm->type_i16);
+    EXPECT_EQ(read_sint(r), 200);
+    raw_free(vm, v);
+}
+
+/* ---- 整数互转：无符号→无符号（含窄化） ---- */
+
+TEST_F(ValueCore, ExplicitCastU64ToU8Truncates) {
+    value_t *v = make_u64_raw(vm, 0x1FF);
+    value_t *r = value_explicit_cast(vm, v, vm->type_u8);
+    EXPECT_EQ(value_type(r), vm->type_u8);
+    EXPECT_EQ(read_uint(r), 0xFFu);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ExplicitCastU32ToU16Truncates) {
+    value_t *v = make_u32_raw(vm, 0x1FFFF);
+    value_t *r = value_explicit_cast(vm, v, vm->type_u16);
+    EXPECT_EQ(value_type(r), vm->type_u16);
+    EXPECT_EQ(read_uint(r), 0xFFFFu);
+    raw_free(vm, v);
+}
+
+/* ---- int→float ---- */
+
+TEST_F(ValueCore, ExplicitCastI32ToF64) {
+    value_t *v = make_i32_raw(vm, 42);
+    value_t *r = value_explicit_cast(vm, v, vm->type_f64);
+    EXPECT_EQ(value_type(r), vm->type_f64);
+    EXPECT_DOUBLE_EQ(read_float(r), 42.0);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ExplicitCastI32ToF32) {
+    value_t *v = make_i32_raw(vm, -7);
+    value_t *r = value_explicit_cast(vm, v, vm->type_f32);
+    EXPECT_EQ(value_type(r), vm->type_f32);
+    EXPECT_FLOAT_EQ((float)read_float(r), -7.0f);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ExplicitCastI64ToF64) {
+    value_t *v = make_i64_raw(vm, 9007199254740992LL);
+    value_t *r = value_explicit_cast(vm, v, vm->type_f64);
+    EXPECT_EQ(value_type(r), vm->type_f64);
+    EXPECT_DOUBLE_EQ(read_float(r), 9007199254740992.0);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ExplicitCastU64ToF64) {
+    value_t *v = make_u64_raw(vm, 18014398509481984ull);
+    value_t *r = value_explicit_cast(vm, v, vm->type_f64);
+    EXPECT_EQ(value_type(r), vm->type_f64);
+    EXPECT_DOUBLE_EQ(read_float(r), 18014398509481984.0);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ExplicitCastU8ToF32) {
+    value_t *v = make_u8_raw(vm, 255);
+    value_t *r = value_explicit_cast(vm, v, vm->type_f32);
+    EXPECT_EQ(value_type(r), vm->type_f32);
+    EXPECT_FLOAT_EQ((float)read_float(r), 255.0f);
+    raw_free(vm, v);
+}
+
+/* ---- float→int（向零截断） ---- */
+
+TEST_F(ValueCore, ExplicitCastF64ToI32Truncates) {
+    value_t *v = make_f64_raw(vm, 3.9);
+    value_t *r = value_explicit_cast(vm, v, vm->type_i32);
+    EXPECT_EQ(value_type(r), vm->type_i32);
+    EXPECT_EQ(read_sint(r), 3);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ExplicitCastF64ToI32NegativeTruncates) {
+    value_t *v = make_f64_raw(vm, -3.9);
+    value_t *r = value_explicit_cast(vm, v, vm->type_i32);
+    EXPECT_EQ(value_type(r), vm->type_i32);
+    EXPECT_EQ(read_sint(r), -3);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ExplicitCastF32ToI64) {
+    value_t *v = make_f32_raw(vm, 1234.5f);
+    value_t *r = value_explicit_cast(vm, v, vm->type_i64);
+    EXPECT_EQ(value_type(r), vm->type_i64);
+    EXPECT_EQ(read_sint(r), 1234);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ExplicitCastF64ToU32) {
+    value_t *v = make_f64_raw(vm, 42.7);
+    value_t *r = value_explicit_cast(vm, v, vm->type_u32);
+    EXPECT_EQ(value_type(r), vm->type_u32);
+    EXPECT_EQ(read_uint(r), 42u);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ExplicitCastF64ToU8Truncates) {
+    value_t *v = make_f64_raw(vm, 300.9);
+    value_t *r = value_explicit_cast(vm, v, vm->type_u8);
+    EXPECT_EQ(value_type(r), vm->type_u8);
+    EXPECT_EQ(read_uint(r), (uint8_t)300);
+    raw_free(vm, v);
+}
+
+/* ---- float→float 窄化 ---- */
+
+TEST_F(ValueCore, ExplicitCastF64ToF32) {
+    value_t *v = make_f64_raw(vm, 3.141592653589793);
+    value_t *r = value_explicit_cast(vm, v, vm->type_f32);
+    EXPECT_EQ(value_type(r), vm->type_f32);
+    EXPECT_FLOAT_EQ((float)read_float(r), 3.141592653589793f);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ExplicitCastF32ToF64) {
+    value_t *v = make_f32_raw(vm, 1.5f);
+    value_t *r = value_explicit_cast(vm, v, vm->type_f64);
+    EXPECT_EQ(value_type(r), vm->type_f64);
+    EXPECT_DOUBLE_EQ(read_float(r), 1.5);
+    raw_free(vm, v);
+}
+
+/* ---- int→bool ---- */
+
+TEST_F(ValueCore, ExplicitCastI32ToBoolTrue) {
+    value_t *v = make_i32_raw(vm, 42);
+    value_t *r = value_explicit_cast(vm, v, vm->type_bool);
+    EXPECT_EQ(value_type(r), vm->type_bool);
+    EXPECT_TRUE(value_as(r, bool));
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ExplicitCastI32ToBoolFalse) {
+    value_t *v = make_i32_raw(vm, 0);
+    value_t *r = value_explicit_cast(vm, v, vm->type_bool);
+    EXPECT_EQ(value_type(r), vm->type_bool);
+    EXPECT_FALSE(value_as(r, bool));
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ExplicitCastU64ToBoolTrue) {
+    value_t *v = make_u64_raw(vm, 1);
+    value_t *r = value_explicit_cast(vm, v, vm->type_bool);
+    EXPECT_EQ(value_type(r), vm->type_bool);
+    EXPECT_TRUE(value_as(r, bool));
+    raw_free(vm, v);
+}
+
+/* ---- float→bool ---- */
+
+TEST_F(ValueCore, ExplicitCastF64ToBoolTrue) {
+    value_t *v = make_f64_raw(vm, 0.001);
+    value_t *r = value_explicit_cast(vm, v, vm->type_bool);
+    EXPECT_EQ(value_type(r), vm->type_bool);
+    EXPECT_TRUE(value_as(r, bool));
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ExplicitCastF64ToBoolFalse) {
+    value_t *v = make_f64_raw(vm, 0.0);
+    value_t *r = value_explicit_cast(vm, v, vm->type_bool);
+    EXPECT_EQ(value_type(r), vm->type_bool);
+    EXPECT_FALSE(value_as(r, bool));
+    raw_free(vm, v);
+}
+
+/* ---- bool→int ---- */
+
+TEST_F(ValueCore, ExplicitCastBoolToI32True) {
+    value_t *v = make_bool_raw(vm, true);
+    value_t *r = value_explicit_cast(vm, v, vm->type_i32);
+    EXPECT_EQ(value_type(r), vm->type_i32);
+    EXPECT_EQ(read_sint(r), 1);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ExplicitCastBoolToI32False) {
+    value_t *v = make_bool_raw(vm, false);
+    value_t *r = value_explicit_cast(vm, v, vm->type_i32);
+    EXPECT_EQ(value_type(r), vm->type_i32);
+    EXPECT_EQ(read_sint(r), 0);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ExplicitCastBoolToU64True) {
+    value_t *v = make_bool_raw(vm, true);
+    value_t *r = value_explicit_cast(vm, v, vm->type_u64);
+    EXPECT_EQ(value_type(r), vm->type_u64);
+    EXPECT_EQ(read_uint(r), 1ull);
+    raw_free(vm, v);
+}
+
+/* ---- bool→float ---- */
+
+TEST_F(ValueCore, ExplicitCastBoolToF64True) {
+    value_t *v = make_bool_raw(vm, true);
+    value_t *r = value_explicit_cast(vm, v, vm->type_f64);
+    EXPECT_EQ(value_type(r), vm->type_f64);
+    EXPECT_DOUBLE_EQ(read_float(r), 1.0);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ExplicitCastBoolToF32False) {
+    value_t *v = make_bool_raw(vm, false);
+    value_t *r = value_explicit_cast(vm, v, vm->type_f32);
+    EXPECT_EQ(value_type(r), vm->type_f32);
+    EXPECT_FLOAT_EQ((float)read_float(r), 0.0f);
+    raw_free(vm, v);
+}
+
+/* ---- 显式转换禁止场景：str ---- */
+
+TEST_F(ValueCore, ExplicitCastStrToI32ReturnsError) {
+    value_t *v = make_str_raw(vm, "123");
+    value_t *r = value_explicit_cast(vm, v, vm->type_i32);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ExplicitCastI32ToStrReturnsError) {
+    value_t *v = make_i32_raw(vm, 42);
+    value_t *r = value_explicit_cast(vm, v, vm->type_str);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ExplicitCastStrToF64ReturnsError) {
+    value_t *v = make_str_raw(vm, "3.14");
+    value_t *r = value_explicit_cast(vm, v, vm->type_f64);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ExplicitCastBoolToStrReturnsError) {
+    value_t *v = make_bool_raw(vm, true);
+    value_t *r = value_explicit_cast(vm, v, vm->type_str);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, v);
+}
+
+/* ---- 显式转换禁止场景：void ---- */
+
+TEST_F(ValueCore, ExplicitCastVoidToI32ReturnsError) {
+    value_t *v = NULL;
+    value_t *r = value_explicit_cast(vm, v, vm->type_i32);
+    EXPECT_TRUE(value_is_error(vm, r));
+}
+
+/* ---- 显式转换：error 传播 ---- */
+
+TEST_F(ValueCore, ExplicitCastErrorPropagates) {
+    value_t *err = value_make_error(vm, "err");
+    value_t *r = value_explicit_cast(vm, err, vm->type_i32);
+    EXPECT_TRUE(value_is_error(vm, r));
+}
+
+/* ---- 显式转换：同类型 clone ---- */
+
+TEST_F(ValueCore, ExplicitCastSameTypeClones) {
+    value_t *v = make_i32_raw(vm, 42);
+    value_t *r = value_explicit_cast(vm, v, vm->type_i32);
+    EXPECT_EQ(value_type(r), vm->type_i32);
+    EXPECT_EQ(read_sint(r), 42);
+    raw_free(vm, v);
+}
+
+/* ---- 显式转换补充：uint→str 禁止 ---- */
+
+TEST_F(ValueCore, ExplicitCastU32ToStrReturnsError) {
+    value_t *v = make_u32_raw(vm, 42);
+    value_t *r = value_explicit_cast(vm, v, vm->type_str);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, v);
+}
+
+/* ---- 显式转换补充：float→i16/u16 ---- */
+
+TEST_F(ValueCore, ExplicitCastF64ToI16Truncates) {
+    value_t *v = make_f64_raw(vm, 3.9);
+    value_t *r = value_explicit_cast(vm, v, vm->type_i16);
+    EXPECT_EQ(value_type(r), vm->type_i16);
+    EXPECT_EQ(read_sint(r), 3);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, ExplicitCastF64ToU16Truncates) {
+    value_t *v = make_f64_raw(vm, 40000.9);
+    value_t *r = value_explicit_cast(vm, v, vm->type_u16);
+    EXPECT_EQ(value_type(r), vm->type_u16);
+    EXPECT_EQ(read_uint(r), (uint16_t)40000);
+    raw_free(vm, v);
+}
+
+/* ---- 显式转换补充：float→str 禁止 ---- */
+
+TEST_F(ValueCore, ExplicitCastF64ToStrReturnsError) {
+    value_t *v = make_f64_raw(vm, 3.14);
+    value_t *r = value_explicit_cast(vm, v, vm->type_str);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, v);
+}
+
+/* ================================================================ */
+/* 3c. 二元运算类型协商 (BinaryOpPromotion)                          */
+/* ================================================================ */
+
+/* ---- 同类别不同宽度：有符号整数 promote ---- */
+
+TEST_F(ValueCore, BinaryOpI8PlusI32PromotesToI32) {
+    value_t *a = make_i8_raw(vm, 5);
+    value_t *b = make_i32_raw(vm, 100);
+    value_t *r = value_add(vm, a, b);
+    EXPECT_EQ(value_type(r), vm->type_i32);
+    EXPECT_EQ(read_sint(r), 105);
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, BinaryOpI16PlusI64PromotesToI64) {
+    value_t *a = make_i16_raw(vm, 1000);
+    value_t *b = make_i64_raw(vm, 100000);
+    value_t *r = value_add(vm, a, b);
+    EXPECT_EQ(value_type(r), vm->type_i64);
+    EXPECT_EQ(read_sint(r), 101000);
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, BinaryOpI32LtI8PromotesToI32) {
+    value_t *a = make_i32_raw(vm, 5);
+    value_t *b = make_i8_raw(vm, 10);
+    value_t *r = value_lt(vm, a, b);
+    EXPECT_EQ(value_type(r), vm->type_bool);
+    EXPECT_TRUE(value_as(r, bool));
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+/* ---- 同类别不同宽度：无符号整数 promote ---- */
+
+TEST_F(ValueCore, BinaryOpU16PlusU64PromotesToU64) {
+    value_t *a = make_u16_raw(vm, 100);
+    value_t *b = make_u64_raw(vm, 100000);
+    value_t *r = value_add(vm, a, b);
+    EXPECT_EQ(value_type(r), vm->type_u64);
+    EXPECT_EQ(read_uint(r), 100100ull);
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, BinaryOpU8PlusU32PromotesToU32) {
+    value_t *a = make_u8_raw(vm, 200);
+    value_t *b = make_u32_raw(vm, 1000);
+    value_t *r = value_add(vm, a, b);
+    EXPECT_EQ(value_type(r), vm->type_u32);
+    EXPECT_EQ(read_uint(r), 1200u);
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+/* ---- 同类别不同宽度：浮点 promote ---- */
+
+TEST_F(ValueCore, BinaryOpF32PlusF64PromotesToF64) {
+    value_t *a = make_f32_raw(vm, 1.5f);
+    value_t *b = make_f64_raw(vm, 2.5);
+    value_t *r = value_add(vm, a, b);
+    EXPECT_EQ(value_type(r), vm->type_f64);
+    EXPECT_DOUBLE_EQ(read_float(r), 4.0);
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, BinaryOpF64MulF32PromotesToF64) {
+    value_t *a = make_f64_raw(vm, 3.0);
+    value_t *b = make_f32_raw(vm, 2.0f);
+    value_t *r = value_mul(vm, a, b);
+    EXPECT_EQ(value_type(r), vm->type_f64);
+    EXPECT_DOUBLE_EQ(read_float(r), 6.0);
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+/* ---- 跨类别：有符号+无符号 → error ---- */
+
+TEST_F(ValueCore, BinaryOpI32PlusU32ReturnsError) {
+    value_t *a = make_i32_raw(vm, -1);
+    value_t *b = make_u32_raw(vm, 1);
+    value_t *r = value_add(vm, a, b);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, BinaryOpI8PlusU64ReturnsError) {
+    value_t *a = make_i8_raw(vm, 5);
+    value_t *b = make_u64_raw(vm, 1000);
+    value_t *r = value_add(vm, a, b);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, BinaryOpU32LtI32ReturnsError) {
+    value_t *a = make_u32_raw(vm, 1);
+    value_t *b = make_i32_raw(vm, -1);
+    value_t *r = value_lt(vm, a, b);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+/* ---- 跨类别：int+float → error ---- */
+
+TEST_F(ValueCore, BinaryOpI32PlusF64ReturnsError) {
+    value_t *a = make_i32_raw(vm, 10);
+    value_t *b = make_f64_raw(vm, 32.5);
+    value_t *r = value_add(vm, a, b);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, BinaryOpU64MulF32ReturnsError) {
+    value_t *a = make_u64_raw(vm, 3);
+    value_t *b = make_f32_raw(vm, 2.0f);
+    value_t *r = value_mul(vm, a, b);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, BinaryOpI64EqF64ReturnsError) {
+    value_t *a = make_i64_raw(vm, 1);
+    value_t *b = make_f64_raw(vm, 1.0);
+    value_t *r = value_eq(vm, a, b);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+/* ---- 跨类别：bool+int → error ---- */
+
+TEST_F(ValueCore, BinaryOpBoolPlusI32ReturnsError) {
+    value_t *a = make_bool_raw(vm, true);
+    value_t *b = make_i32_raw(vm, 1);
+    value_t *r = value_add(vm, a, b);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, BinaryOpBoolEqI32ReturnsError) {
+    value_t *a = make_bool_raw(vm, true);
+    value_t *b = make_i32_raw(vm, 1);
+    value_t *r = value_eq(vm, a, b);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+/* ---- 跨类别：str+非str → error ---- */
+
+TEST_F(ValueCore, BinaryOpStrPlusI32ReturnsError) {
+    value_t *a = make_str_raw(vm, "hello");
+    value_t *b = make_i32_raw(vm, 42);
+    value_t *r = value_add(vm, a, b);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, BinaryOpI32PlusStrReturnsError) {
+    value_t *a = make_i32_raw(vm, 42);
+    value_t *b = make_str_raw(vm, "hello");
+    value_t *r = value_add(vm, a, b);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, BinaryOpStrEqI32ReturnsError) {
+    value_t *a = make_str_raw(vm, "1");
+    value_t *b = make_i32_raw(vm, 1);
+    value_t *r = value_eq(vm, a, b);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+/* ---- 同类型运算：正常路径 ---- */
+
+TEST_F(ValueCore, BinaryOpI32PlusI32SameType) {
+    value_t *a = make_i32_raw(vm, 10);
+    value_t *b = make_i32_raw(vm, 32);
+    value_t *r = value_add(vm, a, b);
+    EXPECT_EQ(value_type(r), vm->type_i32);
+    EXPECT_EQ(read_sint(r), 42);
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, BinaryOpF64SubF64SameType) {
+    value_t *a = make_f64_raw(vm, 10.5);
+    value_t *b = make_f64_raw(vm, 3.5);
+    value_t *r = value_sub(vm, a, b);
+    EXPECT_EQ(value_type(r), vm->type_f64);
+    EXPECT_DOUBLE_EQ(read_float(r), 7.0);
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, BinaryOpStrEqStrSameType) {
+    value_t *a = make_str_raw(vm, "hello");
+    value_t *b = make_str_raw(vm, "hello");
+    value_t *r = value_eq(vm, a, b);
+    EXPECT_EQ(value_type(r), vm->type_bool);
+    EXPECT_TRUE(value_as(r, bool));
+    raw_free(vm, a);
+    raw_free(vm, b);
+}
+
+TEST_F(ValueCore, BinaryOpBoolEqBoolSameType) {
+    value_t *a = make_bool_raw(vm, true);
+    value_t *b = make_bool_raw(vm, true);
+    value_t *r = value_eq(vm, a, b);
+    EXPECT_EQ(value_type(r), vm->type_bool);
+    EXPECT_TRUE(value_as(r, bool));
+    raw_free(vm, a);
+    raw_free(vm, b);
 }
 
 /* ================================================================ */
@@ -476,10 +1468,10 @@ protected:
 /* ---- scope_define / scope_lookup ---- */
 
 TEST_F(ScopeMech, DefineAndLookup) {
-    value_t v = make_i32_raw(vm, 42);
+    value_t *v = make_i32_raw(vm, 42);
     value_t *stored = scope_define(vm, vm->current_scope, "x", v);
     ASSERT_NE(stored, nullptr);
-    EXPECT_EQ(stored->type, vm->type_i32);
+    EXPECT_EQ(value_type(stored), vm->type_i32);
     EXPECT_EQ(read_sint(stored), 42);
 
     /* lookup 能找到 */
@@ -487,7 +1479,7 @@ TEST_F(ScopeMech, DefineAndLookup) {
     EXPECT_EQ(found, stored);
 
     /* 释放 raw value */
-    value_dispose(vm, &v);
+    raw_free(vm, v);
 }
 
 TEST_F(ScopeMech, LookupNotFoundReturnsNull) {
@@ -500,9 +1492,9 @@ TEST_F(ScopeMech, LookupTraversesParentChain) {
     scope_t *child = vm->current_scope;
 
     /* 在 root_scope 定义变量 */
-    value_t v = make_i32_raw(vm, 99);
+    value_t *v = make_i32_raw(vm, 99);
     scope_define(vm, vm->root_scope, "parent_var", v);
-    value_dispose(vm, &v);
+    raw_free(vm, v);
 
     /* 在 child scope 能查找到 parent 的变量 */
     value_t *found = scope_lookup(child, STRSLICE_LIT("parent_var"));
@@ -513,13 +1505,13 @@ TEST_F(ScopeMech, LookupTraversesParentChain) {
 }
 
 TEST_F(ScopeMech, DefineOverwritesPrevious) {
-    value_t v1 = make_i32_raw(vm, 1);
+    value_t *v1 = make_i32_raw(vm, 1);
     scope_define(vm, vm->current_scope, "x", v1);
-    value_dispose(vm, &v1);
+    raw_free(vm, v1);
 
-    value_t v2 = make_i32_raw(vm, 2);
+    value_t *v2 = make_i32_raw(vm, 2);
     scope_define(vm, vm->current_scope, "x", v2);
-    value_dispose(vm, &v2);
+    raw_free(vm, v2);
 
     value_t *found = scope_lookup(vm->current_scope, STRSLICE_LIT("x"));
     ASSERT_NE(found, nullptr);
@@ -529,14 +1521,14 @@ TEST_F(ScopeMech, DefineOverwritesPrevious) {
 /* ---- scope_assign ---- */
 
 TEST_F(ScopeMech, AssignUpdatesExisting) {
-    value_t v = make_i32_raw(vm, 10);
+    value_t *v = make_i32_raw(vm, 10);
     scope_define(vm, vm->current_scope, "x", v);
-    value_dispose(vm, &v);
+    raw_free(vm, v);
 
-    value_t nv = make_i32_raw(vm, 99);
+    value_t *nv = make_i32_raw(vm, 99);
     bool ok = scope_assign(vm, vm->current_scope, STRSLICE_LIT("x"), nv);
     EXPECT_TRUE(ok);
-    value_dispose(vm, &nv);
+    raw_free(vm, nv);
 
     value_t *found = scope_lookup(vm->current_scope, STRSLICE_LIT("x"));
     ASSERT_NE(found, nullptr);
@@ -544,22 +1536,22 @@ TEST_F(ScopeMech, AssignUpdatesExisting) {
 }
 
 TEST_F(ScopeMech,AssignNonExistingReturnsFalse) {
-    value_t v = make_i32_raw(vm, 1);
+    value_t *v = make_i32_raw(vm, 1);
     bool ok = scope_assign(vm, vm->current_scope, STRSLICE_LIT("nope"), v);
     EXPECT_FALSE(ok);
-    value_dispose(vm, &v);
+    raw_free(vm, v);
 }
 
 TEST_F(ScopeMech, AssignTraversesParentChain) {
-    value_t v = make_i32_raw(vm, 1);
+    value_t *v = make_i32_raw(vm, 1);
     scope_define(vm, vm->root_scope, "p", v);
-    value_dispose(vm, &v);
+    raw_free(vm, v);
 
     vm_push_scope(vm);
-    value_t nv = make_i32_raw(vm, 77);
+    value_t *nv = make_i32_raw(vm, 77);
     bool ok = scope_assign(vm, vm->current_scope, STRSLICE_LIT("p"), nv);
     EXPECT_TRUE(ok);
-    value_dispose(vm, &nv);
+    raw_free(vm, nv);
 
     value_t *found = scope_lookup(vm->current_scope, STRSLICE_LIT("p"));
     ASSERT_NE(found, nullptr);
@@ -573,11 +1565,11 @@ TEST_F(ScopeMech, AssignTraversesParentChain) {
 TEST_F(ScopeMech, PopScopeDisposesOwnedValues) {
     vm_push_scope(vm);
 
-    value_t v = make_i32_raw(vm, 42);
-    value_t cloned = value_clone(vm, v); /* track 到 current_scope（push 出来的 scope） */
-    EXPECT_EQ(read_sint(&cloned), 42);
+    value_t *v = make_i32_raw(vm, 42);
+    value_t *cloned = value_clone(vm, v); /* track 到 current_scope（push 出来的 scope） */
+    EXPECT_EQ(read_sint(cloned), 42);
 
-    value_dispose(vm, &v);
+    raw_free(vm, v);
 
     vm_pop_scope(vm); /* 应销毁 cloned，不泄漏 */
 
@@ -587,9 +1579,9 @@ TEST_F(ScopeMech, PopScopeDisposesOwnedValues) {
 TEST_F(ScopeMech, DefineInChildScopeDestroyedOnPop) {
     vm_push_scope(vm);
 
-    value_t v = make_i32_raw(vm, 123);
+    value_t *v = make_i32_raw(vm, 123);
     scope_define(vm, vm->current_scope, "child_var", v);
-    value_dispose(vm, &v);
+    raw_free(vm, v);
 
     /* 在 child scope 能查到 */
     value_t *found = scope_lookup(vm->current_scope, STRSLICE_LIT("child_var"));
@@ -609,9 +1601,9 @@ TEST_F(ScopeMech, CrossScopeCloneTrackedToTargetScope) {
     scope_t *inner = vm->current_scope;
 
     /* 在 root_scope 定义变量 */
-    value_t v = make_i32_raw(vm, 55);
+    value_t *v = make_i32_raw(vm, 55);
     scope_define(vm, vm->root_scope, "root_var", v);
-    value_dispose(vm, &v);
+    raw_free(vm, v);
 
     /* 从 inner scope 查找到 root_var，clone 到 inner scope */
     value_t *found = scope_lookup(inner, STRSLICE_LIT("root_var"));
@@ -619,8 +1611,8 @@ TEST_F(ScopeMech, CrossScopeCloneTrackedToTargetScope) {
 
     /* 临时切换 current_scope 到 inner，clone 后 track 到 inner */
     vm->current_scope = inner;
-    value_t cloned = value_clone(vm, *found);
-    EXPECT_EQ(read_sint(&cloned), 55);
+    value_t *cloned = value_clone(vm, found);
+    EXPECT_EQ(read_sint(cloned), 55);
 
     vm_pop_scope(vm); /* 销毁 inner 及 cloned */
 
@@ -634,10 +1626,10 @@ TEST_F(ScopeMech, CrossScopeCloneTrackedToTargetScope) {
 TEST_F(ScopeMech, StrValueDisposedOnPopScope) {
     vm_push_scope(vm);
 
-    value_t s = make_str_raw(vm, "hello world");
-    value_t cloned = value_clone(vm, s); /* str_clone 深拷贝 string_t */
+    value_t *s = make_str_raw(vm, "hello world");
+    value_t *cloned = value_clone(vm, s); /* str_clone 深拷贝 string_t */
     (void)cloned;
-    value_dispose(vm, &s);
+    raw_free(vm, s);
 
     /* cloned track 到 current_scope，pop 时 str_dispose 释放 string_t */
     vm_pop_scope(vm);
@@ -646,15 +1638,15 @@ TEST_F(ScopeMech, StrValueDisposedOnPopScope) {
 /* ---- define NULL name ---- */
 
 TEST_F(ScopeMech, DefineNullNameReturnsNull) {
-    value_t v = make_i32_raw(vm, 1);
+    value_t *v = make_i32_raw(vm, 1);
     EXPECT_EQ(scope_define(vm, vm->current_scope, nullptr, v), nullptr);
-    value_dispose(vm, &v);
+    raw_free(vm, v);
 }
 
 TEST_F(ScopeMech, DefineNullScopeReturnsNull) {
-    value_t v = make_i32_raw(vm, 1);
+    value_t *v = make_i32_raw(vm, 1);
     EXPECT_EQ(scope_define(vm, nullptr, "x", v), nullptr);
-    value_dispose(vm, &v);
+    raw_free(vm, v);
 }
 
 /* ---- scope_track 直接使用 ---- */
@@ -662,10 +1654,11 @@ TEST_F(ScopeMech, DefineNullScopeReturnsNull) {
 TEST_F(ScopeMech, TrackRegistersToOwned) {
     vm_push_scope(vm);
 
-    /* scope_track 共享 data 指针（转移所有权），不能在 track 后 dispose raw value */
-    value_t v = make_i32_raw(vm, 777);
-    scope_track(vm, vm->current_scope, v);
-    /* v.data 所有权已转移到 scope->owned，pop_scope 时统一释放 */
+    /* value_make auto-track 到 current_scope */
+    int32_t val = 777;
+    void *data = value_alloc_data_copy(vm->alloc, vm->type_i32, &val);
+    (void)value_make(vm, vm->type_i32, data);
+    /* value track 到 current_scope->owned，pop_scope 时统一释放 */
 
     vm_pop_scope(vm);
 }

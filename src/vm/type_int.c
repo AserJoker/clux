@@ -1,5 +1,5 @@
 #include "vm/type_int.h"
-#include "vm/value.h"
+#include "vm/value_internal.h"
 #include "vm/vm.h"
 #include "core/panic.h"
 
@@ -90,7 +90,7 @@ static int64_t int_read(const vm_t *vm, const value_t *v) {
 }
 
 /* 按目标类型宽度存储（截断到 type->size 字节） */
-static value_t int_store(vm_t *vm, const type_t *type, uint64_t val) {
+static value_t *int_store(vm_t *vm, const type_t *type, uint64_t val) {
     void *data = value_alloc_data(vm->alloc, type);
     switch (type->size) {
         case 1: *(uint8_t  *)data = (uint8_t)val;  break;
@@ -98,98 +98,152 @@ static value_t int_store(vm_t *vm, const type_t *type, uint64_t val) {
         case 4: *(uint32_t *)data = (uint32_t)val; break;
         default: *(uint64_t *)data = val;          break;
     }
-    return value_make(type, data);
+    return value_make(vm, type, data);
 }
 
 /* 按目标类型宽度存储 bool 结果 */
-static value_t bool_store(vm_t *vm, bool val) {
+static value_t *bool_store(vm_t *vm, bool val) {
     void *data = value_alloc_data(vm->alloc, vm->type_bool);
     *(bool *)data = val;
-    return value_make(vm->type_bool, data);
+    return value_make(vm, vm->type_bool, data);
 }
 
 /* ================================================================ */
 /* 共享算术/位运算（bit-level 相同，signed/unsigned 共用）            */
 /* ================================================================ */
 
-static value_t int_add(vm_t *vm, value_t a, value_t b) {
-    return int_store(vm, a.type, (uint64_t)(int_read(vm, &a) + int_read(vm, &b)));
+static value_t *int_add(vm_t *vm, value_t *a, value_t *b) {
+    VTABLE_BINARY(vm, a, b, add, "+");
+    if (!is_int_type(vm, a->type))
+        return value_make_error(vm, "+: type mismatch");
+    return int_store(vm, a->type, (uint64_t)(int_read(vm, a) + int_read(vm, b)));
 }
 
-static value_t int_sub(vm_t *vm, value_t a, value_t b) {
-    return int_store(vm, a.type, (uint64_t)(int_read(vm, &a) - int_read(vm, &b)));
+static value_t *int_sub(vm_t *vm, value_t *a, value_t *b) {
+    VTABLE_BINARY(vm, a, b, sub, "-");
+    if (!is_int_type(vm, a->type))
+        return value_make_error(vm, "-: type mismatch");
+    return int_store(vm, a->type, (uint64_t)(int_read(vm, a) - int_read(vm, b)));
 }
 
-static value_t int_mul(vm_t *vm, value_t a, value_t b) {
-    return int_store(vm, a.type, (uint64_t)(int_read(vm, &a) * int_read(vm, &b)));
+static value_t *int_mul(vm_t *vm, value_t *a, value_t *b) {
+    VTABLE_BINARY(vm, a, b, mul, "*");
+    if (!is_int_type(vm, a->type))
+        return value_make_error(vm, "*: type mismatch");
+    return int_store(vm, a->type, (uint64_t)(int_read(vm, a) * int_read(vm, b)));
 }
 
-static value_t int_eq(vm_t *vm, value_t a, value_t b) {
-    return bool_store(vm, int_read(vm, &a) == int_read(vm, &b));
+static value_t *int_eq(vm_t *vm, value_t *a, value_t *b) {
+    VTABLE_BINARY(vm, a, b, eq, "==");
+    if (!is_int_type(vm, a->type))
+        return value_make_error(vm, "==: type mismatch");
+    return bool_store(vm, int_read(vm, a) == int_read(vm, b));
 }
 
-static value_t int_ne(vm_t *vm, value_t a, value_t b) {
-    return bool_store(vm, int_read(vm, &a) != int_read(vm, &b));
+static value_t *int_ne(vm_t *vm, value_t *a, value_t *b) {
+    VTABLE_BINARY(vm, a, b, ne, "!=");
+    if (!is_int_type(vm, a->type))
+        return value_make_error(vm, "!=: type mismatch");
+    return bool_store(vm, int_read(vm, a) != int_read(vm, b));
 }
 
-static value_t int_band(vm_t *vm, value_t a, value_t b) {
-    return int_store(vm, a.type, (uint64_t)(int_read(vm, &a) & int_read(vm, &b)));
+static value_t *int_band(vm_t *vm, value_t *a, value_t *b) {
+    VTABLE_BINARY(vm, a, b, band, "&");
+    if (!is_int_type(vm, a->type))
+        return value_make_error(vm, "&: type mismatch");
+    return int_store(vm, a->type, (uint64_t)(int_read(vm, a) & int_read(vm, b)));
 }
 
-static value_t int_bor(vm_t *vm, value_t a, value_t b) {
-    return int_store(vm, a.type, (uint64_t)(int_read(vm, &a) | int_read(vm, &b)));
+static value_t *int_bor(vm_t *vm, value_t *a, value_t *b) {
+    VTABLE_BINARY(vm, a, b, bor, "|");
+    if (!is_int_type(vm, a->type))
+        return value_make_error(vm, "|: type mismatch");
+    return int_store(vm, a->type, (uint64_t)(int_read(vm, a) | int_read(vm, b)));
 }
 
-static value_t int_bxor(vm_t *vm, value_t a, value_t b) {
-    return int_store(vm, a.type, (uint64_t)(int_read(vm, &a) ^ int_read(vm, &b)));
+static value_t *int_bxor(vm_t *vm, value_t *a, value_t *b) {
+    VTABLE_BINARY(vm, a, b, bxor, "^");
+    if (!is_int_type(vm, a->type))
+        return value_make_error(vm, "^: type mismatch");
+    return int_store(vm, a->type, (uint64_t)(int_read(vm, a) ^ int_read(vm, b)));
 }
 
-static value_t int_bnot(vm_t *vm, value_t a) {
-    return int_store(vm, a.type, (uint64_t)(~int_read(vm, &a)));
+static value_t *int_bnot(vm_t *vm, value_t *a) {
+    if (value_is_error(vm, a)) return a;
+    if (!is_int_type(vm, a->type))
+        return value_make_error(vm, "~: type mismatch");
+    return int_store(vm, a->type, (uint64_t)(~int_read(vm, a)));
 }
 
-static value_t int_shl(vm_t *vm, value_t a, value_t b) {
-    return int_store(vm, a.type, (uint64_t)(int_read(vm, &a) << int_read(vm, &b)));
+static value_t *int_shl(vm_t *vm, value_t *a, value_t *b) {
+    VTABLE_BINARY(vm, a, b, shl, "<<");
+    if (!is_int_type(vm, a->type))
+        return value_make_error(vm, "<<: type mismatch");
+    return int_store(vm, a->type, (uint64_t)(int_read(vm, a) << int_read(vm, b)));
 }
 
 /* ================================================================ */
 /* 有符号特有运算                                                    */
 /* ================================================================ */
 
-static value_t sint_div(vm_t *vm, value_t a, value_t b) {
-    int64_t bv = sint_read(&b);
+static value_t *sint_div(vm_t *vm, value_t *a, value_t *b) {
+    VTABLE_BINARY(vm, a, b, div, "/");
+    if (!is_signed_int(vm, a->type))
+        return value_make_error(vm, "/: type mismatch");
+    int64_t bv = sint_read(b);
     if (bv == 0) panic("division by zero");
-    return int_store(vm, a.type, (uint64_t)(sint_read(&a) / bv));
+    return int_store(vm, a->type, (uint64_t)(sint_read(a) / bv));
 }
 
-static value_t sint_mod(vm_t *vm, value_t a, value_t b) {
-    int64_t bv = sint_read(&b);
+static value_t *sint_mod(vm_t *vm, value_t *a, value_t *b) {
+    VTABLE_BINARY(vm, a, b, mod, "%");
+    if (!is_signed_int(vm, a->type))
+        return value_make_error(vm, "%: type mismatch");
+    int64_t bv = sint_read(b);
     if (bv == 0) panic("modulo by zero");
-    return int_store(vm, a.type, (uint64_t)(sint_read(&a) % bv));
+    return int_store(vm, a->type, (uint64_t)(sint_read(a) % bv));
 }
 
-static value_t sint_neg(vm_t *vm, value_t a) {
-    return int_store(vm, a.type, (uint64_t)(-sint_read(&a)));
+static value_t *sint_neg(vm_t *vm, value_t *a) {
+    if (value_is_error(vm, a)) return a;
+    if (!is_signed_int(vm, a->type))
+        return value_make_error(vm, "-: type mismatch");
+    return int_store(vm, a->type, (uint64_t)(-sint_read(a)));
 }
 
-static value_t sint_shr(vm_t *vm, value_t a, value_t b) {
-    return int_store(vm, a.type, (uint64_t)(sint_read(&a) >> sint_read(&b)));
+static value_t *sint_shr(vm_t *vm, value_t *a, value_t *b) {
+    VTABLE_BINARY(vm, a, b, shr, ">>");
+    if (!is_signed_int(vm, a->type))
+        return value_make_error(vm, ">>: type mismatch");
+    return int_store(vm, a->type, (uint64_t)(sint_read(a) >> sint_read(b)));
 }
 
-static value_t sint_lt(vm_t *vm, value_t a, value_t b) {
-    return bool_store(vm, sint_read(&a) < sint_read(&b));
+static value_t *sint_lt(vm_t *vm, value_t *a, value_t *b) {
+    VTABLE_BINARY(vm, a, b, lt, "<");
+    if (!is_signed_int(vm, a->type))
+        return value_make_error(vm, "<: type mismatch");
+    return bool_store(vm, sint_read(a) < sint_read(b));
 }
 
-static value_t sint_le(vm_t *vm, value_t a, value_t b) {
-    return bool_store(vm, sint_read(&a) <= sint_read(&b));
+static value_t *sint_le(vm_t *vm, value_t *a, value_t *b) {
+    VTABLE_BINARY(vm, a, b, le, "<=");
+    if (!is_signed_int(vm, a->type))
+        return value_make_error(vm, "<=: type mismatch");
+    return bool_store(vm, sint_read(a) <= sint_read(b));
 }
 
-static value_t sint_gt(vm_t *vm, value_t a, value_t b) {
-    return bool_store(vm, sint_read(&a) > sint_read(&b));
+static value_t *sint_gt(vm_t *vm, value_t *a, value_t *b) {
+    VTABLE_BINARY(vm, a, b, gt, ">");
+    if (!is_signed_int(vm, a->type))
+        return value_make_error(vm, ">: type mismatch");
+    return bool_store(vm, sint_read(a) > sint_read(b));
 }
 
-static value_t sint_ge(vm_t *vm, value_t a, value_t b) {
-    return bool_store(vm, sint_read(&a) >= sint_read(&b));
+static value_t *sint_ge(vm_t *vm, value_t *a, value_t *b) {
+    VTABLE_BINARY(vm, a, b, ge, ">=");
+    if (!is_signed_int(vm, a->type))
+        return value_make_error(vm, ">=: type mismatch");
+    return bool_store(vm, sint_read(a) >= sint_read(b));
 }
 
 static void sint_display(vm_t *vm, const value_t *v) {
@@ -201,36 +255,57 @@ static void sint_display(vm_t *vm, const value_t *v) {
 /* 无符号特有运算                                                    */
 /* ================================================================ */
 
-static value_t uint_div(vm_t *vm, value_t a, value_t b) {
-    uint64_t bv = uint_read(&b);
+static value_t *uint_div(vm_t *vm, value_t *a, value_t *b) {
+    VTABLE_BINARY(vm, a, b, div, "/");
+    if (!is_unsigned_int(vm, a->type))
+        return value_make_error(vm, "/: type mismatch");
+    uint64_t bv = uint_read(b);
     if (bv == 0) panic("division by zero");
-    return int_store(vm, a.type, uint_read(&a) / bv);
+    return int_store(vm, a->type, uint_read(a) / bv);
 }
 
-static value_t uint_mod(vm_t *vm, value_t a, value_t b) {
-    uint64_t bv = uint_read(&b);
+static value_t *uint_mod(vm_t *vm, value_t *a, value_t *b) {
+    VTABLE_BINARY(vm, a, b, mod, "%");
+    if (!is_unsigned_int(vm, a->type))
+        return value_make_error(vm, "%: type mismatch");
+    uint64_t bv = uint_read(b);
     if (bv == 0) panic("modulo by zero");
-    return int_store(vm, a.type, uint_read(&a) % bv);
+    return int_store(vm, a->type, uint_read(a) % bv);
 }
 
-static value_t uint_shr(vm_t *vm, value_t a, value_t b) {
-    return int_store(vm, a.type, uint_read(&a) >> uint_read(&b));
+static value_t *uint_shr(vm_t *vm, value_t *a, value_t *b) {
+    VTABLE_BINARY(vm, a, b, shr, ">>");
+    if (!is_unsigned_int(vm, a->type))
+        return value_make_error(vm, ">>: type mismatch");
+    return int_store(vm, a->type, uint_read(a) >> uint_read(b));
 }
 
-static value_t uint_lt(vm_t *vm, value_t a, value_t b) {
-    return bool_store(vm, uint_read(&a) < uint_read(&b));
+static value_t *uint_lt(vm_t *vm, value_t *a, value_t *b) {
+    VTABLE_BINARY(vm, a, b, lt, "<");
+    if (!is_unsigned_int(vm, a->type))
+        return value_make_error(vm, "<: type mismatch");
+    return bool_store(vm, uint_read(a) < uint_read(b));
 }
 
-static value_t uint_le(vm_t *vm, value_t a, value_t b) {
-    return bool_store(vm, uint_read(&a) <= uint_read(&b));
+static value_t *uint_le(vm_t *vm, value_t *a, value_t *b) {
+    VTABLE_BINARY(vm, a, b, le, "<=");
+    if (!is_unsigned_int(vm, a->type))
+        return value_make_error(vm, "<=: type mismatch");
+    return bool_store(vm, uint_read(a) <= uint_read(b));
 }
 
-static value_t uint_gt(vm_t *vm, value_t a, value_t b) {
-    return bool_store(vm, uint_read(&a) > uint_read(&b));
+static value_t *uint_gt(vm_t *vm, value_t *a, value_t *b) {
+    VTABLE_BINARY(vm, a, b, gt, ">");
+    if (!is_unsigned_int(vm, a->type))
+        return value_make_error(vm, ">: type mismatch");
+    return bool_store(vm, uint_read(a) > uint_read(b));
 }
 
-static value_t uint_ge(vm_t *vm, value_t a, value_t b) {
-    return bool_store(vm, uint_read(&a) >= uint_read(&b));
+static value_t *uint_ge(vm_t *vm, value_t *a, value_t *b) {
+    VTABLE_BINARY(vm, a, b, ge, ">=");
+    if (!is_unsigned_int(vm, a->type))
+        return value_make_error(vm, ">=: type mismatch");
+    return bool_store(vm, uint_read(a) >= uint_read(b));
 }
 
 static void uint_display(vm_t *vm, const value_t *v) {
@@ -242,30 +317,24 @@ static void uint_display(vm_t *vm, const value_t *v) {
 /* 隐式转换                                                          */
 /* ================================================================ */
 
-static value_t sint_implicit_cast(vm_t *vm, value_t v, const type_t *target) {
-    type_rank_t sr = type_rank(vm, v.type);
+static value_t *sint_implicit_cast(vm_t *vm, value_t *v, const type_t *target) {
+    type_rank_t sr = type_rank(vm, v->type);
     type_rank_t tr = type_rank(vm, target);
 
     if (tr <= sr)
         return value_make_error(vm, "implicit cast: not a widening conversion");
 
-    int64_t sv = sint_read(&v);
+    int64_t sv = sint_read(v);
 
-    if (is_float_type(vm, target)) {
-        double dv = (double)sv;
-        void *data = value_alloc_data_copy(vm->alloc, target, &dv);
-        return value_make(target, data);
-    }
-
-    if (is_int_type(vm, target)) {
+    if (is_signed_int(vm, target)) {
         return int_store(vm, target, (uint64_t)sv);
     }
 
     return value_make_error(vm, "implicit cast: incompatible target type");
 }
 
-static value_t uint_implicit_cast(vm_t *vm, value_t v, const type_t *target) {
-    type_rank_t sr = type_rank(vm, v.type);
+static value_t *uint_implicit_cast(vm_t *vm, value_t *v, const type_t *target) {
+    type_rank_t sr = type_rank(vm, v->type);
     type_rank_t tr = type_rank(vm, target);
 
     if (tr <= sr)
@@ -274,13 +343,7 @@ static value_t uint_implicit_cast(vm_t *vm, value_t v, const type_t *target) {
     if (is_signed_int(vm, target))
         return value_make_error(vm, "implicit cast: cannot implicitly cast unsigned to signed");
 
-    uint64_t uv = uint_read(&v);
-
-    if (is_float_type(vm, target)) {
-        double dv = (double)uv;
-        void *data = value_alloc_data_copy(vm->alloc, target, &dv);
-        return value_make(target, data);
-    }
+    uint64_t uv = uint_read(v);
 
     if (is_unsigned_int(vm, target)) {
         return int_store(vm, target, uv);
@@ -293,17 +356,20 @@ static value_t uint_implicit_cast(vm_t *vm, value_t v, const type_t *target) {
 /* 显式转换                                                          */
 /* ================================================================ */
 
-static value_t sint_explicit_cast(vm_t *vm, value_t v, const type_t *target) {
-    int64_t sv = sint_read(&v);
+static value_t *sint_explicit_cast(vm_t *vm, value_t *v, const type_t *target) {
+    int64_t sv = sint_read(v);
 
     if (is_int_type(vm, target)) {
         return int_store(vm, target, (uint64_t)sv);
     }
 
     if (is_float_type(vm, target)) {
-        double dv = (double)sv;
-        void *data = value_alloc_data_copy(vm->alloc, target, &dv);
-        return value_make(target, data);
+        void *data = value_alloc_data(vm->alloc, target);
+        if (target == vm->type_f32)
+            *(float *)data = (float)sv;
+        else
+            *(double *)data = (double)sv;
+        return value_make(vm, target, data);
     }
 
     if (target == vm->type_bool) {
@@ -313,17 +379,20 @@ static value_t sint_explicit_cast(vm_t *vm, value_t v, const type_t *target) {
     return value_make_error(vm, "explicit cast: incompatible target type");
 }
 
-static value_t uint_explicit_cast(vm_t *vm, value_t v, const type_t *target) {
-    uint64_t uv = uint_read(&v);
+static value_t *uint_explicit_cast(vm_t *vm, value_t *v, const type_t *target) {
+    uint64_t uv = uint_read(v);
 
     if (is_int_type(vm, target)) {
         return int_store(vm, target, uv);
     }
 
     if (is_float_type(vm, target)) {
-        double dv = (double)uv;
-        void *data = value_alloc_data_copy(vm->alloc, target, &dv);
-        return value_make(target, data);
+        void *data = value_alloc_data(vm->alloc, target);
+        if (target == vm->type_f32)
+            *(float *)data = (float)uv;
+        else
+            *(double *)data = (double)uv;
+        return value_make(vm, target, data);
     }
 
     if (target == vm->type_bool) {

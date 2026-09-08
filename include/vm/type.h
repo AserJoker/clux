@@ -30,8 +30,18 @@ static inline bool type_eq(const type_t *a, const type_t *b) {
     return a == b;
 }
 
-/** 将 type 转为 value_t（type 作为 first-class value） */
-value_t type_as_value(vm_t *vm, const type_t *t);
+/** 将 type 转为 value_t*（type 作为 first-class value） */
+value_t *type_as_value(vm_t *vm, const type_t *t);
+
+/**
+ * 类型提升（二元运算前协商结果类型）
+ *
+ * 优先级：f64 > f32 > u64 > i64 > u32 > i32 > u16 > i16 > u8 > i8 > bool
+ * - 同类型直接返回
+ * - 两个数值类型返回高 rank 的那个
+ * - 非数值类型（str/void/type/func/error）或类型不兼容返回 NULL
+ */
+const type_t *type_promote(const vm_t *vm, const type_t *a, const type_t *b);
 
 #ifdef __cplusplus
 }

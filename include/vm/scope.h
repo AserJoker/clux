@@ -43,24 +43,24 @@ void scope_destroy(vm_t *vm, scope_t **scope);
 void scope_destroy_subtree(vm_t *vm, scope_t **scope);
 
 /**
- * 将 value 注册到 scope 的 owned 列表。
+ * 将已创建的 value_t* 注册到 scope 的 owned 列表。
  * scope 拥有该 value 的生命周期，销毁时自动 dispose。
- * value_clone 内部自动调用此函数，通常不需要手动调用。
+ * value_clone / value_make 等内部自动调用此函数，通常不需要手动调用。
  */
-void scope_track(vm_t *vm, scope_t *scope, value_t v);
+void scope_track(vm_t *vm, scope_t *scope, value_t *v);
 
 /**
  * 定义变量: 将 name 和 v 绑定到当前作用域。
  * name 会被拷贝，value 会被 clone 进 scope。
  * 返回 scope 内存储的 value_t 指针（借用的）。
  */
-value_t *scope_define(vm_t *vm, scope_t *scope, const char *name, value_t v);
+value_t *scope_define(vm_t *vm, scope_t *scope, const char *name, value_t *v);
 
 /** 查找变量（沿 parent 链递归），未找到返回 NULL */
 value_t *scope_lookup(const scope_t *scope, strslice_t name);
 
 /** 更新已有变量的值（沿 parent 链查找，clone 新值，dispose 旧值），未找到返回 false */
-bool scope_assign(vm_t *vm, scope_t *scope, strslice_t name, value_t v);
+bool scope_assign(vm_t *vm, scope_t *scope, strslice_t name, value_t *v);
 
 /** 获取当前作用域的父作用域 */
 static inline scope_t *scope_parent(const scope_t *scope) {

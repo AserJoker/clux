@@ -1,5 +1,5 @@
 #include "vm/type_func.h"
-#include "vm/value.h"
+#include "vm/value_internal.h"
 #include "vm/function.h"
 #include "vm/vm.h"
 #include "vm/scope.h"
@@ -31,18 +31,17 @@ static void func_dispose(vm_t *vm, value_t *v) {
 
 /* ---- clone ---- */
 
-static value_t func_clone(vm_t *vm, value_t v) {
-    (void)vm;
-    /* M1: 函数值不可变，浅拷贝指针即可 */
-    const func_t *fn = *(const func_t **)v.data;
-    void *data = value_alloc_data_copy(vm->alloc, v.type, &fn);
-    return value_make(v.type, data);
+static value_t *func_clone(vm_t *vm, value_t *v) {
+    /* 函数值不可变，浅拷贝指针即可 */
+    const func_t *fn = *(const func_t **)v->data;
+    void *data = value_alloc_data_copy(vm->alloc, v->type, &fn);
+    return value_make(vm, v->type, data);
 }
 
 /* ---- call: 通过 vtable 分派的函数调用 ---- */
 
-static value_t func_vcall(vm_t *vm, value_t callee, value_t *args, size_t argc) {
-    func_t *fn = *(func_t **)callee.data;
+static value_t *func_vcall(vm_t *vm, value_t *callee, value_t **args, size_t argc) {
+    func_t *fn = *(func_t **)callee->data;
     if (!fn || !fn->cfunc) {
         return value_make_error(vm, "func call: invalid function");
     }
@@ -61,16 +60,16 @@ static value_t func_vcall(vm_t *vm, value_t callee, value_t *args, size_t argc) 
     vm_push_scope(vm);
 
     /* 5. safe_cast + clone 参数到当前作用域（value_clone 自动注册到 owned） */
-    value_t local_args[argc > 0 ? argc : 1];
-    value_t ret = { NULL, NULL };
+    value_t *local_args[argc > 0 ? argc : 1];
+    value_t *ret = NULL;
     bool is_error = false;
 
     for (size_t i = 0; i < argc; i++) {
         if (fn->params && i < fn->param_count && fn->params[i]
-            && args[i].type != fn->params[i]) {
+            && args[i]->type != fn->params[i]) {
             /* safe_cast: implicit_cast（auto-tracked），失败返回 error */
-            value_t casted = value_implicit_cast(vm, args[i], fn->params[i]);
-            if (value_is_error(vm, &casted)) {
+            value_t *casted = value_implicit_cast(vm, args[i], fn->params[i]);
+            if (value_is_error(vm, casted)) {
                 is_error = true;
                 ret = casted;
                 break;
@@ -88,16 +87,16 @@ static value_t func_vcall(vm_t *vm, value_t callee, value_t *args, size_t argc) 
         if (result && result->type) {
             if (value_is_error(vm, result)) {
                 is_error = true;
-                ret = *result;  /* error 借用 callee scope */
+                ret = result;  /* error 借用 callee scope */
             } else if (fn->return_type && result->type != fn->return_type) {
                 /* safe_cast 返回值到声明的返回类型（auto-tracked 到 callee scope） */
-                ret = value_implicit_cast(vm, *result, fn->return_type);
-                if (value_is_error(vm, &ret)) {
+                ret = value_implicit_cast(vm, result, fn->return_type);
+                if (value_is_error(vm, ret)) {
                     is_error = true;
                 }
             } else {
                 /* 类型匹配或无返回类型声明，借用 */
-                ret = *result;
+                ret = result;
             }
         }
     }
@@ -106,7 +105,7 @@ static value_t func_vcall(vm_t *vm, value_t callee, value_t *args, size_t argc) 
     /* 临时切换 current_scope 到 caller，clone 后自动 track 到 caller 的 owned */
     scope_t *callee_current = vm->current_scope;
     vm->current_scope = caller_scope;
-    if (ret.type) {
+    if (ret && ret->type) {
         ret = value_clone(vm, ret);
     }
 

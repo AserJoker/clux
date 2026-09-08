@@ -22,7 +22,7 @@ typedef struct func_t  func_t;
  * - args: 实参数组（已 clone 到当前作用域）
  * 返回值: 结果 value（调用方负责 clone 到自己的作用域）
  */
-typedef value_t *(*cfunc_t)(vm_t *vm, func_t *self, size_t argc, value_t *args);
+typedef value_t *(*cfunc_t)(vm_t *vm, func_t *self, size_t argc, value_t **args);
 
 /* ---- func_t: 函数对象 ---- */
 
@@ -65,8 +65,8 @@ void func_set_return_type(func_t *fn, const type_t *type);
 
 /* ---- value 构造 ---- */
 
-/** 从 func_t 构造 value_t（栈上，data 存指向 func_t 的指针） */
-value_t func_make_value(vm_t *vm, func_t *fn);
+/** 从 func_t 构造 value_t（堆分配 + auto-track，data 存指向 func_t 的指针） */
+value_t *func_make_value(vm_t *vm, func_t *fn);
 
 #ifdef __cplusplus
 }

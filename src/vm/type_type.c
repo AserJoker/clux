@@ -1,5 +1,5 @@
 #include "vm/type_type.h"
-#include "vm/value.h"
+#include "vm/value_internal.h"
 
 #include <stdio.h>
 

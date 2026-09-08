@@ -1,6 +1,6 @@
 #include "vm/type.h"
 #include "vm/vm.h"
-#include "vm/value.h"
+#include "vm/value_internal.h"
 #include "vm/function.h"
 #include "core/string.h"
 #include "vm/type_int.h"
@@ -51,9 +51,58 @@ const type_t *type_find(const vm_t *vm, strslice_t name) {
 
 /* ---- type_as_value ---- */
 
-value_t type_as_value(vm_t *vm, const type_t *t) {
+value_t *type_as_value(vm_t *vm, const type_t *t) {
     void *data = value_alloc_data_copy(vm->alloc, vm->type_type, &t);
-    return value_make(vm->type_type, data);
+    return value_make(vm, vm->type_type, data);
+}
+
+/* ---- type_promote ---- */
+
+typedef enum {
+    CAT_NONE    = 0,  /* 非数值（str/void/type/func/error） */
+    CAT_BOOL    = 1,
+    CAT_SINT    = 2,  /* 有符号整数 */
+    CAT_UINT    = 3,  /* 无符号整数 */
+    CAT_FLOAT   = 4,
+} type_cat_t;
+
+static type_cat_t type_category(const vm_t *vm, const type_t *t) {
+    if (t == vm->type_bool) return CAT_BOOL;
+    if (t == vm->type_i8 || t == vm->type_i16 ||
+        t == vm->type_i32 || t == vm->type_i64) return CAT_SINT;
+    if (t == vm->type_u8 || t == vm->type_u16 ||
+        t == vm->type_u32 || t == vm->type_u64) return CAT_UINT;
+    if (t == vm->type_f32 || t == vm->type_f64) return CAT_FLOAT;
+    return CAT_NONE;
+}
+
+static int type_rank_val(const vm_t *vm, const type_t *t) {
+    if (t == vm->type_bool) return 0;
+    if (t == vm->type_i8)   return 1;
+    if (t == vm->type_u8)   return 2;
+    if (t == vm->type_i16)  return 3;
+    if (t == vm->type_u16)  return 4;
+    if (t == vm->type_i32)  return 5;
+    if (t == vm->type_u32)  return 6;
+    if (t == vm->type_i64)  return 7;
+    if (t == vm->type_u64)  return 8;
+    if (t == vm->type_f32)  return 9;
+    if (t == vm->type_f64)  return 10;
+    return -1;  /* 非数值类型 */
+}
+
+const type_t *type_promote(const vm_t *vm, const type_t *a, const type_t *b) {
+    if (a == b) return a;
+
+    type_cat_t ca = type_category(vm, a);
+    type_cat_t cb = type_category(vm, b);
+
+    if (ca == CAT_NONE || cb == CAT_NONE) return NULL;  /* 非数值类型 */
+    if (ca != cb) return NULL;  /* 不同类别（bool/int/float）不协商 */
+
+    int ra = type_rank_val(vm, a);
+    int rb = type_rank_val(vm, b);
+    return (ra >= rb) ? a : b;
 }
 
 /* ================================================================ */
