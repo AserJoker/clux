@@ -6,6 +6,7 @@ extern "C" {
 
 #include "vm/value.h"
 #include "core/strslice.h"
+#include <stdbool.h>
 #include <stddef.h>
 
 typedef struct vm_t    vm_t;
@@ -46,6 +47,7 @@ struct func_t {
     size_t          param_count;
     const type_t   *return_type;
     strslice_t      name;
+    bool            is_variadic;   /* FFI 可变参数（如 printf），允许 argc > param_count */
 };
 
 /* ---- 生命周期 ---- */
@@ -59,9 +61,6 @@ func_t *func_new(allocator_t *alloc,
 
 /** 销毁函数对象 */
 void func_destroy(allocator_t *alloc, func_t **fn);
-
-/** 设置返回类型 */
-void func_set_return_type(func_t *fn, const type_t *type);
 
 /* ---- value 构造 ---- */
 

@@ -32,6 +32,11 @@ static value_t *func_vcall(vm_t *vm, value_t *callee, value_t **args, size_t arg
         return value_make_error(vm, "func call: invalid function");
     }
 
+    /* 参数数量检查：非 variadic 函数拒绝多余实参 */
+    if (!fn->is_variadic && argc > fn->param_count) {
+        return value_make_error(vm, "func call: too many arguments");
+    }
+
     /* 1. 保存现场 */
     scope_t *caller_root  = vm->root_scope;
     scope_t *caller_scope = vm->current_scope;
@@ -62,7 +67,7 @@ static value_t *func_vcall(vm_t *vm, value_t *callee, value_t **args, size_t arg
             }
             local_args[i] = casted;
         } else {
-            /* 类型匹配或无类型声明，clone（auto-tracked） */
+            /* 类型匹配、无类型声明、或 variadic 额外参数：clone（auto-tracked） */
             local_args[i] = value_clone(vm, args[i]);
         }
     }

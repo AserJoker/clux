@@ -197,6 +197,16 @@ value_t *value_clone(vm_t *vm, value_t *v) {
     return r;
 }
 
+value_t *value_assign(vm_t *vm, value_t *dst, value_t *src) {
+    if (value_is_error(vm, src)) return src;
+    if (!dst || !dst->type) return value_make_error(vm, "assign: cannot assign to void");
+    if (value_is_error(vm, dst)) return value_make_error(vm, "assign: cannot assign to error");
+    if (!dst->type->vtable || !dst->type->vtable->assign) {
+        return value_make_error(vm, "assign: type does not support assignment");
+    }
+    return dst->type->vtable->assign(vm, dst, src);
+}
+
 /* ---- 类型转换 ---- */
 
 value_t *value_implicit_cast(vm_t *vm, value_t *v, const type_t *target) {

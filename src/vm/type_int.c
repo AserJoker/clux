@@ -106,6 +106,21 @@ static value_t *bool_store(vm_t *vm, bool val) {
 }
 
 /* ================================================================ */
+/* 赋值：向左值类型转换 + memcpy                                      */
+/* ================================================================ */
+
+static value_t *int_assign(vm_t *vm, value_t *dst, value_t *src) {
+    if (value_type(src) != value_type(dst)) {
+        /* 向左值类型 implicit_cast */
+        value_t *casted = value_implicit_cast(vm, src, value_type(dst));
+        if (value_is_error(vm, casted)) return casted;
+        src = casted;
+    }
+    memcpy(value_data(dst), value_data(src), value_type(dst)->size);
+    return dst;
+}
+
+/* ================================================================ */
 /* 共享算术/位运算（bit-level 相同，signed/unsigned 共用）            */
 /* ================================================================ */
 
@@ -403,6 +418,7 @@ const vtable_t VTABLE_INT_SIGNED = {
     .band = int_band, .bor = int_bor,
     .bxor = int_bxor, .bnot = int_bnot,
     .shl = int_shl,   .shr = sint_shr,
+    .assign = int_assign,
     .implicit_cast = sint_implicit_cast,
     .explicit_cast = sint_explicit_cast,
 };
@@ -417,6 +433,7 @@ const vtable_t VTABLE_INT_UNSIGNED = {
     .band = int_band, .bor = int_bor,
     .bxor = int_bxor, .bnot = int_bnot,
     .shl = int_shl,   .shr = uint_shr,
+    .assign = int_assign,
     .implicit_cast = uint_implicit_cast,
     .explicit_cast = uint_explicit_cast,
 };

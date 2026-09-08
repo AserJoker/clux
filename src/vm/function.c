@@ -39,11 +39,6 @@ void func_destroy(allocator_t *alloc, func_t **pfn) {
     allocator_free(alloc, (void **)pfn);
 }
 
-void func_set_return_type(func_t *fn, const type_t *type) {
-    if (!fn) return;
-    fn->return_type = type;
-}
-
 /* ---- value 构造 ---- */
 
 value_t *func_make_value(vm_t *vm, func_t *fn) {

@@ -56,6 +56,7 @@ typedef struct vtable_t {
     /* ---- 生命周期 ---- */
     void    (*dispose)(vm_t *vm, value_t *v);
     value_t *(*clone)(vm_t *vm, value_t *v);
+    value_t *(*assign)(vm_t *vm, value_t *dst, value_t *src);
 
     /* ---- 类型转换 ---- */
     value_t *(*implicit_cast)(vm_t *vm, value_t *v, const type_t *target);

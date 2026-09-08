@@ -59,9 +59,6 @@ value_t *scope_define(vm_t *vm, scope_t *scope, const char *name, value_t *v);
 /** 查找变量（沿 parent 链递归），未找到返回 NULL */
 value_t *scope_lookup(const scope_t *scope, strslice_t name);
 
-/** 更新已有变量的值（沿 parent 链查找，clone 新值，dispose 旧值），未找到返回 false */
-bool scope_assign(vm_t *vm, scope_t *scope, strslice_t name, value_t *v);
-
 /** 获取当前作用域的父作用域 */
 static inline scope_t *scope_parent(const scope_t *scope) {
     return scope ? scope->parent : NULL;

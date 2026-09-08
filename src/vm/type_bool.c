@@ -29,6 +29,16 @@ static value_t *bool_lnot(vm_t *vm, value_t *a) {
     return bool_store(vm, !value_as(a, bool));
 }
 
+/* ---- 赋值：类型必须匹配，memcpy ---- */
+
+static value_t *bool_assign(vm_t *vm, value_t *dst, value_t *src) {
+    (void)vm;
+    if (value_type(src) != value_type(dst))
+        return value_make_error(vm, "assign: bool type mismatch");
+    *(bool *)value_data(dst) = *(const bool *)value_data(src);
+    return dst;
+}
+
 /* ---- 显式转换：bool → int/float ---- */
 
 static value_t *bool_explicit_cast(vm_t *vm, value_t *v, const type_t *target) {
@@ -63,5 +73,6 @@ static value_t *bool_explicit_cast(vm_t *vm, value_t *v, const type_t *target) {
 const vtable_t VTABLE_BOOL = {
     .eq = bool_eq, .ne = bool_ne,
     .lnot = bool_lnot,
+    .assign = bool_assign,
     .explicit_cast = bool_explicit_cast,
 };

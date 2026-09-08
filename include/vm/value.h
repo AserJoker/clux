@@ -102,6 +102,9 @@ void value_dispose(vm_t *vm, value_t *v);
 /** 深拷贝 value 并自动注册到 vm->current_scope（scope 管理生命周期） */
 value_t *value_clone(vm_t *vm, value_t *v);
 
+/** 原地赋值：将 src 的数据写入 dst（类型必须匹配），返回 dst 或 error */
+value_t *value_assign(vm_t *vm, value_t *dst, value_t *src);
+
 /* ---- 类型转换 ---- */
 
 value_t *value_implicit_cast(vm_t *vm, value_t *v, const type_t *target);

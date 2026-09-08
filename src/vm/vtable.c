@@ -23,6 +23,7 @@ const vtable_t VTABLE_ZERO = {
     .call           = NULL,
     .dispose        = NULL,
     .clone          = NULL,
+    .assign         = NULL,
     .implicit_cast  = NULL,
     .explicit_cast  = NULL,
 };

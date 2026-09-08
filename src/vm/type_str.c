@@ -44,7 +44,18 @@ static value_t *str_clone(vm_t *vm, value_t *v) {
     return value_make(vm, value_type(v), data);
 }
 
+static value_t *str_assign(vm_t *vm, value_t *dst, value_t *src) {
+    /* dispose 旧 string，clone 新 string */
+    string_t **dp = (string_t **)value_data(dst);
+    if (dp && *dp) string_free(dp);
+    string_t *s = *(string_t **)value_data(src);
+    string_t *copy = string_from_string(vm->alloc, s);
+    if (!copy) panic("vm: out of memory assigning string");
+    *dp = copy;
+    return dst;
+}
+
 const vtable_t VTABLE_STR = {
     .eq = str_eq, .ne = str_ne,
-    .dispose = str_dispose, .clone = str_clone,
+    .dispose = str_dispose, .clone = str_clone, .assign = str_assign,
 };

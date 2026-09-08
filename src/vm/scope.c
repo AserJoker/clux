@@ -99,14 +99,17 @@ void scope_track(vm_t *vm, scope_t *scope, value_t *v) {
 value_t *scope_define(vm_t *vm, scope_t *scope, const char *name, value_t *v) {
     if (!scope || !name) return NULL;
 
+    /* 重复定义检查：当前作用域已有同名变量时报错 */
+    if (strmap_get(scope->vars, name)) {
+        return value_make_error(vm, "scope: duplicate variable definition");
+    }
+
     /* 临时切换 current_scope 到目标 scope，clone 后 value 自动注册到 owned */
     scope_t *saved = vm->current_scope;
     vm->current_scope = scope;
     value_t *cloned = value_clone(vm, v);
     vm->current_scope = saved;
 
-    /* 插入 vars 借用映射；若 name 已存在，旧映射被替换 */
-    /* 旧 value_t* 仍在 owned 中，由 scope_destroy 统一 dispose */
     strmap_insert(scope->vars, vm->alloc, name, cloned);
 
     return cloned;
@@ -123,27 +126,4 @@ value_t *scope_lookup(const scope_t *scope, strslice_t name) {
         }
     }
     return NULL;
-}
-
-bool scope_assign(vm_t *vm, scope_t *scope, strslice_t name, value_t *v) {
-    for (scope_t *s = scope; s; s = s->parent) {
-        char buf[256];
-        if (name.len < sizeof(buf)) {
-            memcpy(buf, name.ptr, name.len);
-            buf[name.len] = '\0';
-            value_t *old = (value_t *)strmap_get(s->vars, buf);
-            if (old) {
-                /* clone 新值到 owned，更新 vars 指向新值 */
-                /* 旧值留在 owned 中，由 scope_destroy 统一 dispose */
-                scope_t *saved = vm->current_scope;
-                vm->current_scope = s;
-                value_t *new_val = value_clone(vm, v);
-                vm->current_scope = saved;
-
-                strmap_insert(s->vars, vm->alloc, buf, new_val);
-                return true;
-            }
-        }
-    }
-    return false;
 }

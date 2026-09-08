@@ -9,6 +9,7 @@ extern "C" {
 #include "vm/scope.h"
 #include "vm/type.h"
 #include "vm/type_error.h"
+#include "vm/function.h"
 #include "core/allocator.h"
 #include "core/string.h"
 #include "core/strslice.h"
@@ -574,6 +575,150 @@ TEST_F(ValueCore, CallWithErrorArgPropagates) {
     EXPECT_TRUE(value_is_error(vm, r));
 
     raw_free(vm, a);
+}
+
+/* ---- 可变参数函数 (FFI variadic) ---- */
+
+static value_t *sum_variadic(vm_t *vm, func_t *self, size_t argc, value_t **args) {
+    (void)self;
+    int64_t total = 0;
+    for (size_t i = 0; i < argc; i++) {
+        total += read_sint(args[i]);
+    }
+    void *data = value_alloc_data_copy(vm->alloc, vm->type_i64, &total);
+    return value_make(vm, vm->type_i64, data);
+}
+
+TEST_F(ValueCore, VariadicFuncAcceptsExtraArgs) {
+    func_t *fn = func_new(vm->alloc, sum_variadic, vm->global_scope, vm->root_scope,
+                          STRSLICE_LIT("sum_variadic"));
+    fn->is_variadic = true;
+    fn->param_count = 0;
+    fn->params = NULL;
+
+    /* untracked value，手动释放 */
+    void *data = value_alloc_data_copy(vm->alloc, vm->type_func, &fn);
+    value_t *fv = value_make_untracked(vm->alloc, vm->type_func, data);
+
+    value_t *a = make_i32_raw(vm, 1);
+    value_t *b = make_i32_raw(vm, 2);
+    value_t *c = make_i32_raw(vm, 3);
+    value_t *args[] = { a, b, c };
+    value_t *r = value_call(vm, fv, args, 3);
+
+    ASSERT_NE(r, nullptr);
+    ASSERT_EQ(value_type(r), vm->type_i64);
+    EXPECT_EQ(read_sint(r), 6);
+
+    raw_free(vm, a);
+    raw_free(vm, b);
+    raw_free(vm, c);
+    raw_free(vm, fv);
+}
+
+TEST_F(ValueCore, NonVariadicFuncRejectsExtraArgs) {
+    /* 固定参数函数：1 个 i32 参数 */
+    func_t *fn = func_new(vm->alloc, sum_variadic, vm->global_scope, vm->root_scope,
+                          STRSLICE_LIT("fixed"));
+    fn->is_variadic = false;
+    fn->param_count = 1;
+    fn->params = NULL;  /* 无类型约束，但 param_count=1 */
+
+    /* untracked value，手动释放 */
+    void *data = value_alloc_data_copy(vm->alloc, vm->type_func, &fn);
+    value_t *fv = value_make_untracked(vm->alloc, vm->type_func, data);
+
+    value_t *a = make_i32_raw(vm, 1);
+    value_t *b = make_i32_raw(vm, 2);
+    value_t *args[] = { a, b };
+    value_t *r = value_call(vm, fv, args, 2);
+
+    ASSERT_NE(r, nullptr);
+    EXPECT_TRUE(value_is_error(vm, r));
+
+    raw_free(vm, a);
+    raw_free(vm, b);
+    raw_free(vm, fv);
+}
+
+/* ---- value_assign 分派 ---- */
+
+TEST_F(ValueCore, AssignSameTypeMemcpy) {
+    value_t *dst = make_i32_raw(vm, 100);
+    value_t *src = make_i32_raw(vm, 42);
+    value_t *r = value_assign(vm, dst, src);
+    ASSERT_EQ(r, dst);
+    EXPECT_EQ(read_sint(dst), 42);
+    EXPECT_EQ(read_sint(src), 42);
+
+    raw_free(vm, dst);
+    raw_free(vm, src);
+}
+
+TEST_F(ValueCore, AssignWideningCast) {
+    value_t *dst = make_i64_raw(vm, 0);
+    value_t *src = make_i32_raw(vm, -7);
+    value_t *r = value_assign(vm, dst, src);
+    ASSERT_EQ(r, dst);
+    EXPECT_EQ(read_sint(dst), -7);
+
+    raw_free(vm, dst);
+    raw_free(vm, src);
+}
+
+TEST_F(ValueCore, AssignBoolSameType) {
+    value_t *dst = make_bool_raw(vm, false);
+    value_t *src = make_bool_raw(vm, true);
+    value_t *r = value_assign(vm, dst, src);
+    ASSERT_EQ(r, dst);
+    EXPECT_TRUE(value_as(dst, bool));
+
+    raw_free(vm, dst);
+    raw_free(vm, src);
+}
+
+TEST_F(ValueCore, AssignBoolTypeMismatchReturnsError) {
+    value_t *dst = make_bool_raw(vm, false);
+    value_t *src = make_i32_raw(vm, 1);
+    value_t *r = value_assign(vm, dst, src);
+    EXPECT_TRUE(value_is_error(vm, r));
+
+    raw_free(vm, dst);
+    raw_free(vm, src);
+}
+
+TEST_F(ValueCore, AssignStrDeepCopy) {
+    string_t *s1 = string_from_cstr(vm->alloc, "hello");
+    void *d1 = value_alloc_data_copy(vm->alloc, vm->type_str, &s1);
+    value_t *dst = value_make_untracked(vm->alloc, vm->type_str, d1);
+
+    string_t *s2 = string_from_cstr(vm->alloc, "world");
+    void *d2 = value_alloc_data_copy(vm->alloc, vm->type_str, &s2);
+    value_t *src = value_make_untracked(vm->alloc, vm->type_str, d2);
+
+    value_t *r = value_assign(vm, dst, src);
+    ASSERT_EQ(r, dst);
+    EXPECT_STREQ(string_cstr(*(string_t **)value_data(dst)), "world");
+    /* src 不变 */
+    EXPECT_STREQ(string_cstr(*(string_t **)value_data(src)), "world");
+
+    raw_free(vm, dst);
+    raw_free(vm, src);
+}
+
+TEST_F(ValueCore, AssignToVoidReturnsError) {
+    value_t *src = make_i32_raw(vm, 42);
+    value_t *r = value_assign(vm, NULL, src);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, src);
+}
+
+TEST_F(ValueCore, AssignErrorPropagates) {
+    value_t *err = value_make_error(vm, "err");
+    value_t *dst = make_i32_raw(vm, 1);
+    value_t *r = value_assign(vm, dst, err);
+    EXPECT_TRUE(value_is_error(vm, r));
+    raw_free(vm, dst);
 }
 
 /* ---- 类型转换分派 ---- */
@@ -1504,60 +1649,22 @@ TEST_F(ScopeMech, LookupTraversesParentChain) {
     vm_pop_scope(vm);
 }
 
-TEST_F(ScopeMech, DefineOverwritesPrevious) {
-    value_t *v1 = make_i32_raw(vm, 1);
-    scope_define(vm, vm->current_scope, "x", v1);
-    raw_free(vm, v1);
+/* ---- scope_define 重复定义检查 ---- */
 
-    value_t *v2 = make_i32_raw(vm, 2);
-    scope_define(vm, vm->current_scope, "x", v2);
-    raw_free(vm, v2);
-
-    value_t *found = scope_lookup(vm->current_scope, STRSLICE_LIT("x"));
-    ASSERT_NE(found, nullptr);
-    EXPECT_EQ(read_sint(found), 2);
-}
-
-/* ---- scope_assign ---- */
-
-TEST_F(ScopeMech, AssignUpdatesExisting) {
-    value_t *v = make_i32_raw(vm, 10);
+TEST_F(ScopeMech, DuplicateDefineReturnsError) {
+    value_t *v = make_i32_raw(vm, 1);
     scope_define(vm, vm->current_scope, "x", v);
     raw_free(vm, v);
 
-    value_t *nv = make_i32_raw(vm, 99);
-    bool ok = scope_assign(vm, vm->current_scope, STRSLICE_LIT("x"), nv);
-    EXPECT_TRUE(ok);
-    raw_free(vm, nv);
+    value_t *v2 = make_i32_raw(vm, 2);
+    value_t *result = scope_define(vm, vm->current_scope, "x", v2);
+    EXPECT_TRUE(value_is_error(vm, result));
+    raw_free(vm, v2);
 
+    /* 原值不变 */
     value_t *found = scope_lookup(vm->current_scope, STRSLICE_LIT("x"));
     ASSERT_NE(found, nullptr);
-    EXPECT_EQ(read_sint(found), 99);
-}
-
-TEST_F(ScopeMech,AssignNonExistingReturnsFalse) {
-    value_t *v = make_i32_raw(vm, 1);
-    bool ok = scope_assign(vm, vm->current_scope, STRSLICE_LIT("nope"), v);
-    EXPECT_FALSE(ok);
-    raw_free(vm, v);
-}
-
-TEST_F(ScopeMech, AssignTraversesParentChain) {
-    value_t *v = make_i32_raw(vm, 1);
-    scope_define(vm, vm->root_scope, "p", v);
-    raw_free(vm, v);
-
-    vm_push_scope(vm);
-    value_t *nv = make_i32_raw(vm, 77);
-    bool ok = scope_assign(vm, vm->current_scope, STRSLICE_LIT("p"), nv);
-    EXPECT_TRUE(ok);
-    raw_free(vm, nv);
-
-    value_t *found = scope_lookup(vm->current_scope, STRSLICE_LIT("p"));
-    ASSERT_NE(found, nullptr);
-    EXPECT_EQ(read_sint(found), 77);
-
-    vm_pop_scope(vm);
+    EXPECT_EQ(read_sint(found), 1);
 }
 
 /* ---- owned 生命周期 ---- */
