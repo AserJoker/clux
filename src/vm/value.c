@@ -1,4 +1,4 @@
-#include "vm/value_internal.h"
+#include "vm/value.h"
 #include "vm/vm.h"
 #include "vm/type_error.h"
 #include "core/panic.h"
@@ -6,6 +6,13 @@
 
 #include <stdio.h>
 #include <string.h>
+
+/* ---- value_t 结构体定义（仅此文件可见） ---- */
+
+struct value_t {
+    const type_t *type;
+    void        *data;
+};
 
 /* ---- 内部分配 class_t（value_t 堆分配用） ---- */
 

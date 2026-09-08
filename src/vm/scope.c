@@ -1,6 +1,6 @@
 #include "vm/scope.h"
 #include "vm/vm.h"
-#include "vm/value_internal.h"
+#include "vm/value.h"
 #include "core/strmap.h"
 #include "core/panic.h"
 
@@ -92,7 +92,7 @@ void scope_destroy_subtree(vm_t *vm, scope_t **pscope) {
 
 void scope_track(vm_t *vm, scope_t *scope, value_t *v) {
     (void)vm;
-    if (!scope || !v || !v->type) return;
+    if (!scope || !v || !value_type(v)) return;
     vec_push(scope->owned, scope->alloc, v);
 }
 

@@ -29,11 +29,24 @@ const type_t *value_type(const value_t *v);
 /** 获取 value 的 data 指针 */
 void *value_data(const value_t *v);
 
+/** 便捷数据访问宏 */
+#define value_as(v, T) (*((T *)(value_data(v))))
+
 /** 判断 value 是否为 void（type==NULL 表示无类型） */
 bool value_is_void(const value_t *v);
 
 /** 判断 value 是否为 error（引擎级硬错误） */
 bool value_is_error(vm_t *vm, const value_t *v);
+
+/* ---- 构造器 ---- */
+
+/** 从已有 data 指针构造 value（堆分配 + auto-track 到 current_scope）。
+ * 接管 data 所有权。 */
+value_t *value_make(vm_t *vm, const type_t *type, void *data);
+
+/** 从已有 data 指针构造 value（堆分配，不 auto-track）。
+ * 仅供需要手动管理生命周期时使用。 */
+value_t *value_make_untracked(allocator_t *alloc, const type_t *type, void *data);
 
 /* ---- error 构造 ---- */
 
@@ -83,7 +96,7 @@ value_t *value_call(vm_t *vm, value_t *callee, value_t **args, size_t argc);
 
 /* ---- 生命周期 ---- */
 
-/** 销毁 value 的堆载荷（dispose data + 释放 value_t 结构体） */
+/** 销毁 value 的堆载荷（dispose data，不释放 value_t 结构体） */
 void value_dispose(vm_t *vm, value_t *v);
 
 /** 深拷贝 value 并自动注册到 vm->current_scope（scope 管理生命周期） */
@@ -112,7 +125,7 @@ void value_display(vm_t *vm, const value_t *v);
  * 用法:
  *   static value_t *int_add(vm_t *vm, value_t *a, value_t *b) {
  *       VTABLE_BINARY(vm, a, b, add, "+");
- *       // 此时 a->type == b->type，做运算
+ *       // 此时 value_type(a) == value_type(b)，做运算
  *       ...
  *   }
  */
@@ -120,8 +133,8 @@ void value_display(vm_t *vm, const value_t *v);
     do {                                                                      \
         if (value_is_error((vm), (a))) return (a);                           \
         if (value_is_error((vm), (b))) return (b);                           \
-        if ((a)->type != (b)->type) {                                        \
-            const type_t *_rt = type_promote((vm), (a)->type, (b)->type);   \
+        if (value_type((a)) != value_type((b))) {                            \
+            const type_t *_rt = type_promote((vm), value_type((a)), value_type((b))); \
             if (_rt) {                                                        \
                 value_t *_a2 = value_implicit_cast((vm), (a), _rt);          \
                 if (value_is_error((vm), _a2)) return _a2;                   \
@@ -129,9 +142,9 @@ void value_display(vm_t *vm, const value_t *v);
                 if (value_is_error((vm), _b2)) return _b2;                   \
                 return _rt->vtable->slot((vm), _a2, _b2);                    \
             }                                                                 \
-            value_t *_b2 = value_implicit_cast((vm), (b), (a)->type);        \
+            value_t *_b2 = value_implicit_cast((vm), (b), value_type((a)));  \
             if (value_is_error((vm), _b2)) return _b2;                       \
-            return (a)->type->vtable->slot((vm), (a), _b2);                  \
+            return value_type((a))->vtable->slot((vm), (a), _b2);            \
         }                                                                     \
     } while (0)
 

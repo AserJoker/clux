@@ -1,5 +1,5 @@
 #include "vm/type_bool.h"
-#include "vm/value_internal.h"
+#include "vm/value.h"
 #include "vm/vm.h"
 
 #include <stdio.h>
@@ -12,21 +12,21 @@ static value_t *bool_store(vm_t *vm, bool val) {
 
 static value_t *bool_eq(vm_t *vm, value_t *a, value_t *b) {
     VTABLE_BINARY(vm, a, b, eq, "==");
-    if (a->type != vm->type_bool || b->type != vm->type_bool)
+    if (value_type(a) != vm->type_bool || value_type(b) != vm->type_bool)
         return value_make_error(vm, "==: type mismatch");
     return bool_store(vm, value_as(a, bool) == value_as(b, bool));
 }
 
 static value_t *bool_ne(vm_t *vm, value_t *a, value_t *b) {
     VTABLE_BINARY(vm, a, b, ne, "!=");
-    if (a->type != vm->type_bool || b->type != vm->type_bool)
+    if (value_type(a) != vm->type_bool || value_type(b) != vm->type_bool)
         return value_make_error(vm, "!=: type mismatch");
     return bool_store(vm, value_as(a, bool) != value_as(b, bool));
 }
 
 static value_t *bool_lnot(vm_t *vm, value_t *a) {
     if (value_is_error(vm, a)) return a;
-    if (a->type != vm->type_bool)
+    if (value_type(a) != vm->type_bool)
         return value_make_error(vm, "!: type mismatch");
     return bool_store(vm, !value_as(a, bool));
 }

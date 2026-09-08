@@ -1,6 +1,6 @@
 #include "vm/function.h"
 #include "vm/vm.h"
-#include "vm/value_internal.h"
+#include "vm/value.h"
 #include "core/panic.h"
 
 #include <string.h>

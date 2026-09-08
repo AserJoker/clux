@@ -1,5 +1,5 @@
 #include "vm/type_float.h"
-#include "vm/value_internal.h"
+#include "vm/value.h"
 #include "vm/vm.h"
 #include "core/panic.h"
 
@@ -9,9 +9,9 @@
 /* ---- 按类型宽度读写 ---- */
 
 static double float_read(const value_t *v) {
-    if (v->type->size == sizeof(float))
-        return (double)*(const float *)v->data;
-    return *(const double *)v->data;
+    if (value_type(v)->size == sizeof(float))
+        return (double)*(const float *)value_data(v);
+    return *(const double *)value_data(v);
 }
 
 static value_t *float_store(vm_t *vm, const type_t *type, double val) {
@@ -33,88 +33,88 @@ static value_t *bool_store(vm_t *vm, bool val) {
 
 static value_t *float_add(vm_t *vm, value_t *a, value_t *b) {
     VTABLE_BINARY(vm, a, b, add, "+");
-    if (a->type != vm->type_f32 && a->type != vm->type_f64)
+    if (value_type(a) != vm->type_f32 && value_type(a) != vm->type_f64)
         return value_make_error(vm, "+: type mismatch");
-    return float_store(vm, a->type, float_read(a) + float_read(b));
+    return float_store(vm, value_type(a), float_read(a) + float_read(b));
 }
 
 static value_t *float_sub(vm_t *vm, value_t *a, value_t *b) {
     VTABLE_BINARY(vm, a, b, sub, "-");
-    if (a->type != vm->type_f32 && a->type != vm->type_f64)
+    if (value_type(a) != vm->type_f32 && value_type(a) != vm->type_f64)
         return value_make_error(vm, "-: type mismatch");
-    return float_store(vm, a->type, float_read(a) - float_read(b));
+    return float_store(vm, value_type(a), float_read(a) - float_read(b));
 }
 
 static value_t *float_mul(vm_t *vm, value_t *a, value_t *b) {
     VTABLE_BINARY(vm, a, b, mul, "*");
-    if (a->type != vm->type_f32 && a->type != vm->type_f64)
+    if (value_type(a) != vm->type_f32 && value_type(a) != vm->type_f64)
         return value_make_error(vm, "*: type mismatch");
-    return float_store(vm, a->type, float_read(a) * float_read(b));
+    return float_store(vm, value_type(a), float_read(a) * float_read(b));
 }
 
 static value_t *float_div(vm_t *vm, value_t *a, value_t *b) {
     VTABLE_BINARY(vm, a, b, div, "/");
-    if (a->type != vm->type_f32 && a->type != vm->type_f64)
+    if (value_type(a) != vm->type_f32 && value_type(a) != vm->type_f64)
         return value_make_error(vm, "/: type mismatch");
     double bv = float_read(b);
     if (bv == 0.0) panic("division by zero");
-    return float_store(vm, a->type, float_read(a) / bv);
+    return float_store(vm, value_type(a), float_read(a) / bv);
 }
 
 static value_t *float_mod(vm_t *vm, value_t *a, value_t *b) {
     VTABLE_BINARY(vm, a, b, mod, "%");
-    if (a->type != vm->type_f32 && a->type != vm->type_f64)
+    if (value_type(a) != vm->type_f32 && value_type(a) != vm->type_f64)
         return value_make_error(vm, "%: type mismatch");
-    return float_store(vm, a->type, fmod(float_read(a), float_read(b)));
+    return float_store(vm, value_type(a), fmod(float_read(a), float_read(b)));
 }
 
 static value_t *float_neg(vm_t *vm, value_t *a) {
     if (value_is_error(vm, a)) return a;
-    if (a->type != vm->type_f32 && a->type != vm->type_f64)
+    if (value_type(a) != vm->type_f32 && value_type(a) != vm->type_f64)
         return value_make_error(vm, "-: type mismatch");
-    return float_store(vm, a->type, -float_read(a));
+    return float_store(vm, value_type(a), -float_read(a));
 }
 
 /* ---- 比较运算 ---- */
 
 static value_t *float_eq(vm_t *vm, value_t *a, value_t *b) {
     VTABLE_BINARY(vm, a, b, eq, "==");
-    if (a->type != vm->type_f32 && a->type != vm->type_f64)
+    if (value_type(a) != vm->type_f32 && value_type(a) != vm->type_f64)
         return value_make_error(vm, "==: type mismatch");
     return bool_store(vm, float_read(a) == float_read(b));
 }
 
 static value_t *float_ne(vm_t *vm, value_t *a, value_t *b) {
     VTABLE_BINARY(vm, a, b, ne, "!=");
-    if (a->type != vm->type_f32 && a->type != vm->type_f64)
+    if (value_type(a) != vm->type_f32 && value_type(a) != vm->type_f64)
         return value_make_error(vm, "!=: type mismatch");
     return bool_store(vm, float_read(a) != float_read(b));
 }
 
 static value_t *float_lt(vm_t *vm, value_t *a, value_t *b) {
     VTABLE_BINARY(vm, a, b, lt, "<");
-    if (a->type != vm->type_f32 && a->type != vm->type_f64)
+    if (value_type(a) != vm->type_f32 && value_type(a) != vm->type_f64)
         return value_make_error(vm, "<: type mismatch");
     return bool_store(vm, float_read(a) < float_read(b));
 }
 
 static value_t *float_le(vm_t *vm, value_t *a, value_t *b) {
     VTABLE_BINARY(vm, a, b, le, "<=");
-    if (a->type != vm->type_f32 && a->type != vm->type_f64)
+    if (value_type(a) != vm->type_f32 && value_type(a) != vm->type_f64)
         return value_make_error(vm, "<=: type mismatch");
     return bool_store(vm, float_read(a) <= float_read(b));
 }
 
 static value_t *float_gt(vm_t *vm, value_t *a, value_t *b) {
     VTABLE_BINARY(vm, a, b, gt, ">");
-    if (a->type != vm->type_f32 && a->type != vm->type_f64)
+    if (value_type(a) != vm->type_f32 && value_type(a) != vm->type_f64)
         return value_make_error(vm, ">: type mismatch");
     return bool_store(vm, float_read(a) > float_read(b));
 }
 
 static value_t *float_ge(vm_t *vm, value_t *a, value_t *b) {
     VTABLE_BINARY(vm, a, b, ge, ">=");
-    if (a->type != vm->type_f32 && a->type != vm->type_f64)
+    if (value_type(a) != vm->type_f32 && value_type(a) != vm->type_f64)
         return value_make_error(vm, ">=: type mismatch");
     return bool_store(vm, float_read(a) >= float_read(b));
 }

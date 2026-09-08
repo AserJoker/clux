@@ -1,6 +1,6 @@
 #include "vm/type.h"
 #include "vm/vm.h"
-#include "vm/value_internal.h"
+#include "vm/value.h"
 #include "vm/function.h"
 #include "core/string.h"
 #include "vm/type_int.h"

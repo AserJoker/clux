@@ -5,7 +5,7 @@
 
 extern "C" {
 #include "vm/vm.h"
-#include "vm/value_internal.h"
+#include "vm/value.h"
 #include "vm/scope.h"
 #include "vm/type.h"
 #include "vm/type_error.h"
@@ -21,28 +21,28 @@ static void test_free(void *ptr)     { free(ptr); }
 
 /* 按类型宽度读取有符号整数 */
 static int64_t read_sint(const value_t *v) {
-    switch (v->type->size) {
-        case 1: return (int64_t)*(const int8_t  *)v->data;
-        case 2: return (int64_t)*(const int16_t *)v->data;
-        case 4: return (int64_t)*(const int32_t *)v->data;
-        default: return *(const int64_t *)v->data;
+    switch (value_type(v)->size) {
+        case 1: return (int64_t)*(const int8_t  *)value_data(v);
+        case 2: return (int64_t)*(const int16_t *)value_data(v);
+        case 4: return (int64_t)*(const int32_t *)value_data(v);
+        default: return *(const int64_t *)value_data(v);
     }
 }
 
 /* 按类型宽度读取 double */
 static double read_float(const value_t *v) {
-    if (v->type->size == sizeof(float))
-        return (double)*(const float *)v->data;
-    return *(const double *)v->data;
+    if (value_type(v)->size == sizeof(float))
+        return (double)*(const float *)value_data(v);
+    return *(const double *)value_data(v);
 }
 
 /* 按类型宽度读取无符号整数，零扩展到 uint64_t */
 static uint64_t read_uint(const value_t *v) {
-    switch (v->type->size) {
-        case 1: return (uint64_t)*(const uint8_t  *)v->data;
-        case 2: return (uint64_t)*(const uint16_t *)v->data;
-        case 4: return (uint64_t)*(const uint32_t *)v->data;
-        default: return *(const uint64_t *)v->data;
+    switch (value_type(v)->size) {
+        case 1: return (uint64_t)*(const uint8_t  *)value_data(v);
+        case 2: return (uint64_t)*(const uint16_t *)value_data(v);
+        case 4: return (uint64_t)*(const uint32_t *)value_data(v);
+        default: return *(const uint64_t *)value_data(v);
     }
 }
 
