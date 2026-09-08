@@ -4,8 +4,6 @@
 #include "core/string.h"
 #include "core/panic.h"
 
-#include <stdio.h>
-
 static value_t *bool_store(vm_t *vm, bool val) {
     void *data = value_alloc_data(vm->alloc, vm->type_bool);
     *(bool *)data = val;
@@ -46,14 +44,7 @@ static value_t *str_clone(vm_t *vm, value_t *v) {
     return value_make(vm, value_type(v), data);
 }
 
-static void str_display(vm_t *vm, const value_t *v) {
-    (void)vm;
-    string_t *s = *(string_t **)value_data(v);
-    printf("%s", string_cstr(s));
-}
-
 const vtable_t VTABLE_STR = {
     .eq = str_eq, .ne = str_ne,
     .dispose = str_dispose, .clone = str_clone,
-    .display = str_display,
 };

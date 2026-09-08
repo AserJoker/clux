@@ -33,20 +33,7 @@ static value_t *error_clone(vm_t *vm, value_t *v) {
     return value_make(vm, value_type(v), data);
 }
 
-/* ---- display ---- */
-
-static void error_display(vm_t *vm, const value_t *v) {
-    (void)vm;
-    error_data_t *ed = (error_data_t *)value_data(v);
-    if (ed && ed->message) {
-        printf("error: %s", string_cstr(ed->message));
-    } else {
-        printf("error");
-    }
-}
-
 const vtable_t VTABLE_ERROR = {
     .dispose = error_dispose,
     .clone   = error_clone,
-    .display = error_display,
 };

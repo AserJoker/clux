@@ -25,5 +25,4 @@ const vtable_t VTABLE_ZERO = {
     .clone          = NULL,
     .implicit_cast  = NULL,
     .explicit_cast  = NULL,
-    .display        = NULL,
 };

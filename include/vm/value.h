@@ -107,10 +107,6 @@ value_t *value_clone(vm_t *vm, value_t *v);
 value_t *value_implicit_cast(vm_t *vm, value_t *v, const type_t *target);
 value_t *value_explicit_cast(vm_t *vm, value_t *v, const type_t *target);
 
-/* ---- 显示 ---- */
-
-void value_display(vm_t *vm, const value_t *v);
-
 /* ---- vtable 实现辅助宏 ---- */
 
 /*

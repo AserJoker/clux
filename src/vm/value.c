@@ -4,7 +4,6 @@
 #include "core/panic.h"
 #include "core/string.h"
 
-#include <stdio.h>
 #include <string.h>
 
 /* ---- value_t 结构体定义（仅此文件可见） ---- */
@@ -227,18 +226,4 @@ value_t *value_explicit_cast(vm_t *vm, value_t *v, const type_t *target) {
         return v->type->vtable->explicit_cast(vm, v, target);
     }
     return value_make_error(vm, "type does not support explicit cast");
-}
-
-/* ---- 显示 ---- */
-
-void value_display(vm_t *vm, const value_t *v) {
-    if (!v || !v->type) {
-        printf("void");
-        return;
-    }
-    if (v->type->vtable && v->type->vtable->display) {
-        v->type->vtable->display(vm, v);
-        return;
-    }
-    printf("<%s>", v->type->name.ptr);
 }

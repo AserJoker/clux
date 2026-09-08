@@ -7,7 +7,7 @@ extern "C" {
 #include "vm/vtable.h"
 #include "core/string.h"
 
-/** error 类型 vtable（仅 dispose/clone/display，不参与任何运算） */
+/** error 类型 vtable（仅 dispose/clone，不参与任何运算） */
 extern const vtable_t VTABLE_ERROR;
 
 /**

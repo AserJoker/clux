@@ -2,8 +2,6 @@
 #include "vm/value.h"
 #include "vm/vm.h"
 
-#include <stdio.h>
-
 static value_t *bool_store(vm_t *vm, bool val) {
     void *data = value_alloc_data(vm->alloc, vm->type_bool);
     *(bool *)data = val;
@@ -29,11 +27,6 @@ static value_t *bool_lnot(vm_t *vm, value_t *a) {
     if (value_type(a) != vm->type_bool)
         return value_make_error(vm, "!: type mismatch");
     return bool_store(vm, !value_as(a, bool));
-}
-
-static void bool_display(vm_t *vm, const value_t *v) {
-    (void)vm;
-    printf("%s", value_as(v, bool) ? "true" : "false");
 }
 
 /* ---- 显式转换：bool → int/float ---- */
@@ -70,6 +63,5 @@ static value_t *bool_explicit_cast(vm_t *vm, value_t *v, const type_t *target) {
 const vtable_t VTABLE_BOOL = {
     .eq = bool_eq, .ne = bool_ne,
     .lnot = bool_lnot,
-    .display = bool_display,
     .explicit_cast = bool_explicit_cast,
 };

@@ -60,9 +60,6 @@ typedef struct vtable_t {
     /* ---- 类型转换 ---- */
     value_t *(*implicit_cast)(vm_t *vm, value_t *v, const type_t *target);
     value_t *(*explicit_cast)(vm_t *vm, value_t *v, const type_t *target);
-
-    /* ---- 显示 ---- */
-    void    (*display)(vm_t *vm, const value_t *v);
 } vtable_t;
 
 /** 全零 vtable（所有函数指针为 NULL） */

@@ -3,9 +3,6 @@
 #include "vm/vm.h"
 #include "core/panic.h"
 
-#include <stdio.h>
-#include <inttypes.h>
-
 /* ================================================================ */
 /* 类型分类辅助                                                      */
 /* ================================================================ */
@@ -246,11 +243,6 @@ static value_t *sint_ge(vm_t *vm, value_t *a, value_t *b) {
     return bool_store(vm, sint_read(a) >= sint_read(b));
 }
 
-static void sint_display(vm_t *vm, const value_t *v) {
-    (void)vm;
-    printf("%" PRId64, sint_read(v));
-}
-
 /* ================================================================ */
 /* 无符号特有运算                                                    */
 /* ================================================================ */
@@ -306,11 +298,6 @@ static value_t *uint_ge(vm_t *vm, value_t *a, value_t *b) {
     if (!is_unsigned_int(vm, value_type(a)))
         return value_make_error(vm, ">=: type mismatch");
     return bool_store(vm, uint_read(a) >= uint_read(b));
-}
-
-static void uint_display(vm_t *vm, const value_t *v) {
-    (void)vm;
-    printf("%" PRIu64, uint_read(v));
 }
 
 /* ================================================================ */
@@ -416,7 +403,6 @@ const vtable_t VTABLE_INT_SIGNED = {
     .band = int_band, .bor = int_bor,
     .bxor = int_bxor, .bnot = int_bnot,
     .shl = int_shl,   .shr = sint_shr,
-    .display = sint_display,
     .implicit_cast = sint_implicit_cast,
     .explicit_cast = sint_explicit_cast,
 };
@@ -431,7 +417,6 @@ const vtable_t VTABLE_INT_UNSIGNED = {
     .band = int_band, .bor = int_bor,
     .bxor = int_bxor, .bnot = int_bnot,
     .shl = int_shl,   .shr = uint_shr,
-    .display = uint_display,
     .implicit_cast = uint_implicit_cast,
     .explicit_cast = uint_explicit_cast,
 };

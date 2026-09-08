@@ -3,7 +3,6 @@
 #include "vm/vm.h"
 #include "core/panic.h"
 
-#include <stdio.h>
 #include <math.h>
 
 /* ---- 按类型宽度读写 ---- */
@@ -119,13 +118,6 @@ static value_t *float_ge(vm_t *vm, value_t *a, value_t *b) {
     return bool_store(vm, float_read(a) >= float_read(b));
 }
 
-/* ---- display ---- */
-
-static void float_display(vm_t *vm, const value_t *v) {
-    (void)vm;
-    printf("%.17g", float_read(v));
-}
-
 /* ---- 隐式转换：f32 → f64 ---- */
 
 static value_t *float_implicit_cast(vm_t *vm, value_t *v, const type_t *target) {
@@ -173,7 +165,6 @@ const vtable_t VTABLE_FLOAT = {
     .eq  = float_eq,   .ne  = float_ne,
     .lt  = float_lt,   .le  = float_le,
     .gt  = float_gt,   .ge  = float_ge,
-    .display = float_display,
     .implicit_cast = float_implicit_cast,
     .explicit_cast = float_explicit_cast,
 };

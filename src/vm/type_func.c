@@ -6,20 +6,6 @@
 #include "vm/type_error.h"
 #include "core/panic.h"
 
-#include <stdio.h>
-
-/* ---- display ---- */
-
-static void func_display(vm_t *vm, const value_t *v) {
-    (void)vm;
-    const func_t *fn = *(const func_t **)value_data(v);
-    if (fn && fn->name.ptr && fn->name.len > 0) {
-        printf("<func %.*s>", (int)fn->name.len, fn->name.ptr);
-    } else {
-        printf("<func>");
-    }
-}
-
 /* ---- dispose ---- */
 
 static void func_dispose(vm_t *vm, value_t *v) {
@@ -139,5 +125,4 @@ const vtable_t VTABLE_FUNC = {
     .dispose = func_dispose,
     .clone   = func_clone,
     .call    = func_vcall,
-    .display = func_display,
 };
