@@ -85,15 +85,15 @@ void vm_init_builtins(vm_t *vm) {
     static const char S_VOID[] = "void", S_TYPE[] = "type", S_FUNC[] = "func";
     static const char S_ERROR[] = "error";
 
-    g_type_i8   = (type_t){ &VTABLE_INT,  STRSLICE_LIT(S_I8),  sizeof(int64_t),  alignof(int64_t) };
-    g_type_i16  = (type_t){ &VTABLE_INT,  STRSLICE_LIT(S_I16), sizeof(int64_t),  alignof(int64_t) };
-    g_type_i32  = (type_t){ &VTABLE_INT,  STRSLICE_LIT(S_I32), sizeof(int64_t),  alignof(int64_t) };
-    g_type_i64  = (type_t){ &VTABLE_INT,  STRSLICE_LIT(S_I64), sizeof(int64_t),  alignof(int64_t) };
-    g_type_u8   = (type_t){ &VTABLE_INT,  STRSLICE_LIT(S_U8),  sizeof(int64_t),  alignof(int64_t) };
-    g_type_u16  = (type_t){ &VTABLE_INT,  STRSLICE_LIT(S_U16), sizeof(int64_t),  alignof(int64_t) };
-    g_type_u32  = (type_t){ &VTABLE_INT,  STRSLICE_LIT(S_U32), sizeof(int64_t),  alignof(int64_t) };
-    g_type_u64  = (type_t){ &VTABLE_INT,  STRSLICE_LIT(S_U64), sizeof(int64_t),  alignof(int64_t) };
-    g_type_f32  = (type_t){ &VTABLE_FLOAT, STRSLICE_LIT(S_F32), sizeof(double),   alignof(double) };
+    g_type_i8   = (type_t){ &VTABLE_INT_SIGNED,  STRSLICE_LIT(S_I8),  sizeof(int8_t),   alignof(int8_t) };
+    g_type_i16  = (type_t){ &VTABLE_INT_SIGNED,  STRSLICE_LIT(S_I16), sizeof(int16_t),  alignof(int16_t) };
+    g_type_i32  = (type_t){ &VTABLE_INT_SIGNED,  STRSLICE_LIT(S_I32), sizeof(int32_t),  alignof(int32_t) };
+    g_type_i64  = (type_t){ &VTABLE_INT_SIGNED,  STRSLICE_LIT(S_I64), sizeof(int64_t),  alignof(int64_t) };
+    g_type_u8   = (type_t){ &VTABLE_INT_UNSIGNED, STRSLICE_LIT(S_U8),  sizeof(uint8_t),   alignof(uint8_t) };
+    g_type_u16  = (type_t){ &VTABLE_INT_UNSIGNED, STRSLICE_LIT(S_U16), sizeof(uint16_t),  alignof(uint16_t) };
+    g_type_u32  = (type_t){ &VTABLE_INT_UNSIGNED, STRSLICE_LIT(S_U32), sizeof(uint32_t),  alignof(uint32_t) };
+    g_type_u64  = (type_t){ &VTABLE_INT_UNSIGNED, STRSLICE_LIT(S_U64), sizeof(uint64_t),  alignof(uint64_t) };
+    g_type_f32  = (type_t){ &VTABLE_FLOAT, STRSLICE_LIT(S_F32), sizeof(float),    alignof(float) };
     g_type_f64  = (type_t){ &VTABLE_FLOAT, STRSLICE_LIT(S_F64), sizeof(double),   alignof(double) };
     g_type_bool = (type_t){ &VTABLE_BOOL, STRSLICE_LIT(S_BOOL), sizeof(bool),     alignof(bool) };
     g_type_str  = (type_t){ &VTABLE_STR,  STRSLICE_LIT(S_STR),  sizeof(string_t*), alignof(string_t*) };
@@ -101,9 +101,9 @@ void vm_init_builtins(vm_t *vm) {
     g_type_type = (type_t){ &VTABLE_TYPE, STRSLICE_LIT(S_TYPE), sizeof(const type_t*), alignof(const type_t*) };
     g_type_func = (type_t){ &VTABLE_FUNC, STRSLICE_LIT(S_FUNC), sizeof(func_t*), alignof(func_t*) };
 
-    /* error_data_t* — 定义在 type_error.h 中 */
+    /* error_data_t 内联在 value data 块中 */
     g_type_error = (type_t){ &VTABLE_ERROR, STRSLICE_LIT(S_ERROR),
-                             sizeof(error_data_t*), alignof(error_data_t*) };
+                             sizeof(error_data_t), alignof(error_data_t) };
 
     vm->type_i8   = &g_type_i8;
     vm->type_i16  = &g_type_i16;

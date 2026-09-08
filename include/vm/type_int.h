@@ -6,8 +6,11 @@ extern "C" {
 
 #include "vm/vtable.h"
 
-/** 整数类型共用 vtable（i8/i16/i32/i64/u8/u16/u32/u64） */
-extern const vtable_t VTABLE_INT;
+/** 有符号整数 vtable（i8/i16/i32/i64） */
+extern const vtable_t VTABLE_INT_SIGNED;
+
+/** 无符号整数 vtable（u8/u16/u32/u64） */
+extern const vtable_t VTABLE_INT_UNSIGNED;
 
 #ifdef __cplusplus
 }

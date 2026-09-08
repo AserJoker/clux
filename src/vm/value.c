@@ -60,9 +60,9 @@ value_t value_make_error(vm_t *vm, const char *message) {
 }
 
 value_t value_make_error_loc(vm_t *vm, const char *message, const char *location) {
-    error_data_t *ed = (error_data_t *)value_alloc_data(vm->alloc, vm->type_error);
-    ed->message  = message  ? string_from_cstr(vm->alloc, message)  : NULL;
-    ed->location = location ? string_from_cstr(vm->alloc, location) : NULL;
+    error_data_t ed;
+    ed.message  = message  ? string_from_cstr(vm->alloc, message)  : NULL;
+    ed.location = location ? string_from_cstr(vm->alloc, location) : NULL;
     void *data = value_alloc_data_copy(vm->alloc, vm->type_error, &ed);
     value_t err = value_make(vm->type_error, data);
     scope_track(vm, vm->current_scope, err);

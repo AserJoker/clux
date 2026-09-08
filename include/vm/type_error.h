@@ -15,6 +15,8 @@ extern const vtable_t VTABLE_ERROR;
  *
  * - message: 错误消息（必填）
  * - location: 位置信息（可选，NULL 表示无位置，由 AST-walking 层填充）
+ *
+ * error_data_t 内联在 value 的 data 块中（和 int64_t 一样直接存结构体）。
  */
 typedef struct {
     string_t *message;
