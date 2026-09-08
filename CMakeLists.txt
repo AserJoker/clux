@@ -55,6 +55,16 @@ target_link_libraries(clux_parser PUBLIC clux_core ICU::uc ICU::i18n)
 clux_target_warnings(clux_parser)
 
 # ---------------------------------------------------------------------------
+# VM library (virtual machine: value, scope, type, function)
+# ---------------------------------------------------------------------------
+file(GLOB CLUX_VM_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vm/*.c")
+add_library(clux_vm STATIC ${CLUX_VM_SOURCES})
+target_include_directories(clux_vm PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(clux_vm PUBLIC clux_core clux_parser ICU::uc ICU::i18n)
+clux_target_warnings(clux_vm)
+
+# ---------------------------------------------------------------------------
 # Semantic analysis + diagnostics
 #
 # src/sema and src/diag are still empty (pipeline stages T5/T6). These
@@ -93,7 +103,7 @@ file(GLOB CLUX_DRIVER_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/driver/*.c")
 add_library(clux_driver STATIC ${CLUX_DRIVER_SOURCES})
 target_include_directories(clux_driver PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(clux_driver PUBLIC clux_core clux_parser ICU::uc ICU::i18n)
+target_link_libraries(clux_driver PUBLIC clux_core clux_parser clux_vm ICU::uc ICU::i18n)
 clux_target_warnings(clux_driver)
 
 # ---------------------------------------------------------------------------
@@ -116,6 +126,7 @@ target_link_libraries(clux PRIVATE
     clux_core
     clux_parser
     clux_driver
+    clux_vm
     ${CLUX_STAGE_LIBS}
     ICU::data
     ICU::io
@@ -141,7 +152,7 @@ if(BUILD_TESTS)
 
   add_executable(clux_test ${TEST_SOURCES})
   target_include_directories(clux_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
-  target_link_libraries(clux_test PRIVATE clux_core clux_cmd clux_parser clux_driver ${CLUX_STAGE_LIBS} icu_data_init ICU::data GTest::gtest)
+  target_link_libraries(clux_test PRIVATE clux_core clux_cmd clux_parser clux_driver clux_vm ${CLUX_STAGE_LIBS} icu_data_init ICU::data GTest::gtest)
   clux_target_warnings(clux_test)
 
   include(GoogleTest)
