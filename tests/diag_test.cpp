@@ -5,6 +5,8 @@
 
 #include <gtest/gtest.h>
 #include <cstring>
+#include <filesystem>
+#include <string>
 
 extern "C" {
 #include "core/allocator.h"
@@ -154,6 +156,37 @@ TEST_F(DiagTest, PrintAllSmoke) {
     diag_print_all(db_);
     std::string out = testing::internal::GetCapturedStderr();
     EXPECT_NE(out.find("test.clx:1:2: error: boom"), std::string::npos);
+}
+
+TEST_F(DiagTest, PrintSnippetBlockRustStyle) {
+    /* 真实存在的临时文件 → 输出 Rust 风格源码片段块 */
+    std::string path = std::filesystem::temp_directory_path().string();
+    path += "/clux_diag_snippet.txt";
+    {
+        FILE *fp = fopen(path.c_str(), "wb");
+        ASSERT_NE(fp, nullptr);
+        fputs("func main() { foo(1, 2); }\n", fp);
+        fclose(fp);
+    }
+
+    location_t loc;
+    loc.filename = path.c_str();
+    loc.begin.line   = 1;
+    loc.begin.column = 18;
+    loc.end.line     = 1;
+    loc.end.column   = 21; /* 覆盖 "foo"（3 字符） */
+    diag_error(db_, loc, "expects 1 arguments, got 2");
+
+    testing::internal::CaptureStderr();
+    diag_print_all(db_);
+    std::string out = testing::internal::GetCapturedStderr();
+
+    EXPECT_NE(out.find("error: expects 1 arguments, got 2"), std::string::npos);
+    EXPECT_NE(out.find(" --> " + path + ":1:18"), std::string::npos);
+    EXPECT_NE(out.find("1 | func main() { foo(1, 2); }"), std::string::npos);
+    EXPECT_NE(out.find("^"), std::string::npos);
+
+    std::remove(path.c_str());
 }
 
 TEST_F(DiagTest, NullBufferOpsAreNoop) {
