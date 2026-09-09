@@ -17,9 +17,10 @@ typedef struct _vec_t vec_t;
  *   ① 加载源文件  —— 读入 allocator 管理的内存缓冲
  *   ② 词法分析    —— Lexer 切分为 token 并汇入 token 池（vec<token_t*>）
  *   ③ 语法分析    —— Parser 将 token 流解析为 AST
- *   ④ 输出 AST    —— 打印 AST 结构到 stdout（M1 阶段）
+ *   ④ 语义分析    —— Sema 构建作用域树 + shadow VM 类型检查（快速失败）
+ *   ⑤ 输出 AST    —— 打印 AST 结构到 stdout（M1 阶段）
  *
- * 未来阶段（Sema / Interp）将在此框架内顺序插入。
+ * 未来阶段（Bytecode Compiler / Bytecode VM）将在此框架内顺序插入。
  * =========================================================================== */
 
 /**
@@ -50,14 +51,15 @@ int driver_load_source(allocator_t *alloc,
 int driver_lex_file(allocator_t *alloc, const char *path, vec_t **out_pool);
 
 /**
- * 流水线顶层入口：加载 → 词法分析 → 语法分析 → 输出 AST。
+ * 流水线顶层入口：加载 → 词法分析 → 语法分析 → 语义分析 → 输出 AST。
  *
  * 词法错误直接快速失败（返回 1）。词法通过后进入语法分析；
- * 语法错误时输出诊断到 stderr（返回 1）。
+ * 语法错误时输出诊断到 stderr（返回 1）。语法通过后进入语义分析；
+ * 语义错误时输出诊断到 stderr（返回 1，不输出 AST）。
  *
  * 返回进程退出码：
- *   0  —— 成功（无词法/语法错误、文件可读）
- *   1  —— 编译错误（文件无法打开 / 词法错误 / 语法错误）
+ *   0  —— 成功（无词法/语法/语义错误、文件可读）
+ *   1  —— 编译错误（文件无法打开 / 词法错误 / 语法错误 / 语义错误）
  */
 int driver_run_file(const char *path);
 

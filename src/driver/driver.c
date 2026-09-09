@@ -31,6 +31,10 @@
 #include "parser/ast_index.h"
 #include "parser/ast_cast.h"
 #include "parser/ast_error.h"
+#include "diag/diagnostic.h"
+#include "sema/sema.h"
+#include "sema/symbol.h"
+#include "vm/vm.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -466,7 +470,59 @@ int driver_run_file(const char *path) {
     return 1;
   }
 
-  /* Stage ④: 输出 AST JSON（lexer 仍存活，strslice 可安全访问） */
+  /* Stage ④: 语义分析（sema，语法通过后才进入；语义错误快速失败） */
+  vm_t *vm = vm_new(alloc);
+  if (!vm) {
+    lexer_close(&lexer);
+    vec_free(alloc, &pool);
+    arena_destroy(alloc, &arena);
+    delete_allocator(&alloc);
+    return 1;
+  }
+  diag_buf_t *diag = diag_buf_new(alloc);
+  if (!diag) {
+    vm_destroy(&vm);
+    lexer_close(&lexer);
+    vec_free(alloc, &pool);
+    arena_destroy(alloc, &arena);
+    delete_allocator(&alloc);
+    return 1;
+  }
+
+  sema_t *sema = sema_create(vm, diag, pool);
+  if (!sema) {
+    diag_buf_destroy(&diag);
+    vm_destroy(&vm);
+    lexer_close(&lexer);
+    vec_free(alloc, &pool);
+    arena_destroy(alloc, &arena);
+    delete_allocator(&alloc);
+    return 1;
+  }
+
+  bool sema_ok = sema_analyze(sema, ast);
+  /* 作用域树是持久化数据，本阶段尚无字节码编译器下游消费，随 sema 上下文
+     释放；顺序参照 sema 生命周期约定：先取树、再销毁 sema、再销毁树 */
+  sema_scope_t *scope_tree = sema->global_scope;
+  sema_destroy(&sema);
+  if (scope_tree) sema_scope_destroy(&scope_tree);
+
+  if (!sema_ok) {
+    /* 语义诊断已由 sema 记入 diag，统一在出口打印（diag 销毁前） */
+    diag_print_all(diag);
+    diag_buf_destroy(&diag);
+    vm_destroy(&vm);
+    lexer_close(&lexer);
+    vec_free(alloc, &pool);
+    arena_destroy(alloc, &arena);
+    delete_allocator(&alloc);
+    return 1;
+  }
+
+  diag_buf_destroy(&diag);
+  vm_destroy(&vm);
+
+  /* Stage ⑤: 输出 AST JSON（lexer 仍存活，strslice 可安全访问） */
   print_ast_json(ast, 0);
   putchar('\n');
 

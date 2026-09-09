@@ -86,7 +86,9 @@ TEST(Driver, LexFileProducesTokens) {
 /* ---- Stage ①+②+③: run entry point ---- */
 
 TEST(Driver, RunFileValidReturnsZero) {
-  std::string path = write_temp_file("func main() { return 0; }\n");
+  /* 合法程序：词法 + 语法 + 语义全通过。main 无返回类型（void），
+     函数体不含 return 值，sema 无诊断。 */
+  std::string path = write_temp_file("func main() { var x = 1; }\n");
   EXPECT_EQ(driver_run_file(path.c_str()), 0);
   std::remove(path.c_str());
 }
@@ -98,5 +100,24 @@ TEST(Driver, RunFileMissingReturnsOne) {
 TEST(Driver, RunFileLexErrorReturnsOne) {
   std::string path = write_temp_file("@ not a token\n");
   EXPECT_EQ(driver_run_file(path.c_str()), 1);
+  std::remove(path.c_str());
+}
+
+/* ---- Stage ④: sema ---- */
+
+TEST(Driver, RunFileSemaErrorReturnsOne) {
+  /* 语义错误：实参类型不匹配（str → i32），sema 应快速失败返回 1 */
+  std::string path =
+      write_temp_file("func foo(a:i32) { } func main() { foo(\"s\"); }\n");
+  EXPECT_EQ(driver_run_file(path.c_str()), 1);
+  std::remove(path.c_str());
+}
+
+TEST(Driver, RunFileValidSemaPassesReturnsZero) {
+  /* 合法程序：带返回类型（:i32）+ 函数调用 + 变量推断，sema 全通过 */
+  std::string path = write_temp_file(
+      "func add(a:i32, b:i32):i32 { return a + b; }"
+      "func main() { var x = add(1, 2); }\n");
+  EXPECT_EQ(driver_run_file(path.c_str()), 0);
   std::remove(path.c_str());
 }
