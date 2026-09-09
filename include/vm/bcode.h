@@ -1,0 +1,172 @@
+#ifndef _H_CLUX_VM_BCODE_
+#define _H_CLUX_VM_BCODE_
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include "core/allocator.h"
+#include "core/strslice.h"
+#include "core/vec.h"
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+/**
+ * 字节码模块（bytecode_t）：聚合字符串表 + 字节码流的自包含可执行单元
+ *
+ * 产物只有两块（见 docs 2.7.3）：
+ *   1. strs（strtable）：编译期收集的字符串，运行期只读。含变量名
+ *      （PUSH/STORE/DEFINE 等指令的 strtable 索引）与字符串字面量
+ *      （PUSH_STR 的索引）。
+ *   2. code（字节码流）：[opcode:u32][变长操作数...] 线性序列。基本类型
+ *      字面量全部内嵌为立即数（小端），无独立常量池。
+ *
+ * 两块产物构成完整可执行单元，不含任何指向 AST/符号表等中间产物的引用，
+ * 可序列化落盘、重新加载直接执行。
+ */
+
+/* ================================================================ */
+/* 指令集 opcode（docs 2.7.5）                                        */
+/* ================================================================ */
+
+typedef enum {
+    BCODE_PUSH,            /* strtable 索引：scope_lookup 借用引用压栈 */
+    BCODE_STORE,           /* strtable 索引：value_assign(dst, pop) 压结果 */
+    BCODE_PUSH_STR,        /* strtable 索引：字符串字面量压栈 */
+
+    BCODE_PUSH_I8,         /* i8 立即数 */
+    BCODE_PUSH_I16,        /* i16 立即数 */
+    BCODE_PUSH_I32,        /* i32 立即数 */
+    BCODE_PUSH_I64,        /* i64 立即数 */
+    BCODE_PUSH_U8,         /* u8 立即数 */
+    BCODE_PUSH_U16,        /* u16 立即数 */
+    BCODE_PUSH_U32,        /* u32 立即数 */
+    BCODE_PUSH_U64,        /* u64 立即数 */
+    BCODE_PUSH_F32,        /* f32 立即数 */
+    BCODE_PUSH_F64,        /* f64 立即数 */
+    BCODE_PUSH_BOOL,       /* 1 字节布尔立即数 */
+
+    BCODE_PUSH_VALUE,      /* offset：压入 stack[sp-1-offset] 借用引用 */
+    BCODE_LOAD,            /* strtable 索引：从 global scope 查 type value 压栈 */
+    BCODE_PUSH_UNDEFINED,  /* 压入 void 类型 value（"类型待推导"） */
+
+    BCODE_DEFINE,          /* strtable 索引：弹栈定义变量（type/value 双弹约定） */
+    BCODE_CREATE_FUNC_TYPE,/* argc：弹栈构造签名类型 type value 压栈 */
+    BCODE_PUSH_FUNCTION,   /* entry pc：构造 bcode_function_t + 签名类型 → func value */
+    BCODE_DEFINE_FUNCTION, /* strtable 索引：弹栈 func value 直接定义 */
+
+    BCODE_ADD, BCODE_SUB, BCODE_MUL, BCODE_DIV, BCODE_MOD,
+    BCODE_EQ,  BCODE_NE,  BCODE_LT,  BCODE_LE,  BCODE_GT,  BCODE_GE,
+    BCODE_AND, BCODE_OR,
+    BCODE_NEG, BCODE_NOT,
+
+    BCODE_CAST,            /* 类型表索引：显式转换 */
+    BCODE_CALL,            /* argc：value_call（callee 在 stack[sp-1-argc]） */
+    BCODE_RET,             /* 返回 interrupt 哨兵，栈顶即返回值 */
+
+    BCODE_JMP,             /* 目标 pc（绝对字节偏移） */
+    BCODE_JZ,              /* 目标 pc：弹引用，false/0 则跳 */
+    BCODE_JNZ,             /* 目标 pc：弹引用，非 false/0 则跳 */
+
+    BCODE_PUSH_SCOPE,      /* scope_new(alloc, current) */
+    BCODE_POP_SCOPE,       /* 销毁当前 scope */
+    BCODE_POP,             /* 丢弃栈顶引用（不释放，归 scope） */
+    BCODE_HALT,            /* 停止执行 */
+} bcode_op_t;
+
+/* ================================================================ */
+/* 聚合结构：bytecode 模块                                            */
+/* ================================================================ */
+
+typedef struct bytecode_t {
+    allocator_t *alloc;
+    vec_t       *strs;   /* strtable：string_t*，vec owns 生命周期 */
+    struct {             /* code 字节流缓冲（小端，可原地回填） */
+        uint8_t *data;
+        size_t   len;
+        size_t   cap;
+    } code;
+} bytecode_t;
+
+/* ---- 生命周期 ---- */
+
+/** 创建空 bytecode 模块（空 strtable + 空 code 流） */
+bytecode_t *bcode_new(allocator_t *alloc);
+
+/** 销毁模块并置空调用方指针（释放 strtable 全部字符串 + code 缓冲） */
+void bcode_destroy(bytecode_t **bc);
+
+/* ---- strtable 访问（运行期只读） ---- */
+
+/** 返回 strtable 字符串个数 */
+size_t bcode_str_count(const bytecode_t *bc);
+
+/** 按索引取回 strtable 字符串（越界返回空 slice） */
+strslice_t bcode_str_at(const bytecode_t *bc, size_t idx);
+
+/** intern 查找：strtable 中命中返回既有索引，未命中追加后返回新索引 */
+size_t bcode_str_index(bytecode_t *bc, strslice_t s);
+
+/* ================================================================ */
+/* writer：生成字节码（编译期）                                       */
+/* ================================================================ */
+
+/** 写 opcode（u32） */
+void bcode_write_op(bytecode_t *bc, bcode_op_t op);
+
+/** 写立即数（小端） */
+void bcode_write_u8(bytecode_t *bc, uint8_t v);
+void bcode_write_i8(bytecode_t *bc, int8_t v);
+void bcode_write_u16(bytecode_t *bc, uint16_t v);
+void bcode_write_i16(bytecode_t *bc, int16_t v);
+void bcode_write_u32(bytecode_t *bc, uint32_t v);
+void bcode_write_i32(bytecode_t *bc, int32_t v);
+void bcode_write_u64(bytecode_t *bc, uint64_t v);
+void bcode_write_i64(bytecode_t *bc, int64_t v);
+void bcode_write_f32(bytecode_t *bc, float v);
+void bcode_write_f64(bytecode_t *bc, double v);
+void bcode_write_bool(bytecode_t *bc, bool v);
+
+/**
+ * strtable 无感写：intern 到 strtable（去重）并写 u32 索引。
+ * 调用方无需关心索引值；返回索引（供需要时复用）。
+ */
+size_t bcode_write_str(bytecode_t *bc, strslice_t s);
+
+/** 返回 code 流当前位置（字节偏移），用作跳转标签 */
+size_t bcode_tell(const bytecode_t *bc);
+
+/** 原地回填：在 pos 处覆写 u32（跳转目标 pc 回填）。pos 须 < 当前长度 */
+void bcode_patch_u32(bytecode_t *bc, size_t pos, uint32_t v);
+
+/* ================================================================ */
+/* reader：读取字节码（执行器指令回调）                                */
+/* ================================================================ */
+
+/**
+ * 读函数族：从 bc 的 code 流 *pc 处读对应宽度立即数（小端），*pc 前进。
+ * 越界读取触发 panic（执行器信任字节码完整性，越界 = 字节码损坏）。
+ */
+bcode_op_t bcode_read_op(const bytecode_t *bc, size_t *pc);
+uint8_t    bcode_read_u8(const bytecode_t *bc, size_t *pc);
+int8_t     bcode_read_i8(const bytecode_t *bc, size_t *pc);
+uint16_t   bcode_read_u16(const bytecode_t *bc, size_t *pc);
+int16_t    bcode_read_i16(const bytecode_t *bc, size_t *pc);
+uint32_t   bcode_read_u32(const bytecode_t *bc, size_t *pc);
+int32_t    bcode_read_i32(const bytecode_t *bc, size_t *pc);
+uint64_t   bcode_read_u64(const bytecode_t *bc, size_t *pc);
+int64_t    bcode_read_i64(const bytecode_t *bc, size_t *pc);
+float      bcode_read_f32(const bytecode_t *bc, size_t *pc);
+double     bcode_read_f64(const bytecode_t *bc, size_t *pc);
+bool       bcode_read_bool(const bytecode_t *bc, size_t *pc);
+
+/**
+ * strtable 无感读：读 u32 索引 → 从 strtable 取回字符串（strslice，零拷贝）。
+ * 调用方无需感知索引，直接拿到字符串视图。
+ */
+strslice_t bcode_read_str(const bytecode_t *bc, size_t *pc);
+
+#ifdef __cplusplus
+}
+#endif
+#endif /* _H_CLUX_VM_BCODE_ */

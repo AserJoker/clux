@@ -1,5 +1,6 @@
 #include "vm/vm.h"
 #include "vm/type.h"
+#include "vm/value.h"
 #include "core/panic.h"
 #include "core/vec.h"
 
@@ -12,6 +13,39 @@ static class_t g_vm_class = {
     .move_fn    = NULL,
     .dispose_fn = NULL,
 };
+
+/* ---- 基本类型以 type value 注册进 global scope（LOAD "i32" 按名查） ---- */
+
+#include <stddef.h> /* offsetof */
+
+typedef struct {
+    const char *name;
+    size_t      slot_off; /* vm_t 中对应 type_t* 字段的偏移（编译期常量） */
+} builtin_type_entry_t;
+
+static void vm_register_builtin_types(vm_t *vm) {
+    static const builtin_type_entry_t entries[] = {
+        { "i8",   offsetof(vm_t, type_i8)   }, { "i16",  offsetof(vm_t, type_i16)  },
+        { "i32",  offsetof(vm_t, type_i32)  }, { "i64",  offsetof(vm_t, type_i64)  },
+        { "u8",   offsetof(vm_t, type_u8)   }, { "u16",  offsetof(vm_t, type_u16)  },
+        { "u32",  offsetof(vm_t, type_u32)  }, { "u64",  offsetof(vm_t, type_u64)  },
+        { "f32",  offsetof(vm_t, type_f32)  }, { "f64",  offsetof(vm_t, type_f64)  },
+        { "bool", offsetof(vm_t, type_bool) }, { "str",  offsetof(vm_t, type_str)  },
+        { "void", offsetof(vm_t, type_void) }, { "type", offsetof(vm_t, type_type) },
+        { "func", offsetof(vm_t, type_func) },
+    };
+    for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); i++) {
+        const type_t *t = *(type_t **)((char *)vm + entries[i].slot_off);
+        void *data = value_alloc_data_copy(vm->alloc, vm->type_type, &t);
+        value_t *tv = value_make_untracked(vm->alloc, vm->type_type, data);
+        value_t *stored = scope_define(vm, vm->global_scope, entries[i].name, tv);
+        if (!stored || value_is_error(vm, stored)) {
+            panic("vm: failed to register builtin type '%s'", entries[i].name);
+        }
+        value_dispose(vm, tv);
+        allocator_free(vm->alloc, (void **)&tv);
+    }
+}
 
 vm_t *vm_new(allocator_t *alloc) {
     if (!alloc) return NULL;
@@ -27,6 +61,12 @@ vm_t *vm_new(allocator_t *alloc) {
     vm->global_scope  = scope_new(alloc, NULL);
     vm->root_scope    = scope_new(alloc, vm->global_scope);
     vm->current_scope = vm->root_scope;
+
+    /* 基本类型注册进 global scope（LOAD 指令按名查 type value） */
+    vm_register_builtin_types(vm);
+
+    /* 执行器操作数栈：借用引用，不拥有 value */
+    vm->stack = vec_new(alloc, /*owns_element=*/false);
 
     return vm;
 }
@@ -45,6 +85,9 @@ void vm_destroy(vm_t **pvm) {
     scope_destroy(vm, &vm->global_scope);
 
     vm->current_scope = NULL;
+
+    /* 执行器操作数栈（借用引用，不拥有，仅释放向量结构） */
+    vec_free(vm->alloc, &vm->stack);
 
     /* 函数签名类型池：单遍释放（M1 签名只引用内置静态类型，无相互依赖） */
     if (vm->sig_types) {

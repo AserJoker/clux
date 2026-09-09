@@ -8,6 +8,7 @@ extern "C" {
 #include "vm/value.h"
 #include "vm/scope.h"
 #include "vm/function.h"
+#include "vm/bcode.h"
 #include "core/allocator.h"
 #include "core/vec.h"
 
@@ -46,6 +47,12 @@ typedef struct vm_t {
 
     /* ---- 函数签名类型池（按签名去重 intern，vm 拥有生命周期） ---- */
     vec_t *sig_types;    /* func_type_t*，元素为签名类型（sig 非空） */
+
+    /* ---- 执行器状态（复用 vm 上下文，不另建 exec_t） ---- */
+    vec_t       *stack;   /* 操作数栈：value_t* 借用引用（不拥有，归 scope） */
+    bytecode_t  *bc;      /* 当前执行中的字节码模块（嵌套调用时切换） */
+    size_t       pc;      /* 当前指令指针（code 流字节偏移） */
+    bool         halted;  /* error 出现即停止 */
 } vm_t;
 
 /** 创建 VM（初始化内置类型、全局作用域、调用栈） */

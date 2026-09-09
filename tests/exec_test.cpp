@@ -1,0 +1,508 @@
+#include <gtest/gtest.h>
+#include "test_common.h"
+
+extern "C" {
+#include "vm/vm.h"
+#include "vm/value.h"
+#include "vm/scope.h"
+#include "vm/exec.h"
+#include "vm/bcode.h"
+#include "vm/type.h"
+#include "core/allocator.h"
+#include "core/string.h"
+#include "core/strslice.h"
+}
+
+/* ---- helpers ---- */
+
+static void *test_alloc(size_t size) { return malloc(size); }
+static void test_free(void *ptr)     { free(ptr); }
+
+/* 按类型宽度读取有符号整数 */
+static int64_t read_sint(const value_t *v) {
+    switch (value_type(v)->size) {
+        case 1: return (int64_t)*(const int8_t  *)value_data(v);
+        case 2: return (int64_t)*(const int16_t *)value_data(v);
+        case 4: return (int64_t)*(const int32_t *)value_data(v);
+        default: return *(const int64_t *)value_data(v);
+    }
+}
+
+/* 按类型宽度读取无符号整数，零扩展到 uint64_t */
+static uint64_t read_uint(const value_t *v) {
+    switch (value_type(v)->size) {
+        case 1: return (uint64_t)*(const uint8_t  *)value_data(v);
+        case 2: return (uint64_t)*(const uint16_t *)value_data(v);
+        case 4: return (uint64_t)*(const uint32_t *)value_data(v);
+        default: return *(const uint64_t *)value_data(v);
+    }
+}
+
+/* 按类型宽度读取 double */
+static double read_float(const value_t *v) {
+    if (value_type(v)->size == sizeof(float))
+        return (double)*(const float *)value_data(v);
+    return *(const double *)value_data(v);
+}
+
+class ExecTest : public ::testing::Test {
+protected:
+    allocator_t *alloc = nullptr;
+    vm_t        *vm    = nullptr;
+    bytecode_t  *bc    = nullptr;
+
+    void SetUp() override {
+        alloc = create_allocator(test_alloc, test_free);
+        vm    = vm_new(alloc);
+        bc    = bcode_new(alloc);
+    }
+    void TearDown() override {
+        bcode_destroy(&bc);
+        vm_destroy(&vm);
+        EXPECT_EQ(vm, nullptr);
+        EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
+    }
+
+    /* 执行已写入的字节码，返回 exec_run 结果（error 或 NULL） */
+    value_t *run() { return exec_run(vm, bc); }
+
+    /* 栈顶值（借用引用，exec_run 后仍可读） */
+    value_t *stack_top() { return exec_stack_peek(vm, 0); }
+
+    /* 查变量（沿 scope 链），未找到返回 NULL */
+    value_t *lookup(const char *name) {
+        return scope_lookup(vm->current_scope, STRSLICE_LIT(name));
+    }
+};
+
+/* ================================================================ */
+/* 1. 字面量压栈 + HALT                                             */
+/* ================================================================ */
+
+TEST_F(ExecTest, PushI32ThenHalt) {
+    bcode_write_op(bc, BCODE_PUSH_I32);
+    bcode_write_i32(bc, 42);
+    bcode_write_op(bc, BCODE_HALT);
+
+    EXPECT_EQ(run(), nullptr);
+    value_t *top = stack_top();
+    ASSERT_NE(top, nullptr);
+    EXPECT_EQ(value_type(top), vm->type_i32);
+    EXPECT_EQ(read_sint(top), 42);
+}
+
+TEST_F(ExecTest, PushAllIntWidths) {
+    bcode_write_op(bc, BCODE_PUSH_I8);  bcode_write_i8(bc, -5);
+    bcode_write_op(bc, BCODE_PUSH_I16); bcode_write_i16(bc, -1234);
+    bcode_write_op(bc, BCODE_PUSH_I64); bcode_write_i64(bc, -9007199254740993LL);
+    bcode_write_op(bc, BCODE_PUSH_U8);  bcode_write_u8(bc, 200);
+    bcode_write_op(bc, BCODE_PUSH_U64); bcode_write_u64(bc, 0xFEDCBA9876543210ULL);
+    bcode_write_op(bc, BCODE_HALT);
+
+    EXPECT_EQ(run(), nullptr);
+
+    /* 栈底 -> 栈顶：i8, i16, i64, u8, u64 */
+    size_t sp = 5;
+    EXPECT_EQ(read_sint(exec_stack_peek(vm, sp - 1 - 0)), -5);
+    EXPECT_EQ(read_sint(exec_stack_peek(vm, sp - 1 - 1)), -1234);
+    EXPECT_EQ(read_sint(exec_stack_peek(vm, sp - 1 - 2)), -9007199254740993LL);
+    EXPECT_EQ(read_uint(exec_stack_peek(vm, sp - 1 - 3)), 200u);
+    EXPECT_EQ(read_uint(exec_stack_peek(vm, sp - 1 - 4)), 0xFEDCBA9876543210ULL);
+}
+
+TEST_F(ExecTest, PushFloatAndBoolAndStr) {
+    bcode_write_op(bc, BCODE_PUSH_F64); bcode_write_f64(bc, 3.14159);
+    bcode_write_op(bc, BCODE_PUSH_BOOL); bcode_write_bool(bc, true);
+    bcode_write_op(bc, BCODE_PUSH_STR); bcode_write_str(bc, STRSLICE_LIT("hi"));
+    bcode_write_op(bc, BCODE_HALT);
+
+    EXPECT_EQ(run(), nullptr);
+
+    value_t *f = exec_stack_peek(vm, 2);
+    value_t *b = exec_stack_peek(vm, 1);
+    value_t *s = exec_stack_peek(vm, 0);
+    EXPECT_EQ(value_type(f), vm->type_f64);
+    EXPECT_EQ(read_float(f), 3.14159);
+    EXPECT_EQ(value_type(b), vm->type_bool);
+    EXPECT_TRUE(*(const bool *)value_data(b));
+    EXPECT_EQ(value_type(s), vm->type_str);
+    const string_t *str = *(const string_t *const *)value_data(s);
+    EXPECT_EQ(string_len(str), 2u);
+    EXPECT_EQ(strncmp(string_cstr(str), "hi", 2), 0);
+}
+
+/* ================================================================ */
+/* 2. 变量定义与访问（DEFINE / PUSH / STORE）                        */
+/* ================================================================ */
+
+/* var a:i32 = 42; => PUSH_I32 42; LOAD "i32"; DEFINE "a" */
+TEST_F(ExecTest, DefineTypedVar) {
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 42);
+    bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
+    bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("a"));
+    bcode_write_op(bc, BCODE_HALT);
+
+    EXPECT_EQ(run(), nullptr);
+    value_t *a = lookup("a");
+    ASSERT_NE(a, nullptr);
+    EXPECT_EQ(value_type(a), vm->type_i32);
+    EXPECT_EQ(read_sint(a), 42);
+}
+
+/* var a = 42; => PUSH_I32 42; PUSH_UNDEFINED; DEFINE "a"（类型从值推断） */
+TEST_F(ExecTest, DefineInferredVar) {
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 7);
+    bcode_write_op(bc, BCODE_PUSH_UNDEFINED);
+    bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("a"));
+    bcode_write_op(bc, BCODE_HALT);
+
+    EXPECT_EQ(run(), nullptr);
+    value_t *a = lookup("a");
+    ASSERT_NE(a, nullptr);
+    EXPECT_EQ(value_type(a), vm->type_i32);
+    EXPECT_EQ(read_sint(a), 7);
+}
+
+/* var a:i32; 无初始值 → TDZ 变量：作为右值参与运算时报 error */
+TEST_F(ExecTest, DefineTdzVarThenReadFails) {
+    bcode_write_op(bc, BCODE_PUSH_UNDEFINED);
+    bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
+    bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("a"));
+    /* a 参与加法（右值消费）→ TDZ 检查报 error */
+    bcode_write_op(bc, BCODE_PUSH); bcode_write_str(bc, STRSLICE_LIT("a"));
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 1);
+    bcode_write_op(bc, BCODE_ADD);
+    bcode_write_op(bc, BCODE_HALT);
+
+    value_t *r = run();
+    ASSERT_NE(r, nullptr);
+    EXPECT_TRUE(value_is_error(vm, r));
+    value_t *a = lookup("a");
+    ASSERT_NE(a, nullptr);
+    EXPECT_TRUE(value_is_tdz(a));
+}
+
+/* var a:i32; a = 5; 赋值成功退出 TDZ，可正常读取 */
+TEST_F(ExecTest, DefineTdzVarThenAssignExitsTdz) {
+    bcode_write_op(bc, BCODE_PUSH_UNDEFINED);
+    bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
+    bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("a"));
+
+    /* a = 5: PUSH_I32 5; STORE "a"（STORE 只弹一个值，dst 按名查） */
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 5);
+    bcode_write_op(bc, BCODE_STORE); bcode_write_str(bc, STRSLICE_LIT("a"));
+
+    /* 读取 a */
+    bcode_write_op(bc, BCODE_PUSH); bcode_write_str(bc, STRSLICE_LIT("a"));
+    bcode_write_op(bc, BCODE_HALT);
+
+    EXPECT_EQ(run(), nullptr);
+    value_t *a = lookup("a");
+    ASSERT_NE(a, nullptr);
+    EXPECT_FALSE(value_is_tdz(a));
+    EXPECT_EQ(read_sint(a), 5);
+    value_t *top = stack_top();
+    ASSERT_NE(top, nullptr);
+    EXPECT_EQ(read_sint(top), 5);
+}
+
+/* 重复定义同一变量 → 报 error */
+TEST_F(ExecTest, RedefineVarReturnsError) {
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 1);
+    bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
+    bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("a"));
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 2);
+    bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
+    bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("a"));
+    bcode_write_op(bc, BCODE_HALT);
+
+    value_t *r = run();
+    ASSERT_NE(r, nullptr);
+    EXPECT_TRUE(value_is_error(vm, r));
+}
+
+/* 未定义变量读取 → 报 error */
+TEST_F(ExecTest, UndefinedVariablePushReturnsError) {
+    bcode_write_op(bc, BCODE_PUSH); bcode_write_str(bc, STRSLICE_LIT("nope"));
+    bcode_write_op(bc, BCODE_HALT);
+
+    value_t *r = run();
+    ASSERT_NE(r, nullptr);
+    EXPECT_TRUE(value_is_error(vm, r));
+}
+
+/* ================================================================ */
+/* 3. 运算                                                           */
+/* ================================================================ */
+
+TEST_F(ExecTest, AddTwoI32) {
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 20);
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 22);
+    bcode_write_op(bc, BCODE_ADD);
+    bcode_write_op(bc, BCODE_HALT);
+
+    EXPECT_EQ(run(), nullptr);
+    value_t *top = stack_top();
+    ASSERT_NE(top, nullptr);
+    EXPECT_EQ(value_type(top), vm->type_i32);
+    EXPECT_EQ(read_sint(top), 42);
+}
+
+TEST_F(ExecTest, MixedWidthSubPromotes) {
+    /* i8 - i32 → promote 到 i32 */
+    bcode_write_op(bc, BCODE_PUSH_I8);  bcode_write_i8(bc, 10);
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 3);
+    bcode_write_op(bc, BCODE_SUB);
+    bcode_write_op(bc, BCODE_HALT);
+
+    EXPECT_EQ(run(), nullptr);
+    value_t *top = stack_top();
+    ASSERT_NE(top, nullptr);
+    EXPECT_EQ(value_type(top), vm->type_i32);
+    EXPECT_EQ(read_sint(top), 7);
+}
+
+TEST_F(ExecTest, CompareGtBool) {
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 5);
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 3);
+    bcode_write_op(bc, BCODE_GT);
+    bcode_write_op(bc, BCODE_HALT);
+
+    EXPECT_EQ(run(), nullptr);
+    value_t *top = stack_top();
+    ASSERT_NE(top, nullptr);
+    EXPECT_EQ(value_type(top), vm->type_bool);
+    EXPECT_TRUE(*(const bool *)value_data(top));
+}
+
+/* 类型不支持运算 → 报 error（如 str + i32） */
+TEST_F(ExecTest, UnsupportedOpReturnsError) {
+    bcode_write_op(bc, BCODE_PUSH_STR); bcode_write_str(bc, STRSLICE_LIT("x"));
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 1);
+    bcode_write_op(bc, BCODE_ADD);
+    bcode_write_op(bc, BCODE_HALT);
+
+    value_t *r = run();
+    ASSERT_NE(r, nullptr);
+    EXPECT_TRUE(value_is_error(vm, r));
+}
+
+/* ================================================================ */
+/* 4. 控制流（JMP / JZ / JNZ）                                       */
+/* ================================================================ */
+
+TEST_F(ExecTest, JmpSkipsMiddle) {
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 111);
+    bcode_write_op(bc, BCODE_POP);
+
+    /* jmp over PUSH_I32 222 */
+    size_t jmp_pc = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_JMP);
+    bcode_write_u32(bc, 0); /* placeholder，稍后回填 */
+
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 222);
+    bcode_write_op(bc, BCODE_POP);
+
+    /* 回填 JMP 目标：跳到 333 压栈处（dest 须在写指令前取） */
+    size_t dest = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 333);
+    bcode_write_op(bc, BCODE_HALT);
+    bcode_patch_u32(bc, jmp_pc + 4, (uint32_t)dest);
+
+    EXPECT_EQ(run(), nullptr);
+    value_t *top = stack_top();
+    ASSERT_NE(top, nullptr);
+    EXPECT_EQ(read_sint(top), 333);
+}
+
+TEST_F(ExecTest, JzJumpsWhenFalse) {
+    /* 1 > 3 → false → JZ 跳过 111，落到 333 */
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 1);
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 3);
+    bcode_write_op(bc, BCODE_GT);
+
+    size_t placeholder = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_JZ);
+    bcode_write_u32(bc, 0);
+
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 111);
+    bcode_write_op(bc, BCODE_POP);
+
+    /* dest = 333 PUSH 起点（跳过 111） */
+    size_t dest = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 333);
+    bcode_write_op(bc, BCODE_HALT);
+
+    bcode_patch_u32(bc, placeholder + 4, (uint32_t)dest);
+
+    EXPECT_EQ(run(), nullptr);
+    value_t *top = stack_top();
+    ASSERT_NE(top, nullptr);
+    EXPECT_EQ(read_sint(top), 333);
+}
+
+TEST_F(ExecTest, JnzDoesNotJumpWhenFalse) {
+    /* 1 > 3 → false → JNZ 不跳，继续顺序执行（111 被 POP 丢弃，栈顶 333） */
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 1);
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 3);
+    bcode_write_op(bc, BCODE_GT);
+
+    size_t placeholder = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_JNZ);
+    bcode_write_u32(bc, 0);
+
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 111);
+    bcode_write_op(bc, BCODE_POP);
+
+    /* dest = 333 PUSH 起点（条件为真才跳，这里应为 false 不跳） */
+    size_t dest = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 333);
+    bcode_write_op(bc, BCODE_HALT);
+
+    bcode_patch_u32(bc, placeholder + 4, (uint32_t)dest);
+
+    EXPECT_EQ(run(), nullptr);
+    value_t *top = stack_top();
+    ASSERT_NE(top, nullptr);
+    EXPECT_EQ(read_sint(top), 333);
+}
+
+/* TDZ 值作为跳转条件 → 报 error */
+TEST_F(ExecTest, JzOnTdzValueReturnsError) {
+    bcode_write_op(bc, BCODE_PUSH_UNDEFINED);
+    bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
+    bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("a"));
+    bcode_write_op(bc, BCODE_PUSH); bcode_write_str(bc, STRSLICE_LIT("a"));
+
+    size_t placeholder = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_JZ);
+    bcode_write_u32(bc, 0);
+    size_t dest = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_HALT);
+    bcode_patch_u32(bc, placeholder + 4, (uint32_t)dest); /* JZ 对 TDZ 先报 error，不会真跳 */
+
+    value_t *r = run();
+    ASSERT_NE(r, nullptr);
+    EXPECT_TRUE(value_is_error(vm, r));
+}
+
+/* ================================================================ */
+/* 5. 块作用域（PUSH_SCOPE / POP_SCOPE）                             */
+/* ================================================================ */
+
+TEST_F(ExecTest, BlockScopeVarHiddenAfterPop) {
+    /* 根作用域定义 a=1 */
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 1);
+    bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
+    bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("a"));
+
+    /* 块内重新定义 a=2（同层遮罩） */
+    bcode_write_op(bc, BCODE_PUSH_SCOPE);
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 2);
+    bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
+    bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("a"));
+    bcode_write_op(bc, BCODE_POP_SCOPE);
+
+    /* 块外 a 仍是 1 */
+    bcode_write_op(bc, BCODE_PUSH); bcode_write_str(bc, STRSLICE_LIT("a"));
+    bcode_write_op(bc, BCODE_HALT);
+
+    EXPECT_EQ(run(), nullptr);
+    value_t *a = lookup("a");
+    ASSERT_NE(a, nullptr);
+    EXPECT_EQ(read_sint(a), 1);
+}
+
+/* POP_SCOPE 回收块内临时值：块内定义变量块外不可见 */
+TEST_F(ExecTest, BlockScopeTempDestroyedOnPop) {
+    bcode_write_op(bc, BCODE_PUSH_SCOPE);
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 9);
+    bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
+    bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("inner"));
+    bcode_write_op(bc, BCODE_POP_SCOPE);
+    bcode_write_op(bc, BCODE_HALT);
+
+    EXPECT_EQ(run(), nullptr);
+    EXPECT_EQ(lookup("inner"), nullptr);
+}
+
+/* ================================================================ */
+/* 6. 栈操作（POP / PUSH_VALUE）                                     */
+/* ================================================================ */
+
+TEST_F(ExecTest, PopDiscardsTop) {
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 1);
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 2);
+    bcode_write_op(bc, BCODE_POP);
+    bcode_write_op(bc, BCODE_HALT);
+
+    EXPECT_EQ(run(), nullptr);
+    value_t *top = stack_top();
+    ASSERT_NE(top, nullptr);
+    EXPECT_EQ(read_sint(top), 1);
+}
+
+TEST_F(ExecTest, PushValueDupsDeep) {
+    /* 栈：10, 20；PUSH_VALUE offset=1 → 压入 10 的借用引用 → 栈：10, 20, 10 */
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 10);
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 20);
+    bcode_write_op(bc, BCODE_PUSH_VALUE); bcode_write_u32(bc, 1);
+    bcode_write_op(bc, BCODE_HALT);
+
+    EXPECT_EQ(run(), nullptr);
+    EXPECT_EQ(read_sint(exec_stack_peek(vm, 0)), 10);
+    EXPECT_EQ(read_sint(exec_stack_peek(vm, 1)), 20);
+    EXPECT_EQ(read_sint(exec_stack_peek(vm, 2)), 10);
+}
+
+/* ================================================================ */
+/* 7. LOAD 基本类型（type value）                                    */
+/* ================================================================ */
+
+TEST_F(ExecTest, LoadBuiltinType) {
+    bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("f64"));
+    bcode_write_op(bc, BCODE_HALT);
+
+    EXPECT_EQ(run(), nullptr);
+    value_t *top = stack_top();
+    ASSERT_NE(top, nullptr);
+    EXPECT_EQ(value_type(top), vm->type_type);
+    EXPECT_EQ(value_as(top, const type_t *), vm->type_f64);
+}
+
+TEST_F(ExecTest, LoadUnknownTypeReturnsError) {
+    bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("nope"));
+    bcode_write_op(bc, BCODE_HALT);
+
+    value_t *r = run();
+    ASSERT_NE(r, nullptr);
+    EXPECT_TRUE(value_is_error(vm, r));
+}
+
+/* ================================================================ */
+/* 8. error 短路与恢复                                               */
+/* ================================================================ */
+
+TEST_F(ExecTest, ErrorStopsExecution) {
+    bcode_write_op(bc, BCODE_PUSH); bcode_write_str(bc, STRSLICE_LIT("nope"));
+    /* 之后的指令不应执行 */
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 999);
+    bcode_write_op(bc, BCODE_HALT);
+
+    value_t *r = run();
+    ASSERT_NE(r, nullptr);
+    EXPECT_TRUE(value_is_error(vm, r));
+}
+
+/* error 出现在运算参数中 → 短路返回 error，不 panic */
+TEST_F(ExecTest, ErrorPropagatesThroughBinary) {
+    /* undefined 参与 ADD：void vtable 无 add 槽 → 运算产生 error */
+    bcode_write_op(bc, BCODE_PUSH_UNDEFINED);
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 2);
+    bcode_write_op(bc, BCODE_ADD);
+    bcode_write_op(bc, BCODE_HALT);
+
+    value_t *r = run();
+    ASSERT_NE(r, nullptr);
+    EXPECT_TRUE(value_is_error(vm, r));
+}
