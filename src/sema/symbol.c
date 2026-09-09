@@ -92,10 +92,10 @@ sema_symbol_t *sema_lookup(const sema_scope_t *scope, strslice_t name) {
   allocator_t *alloc = scope->alloc;
   char *key = slice_to_cstr(alloc, name);
   sema_symbol_t *found = NULL;
-  /* 沿 parent 链：只返回 active 符号（遮罩机制） */
+  /* 沿 parent 链取第一个命中（遮罩由 VM scope 链承担，此处不过滤） */
   for (const sema_scope_t *s = scope; s && !found; s = s->parent) {
     sema_symbol_t *sym = (sema_symbol_t *)strmap_get(s->symbols, key);
-    if (sym && sym->is_active) found = sym;
+    if (sym) found = sym;
   }
   allocator_free(alloc, (void **)&key);
   return found;

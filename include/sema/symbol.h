@@ -33,15 +33,25 @@ typedef enum {
 
 typedef struct _sema_scope_t sema_scope_t;
 
+/*
+ * sema 侧符号表：纯编译期元数据
+ *
+ * 符号真正重要的是"名字"——名字是符号表映射的 key。运行态（shadow value）
+ * 的 lookup/define 不经过符号表：通过与 sema 作用域树同构的 VM scope 树
+ * （scope_t::vars）完成，名字从定义节点 ast 提取（ast_var_def_t::name /
+ * ast_func_def_t::name），保证两棵作用域树严格对齐。
+ *
+ * TDZ 状态、遮罩机制均属于运行态语义，由 VM 侧承担：
+ *   - TDZ  → value_t::is_tdz（shadow value 状态）
+ *   - 遮罩 → VM scope 链（scope_lookup 沿 parent 取第一个命中）
+ * 符号表不持有这些状态。
+ */
 struct _sema_symbol_t {
   const type_t *type; /* 已解析类型；NULL = 待推断（shadow VM 阶段填充）。
                          函数符号：签名类型（func_type_t，vm 池 intern）。 */
-  bool          is_tdz;     /* TDZ 中（未初始化，只可赋值不可读取） */
-  bool          is_assigned; /* 已赋值（退出 TDZ 的依据） */
-  bool          is_active;  /* shadow VM 到达定义点后激活（遮罩机制） */
-  ast_node_t   *ast;        /* 定义节点（借用，arena 管理，不拥有）：
-                               函数符号 = AST_FUNC_DEF（Pass 2 填充）；
-                               变量符号 = AST_VAR_DEF */
+  ast_node_t   *ast;  /* 定义节点（借用，arena 管理，不拥有）：
+                         函数符号 = AST_FUNC_DEF（Pass 2 填充）；
+                         变量符号 = AST_VAR_DEF */
 };
 typedef struct _sema_symbol_t sema_symbol_t;
 
@@ -88,7 +98,7 @@ sema_scope_t *sema_scope_child(const sema_scope_t *scope, size_t idx);
 
 /**
  * 定义符号到当前作用域（name 按 slice 拷贝为 NUL 终止字符串存储）。
- * `init` 按值拷贝构造符号（type/is_tdz/is_active/ast 等字段）。
+ * `init` 按值拷贝构造符号（type/ast 等字段）。
  * 同作用域已有同名符号 → 返回 NULL（重复定义，由调用方报诊断）。
  * Panics on out-of-memory.
  */
@@ -96,15 +106,15 @@ sema_symbol_t *sema_scope_define(sema_scope_t *scope, strslice_t name,
                                  const sema_symbol_t *init);
 
 /**
- * 沿 parent 链查找符号，只返回 active 符号（is_active 遮罩机制）。
- * 处理变量名遮罩与 `var x = x + 1` 自引用（init 求值时新符号未激活，
- * 解析到外层同名符号）。未找到返回 NULL。
+ * 沿 parent 链查找符号，返回第一个命中（不设遮罩过滤——遮罩由 VM scope
+ * 链承担；本函数仅供编译期元数据查找：函数名解析、测试断言）。
+ * 未找到返回 NULL。
  */
 sema_symbol_t *sema_lookup(const sema_scope_t *scope, strslice_t name);
 
 /**
- * 仅在当前作用域直接查找符号（不沿 parent 链、不过滤 is_active）。
- * 供 Pass 3b 操作 Pass 3a 注册但尚未激活的符号。未找到返回 NULL。
+ * 仅在当前作用域直接查找符号（不沿 parent 链）。
+ * 供 Pass 3b 操作 Pass 3a 注册的符号（type 推断写回）。未找到返回 NULL。
  */
 sema_symbol_t *sema_scope_find_local(const sema_scope_t *scope,
                                      strslice_t name);

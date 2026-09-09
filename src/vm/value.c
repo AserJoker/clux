@@ -12,6 +12,7 @@ struct value_t {
     const type_t *type;
     void        *data;
     bool         is_shadow;
+    bool         is_tdz;     /* TDZ：未初始化，只可赋值不可读取 */
 };
 
 /* ---- 内部分配 class_t（value_t 堆分配用） ---- */
@@ -98,6 +99,14 @@ value_t *value_make_shadow(vm_t *vm, const type_t *type) {
 
 bool value_is_shadow(const value_t *v) {
     return v && v->is_shadow;
+}
+
+bool value_is_tdz(const value_t *v) {
+    return v && v->is_tdz;
+}
+
+void value_set_tdz(value_t *v, bool tdz) {
+    if (v) v->is_tdz = tdz;
 }
 
 /* ---- error 工具 ---- */
@@ -201,9 +210,11 @@ void value_dispose(vm_t *vm, value_t *v) {
 value_t *value_clone(vm_t *vm, value_t *v) {
     if (!v || !v->type) return v;
 
-    /* shadow 值 clone 返回新的 shadow（不分配 data） */
+    /* shadow 值 clone 返回新的 shadow（不分配 data），TDZ 状态随之传播 */
     if (v->is_shadow) {
-        return value_make_shadow(vm, v->type);
+        value_t *c = value_make_shadow(vm, v->type);
+        c->is_tdz = v->is_tdz;
+        return c;
     }
 
     /* 通过 vtable clone，NULL clone 槽 = 不支持 */

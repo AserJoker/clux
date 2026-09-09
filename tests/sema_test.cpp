@@ -4,7 +4,7 @@
  *
  * 覆盖：sema 生命周期、三遍扫描（Pass 1 函数名 / Pass 2 签名 / Pass 3a
  * 作用域树 / Pass 3b shadow VM 类型检查）、诊断产出、作用域树结构、
- * is_active 遮罩、返回路径完整性分析。
+ * VM scope 遮罩、返回路径完整性分析。
  */
 
 #include <gtest/gtest.h>
@@ -159,13 +159,10 @@ TEST_F(SemaTest, VarInferenceAndUse) {
 
     sema_symbol_t *x = sema_scope_find_local(fscope, STRSLICE_LIT("x"));
     ASSERT_NE(x, nullptr);
-    EXPECT_TRUE(x->is_active);
-    EXPECT_FALSE(x->is_tdz);
     EXPECT_EQ(x->type, vm_->type_i32); /* 推断出 i32 */
 
     sema_symbol_t *y = sema_scope_find_local(fscope, STRSLICE_LIT("y"));
     ASSERT_NE(y, nullptr);
-    EXPECT_TRUE(y->is_active);
     EXPECT_EQ(y->type, vm_->type_i32); /* 从 x 传播 */
 }
 
@@ -600,8 +597,8 @@ TEST_F(SemaTest, ScopeTreeWhileBody) {
     EXPECT_NE(sema_scope_find_local(body, STRSLICE_LIT("t")), nullptr);
 }
 
-TEST_F(SemaTest, ShadowingBlocksInactiveOuterNotVisible) {
-    /* 同名变量在不同作用域：子作用域内遮罩外层，外层符号类型不受影响 */
+TEST_F(SemaTest, ShadowingBlocksOuterNotVisible) {
+    /* 同名变量在不同作用域：子作用域内遮罩外层（VM scope 链），外层符号类型不受影响 */
     analyze(
         "func main() {"
         "  var x = 1;"

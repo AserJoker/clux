@@ -600,7 +600,13 @@ src/sema/
   symbol.c     — sema 侧符号表实现
 ```
 
-sema 侧符号表独立于 VM scope：sema 需要追踪 TDZ 状态、激活状态等**编译期语义概念**，不属于运行时 VM scope 的职责。VM scope 仅作为 shadow value 的生命周期容器（每函数一个）。
+sema 侧符号表是**纯编译期元数据**（名字 → 类型 + 定义节点）：符号真正重要的是"名字"，名字是符号表映射的 key。**运行态（shadow value）的 lookup/define 不经过符号表**——通过与 sema 作用域树**同构的 VM scope 树**（`scope_t::vars`）完成，名字从定义节点 ast 提取（`ast_var_def_t::name` / `ast_func_def_t::name`），保证两棵作用域树严格对齐。
+
+TDZ 状态与遮罩机制均属于**运行态语义，由 VM 侧承担**：
+- **TDZ** → `value_t::is_tdz`（shadow value 状态，定义时 `value_set_tdz` 置位，赋值成功清除）
+- **遮罩** → VM scope 链（`scope_lookup` 沿 parent 取第一个命中）
+
+VM scope 树与 sema 作用域树**逐节点同构**：函数级 scope、块 scope、if/while body scope、for scope 全部成对 push/pop（`vm_push_scope` / `vm_pop_scope`），变量定义 `scope_define` 到当前 VM scope、变量读取 `scope_lookup` 沿链查找。
 
 #### 2.9.2 数据结构
 
@@ -615,9 +621,6 @@ typedef enum {
 typedef struct sema_symbol_t {
     const type_t *type;       /* 已解析类型；NULL = 待推断（shadow VM 阶段填充）。
                                  函数符号 = 签名类型（func_type_t，vm 池 intern） */
-    bool          is_tdz;     /* TDZ 中（未初始化，只可赋值不可读取） */
-    bool          is_assigned; /* 已赋值（退出 TDZ 的依据） */
-    bool          is_active;  /* shadow VM 到达定义点后激活（遮罩机制） */
     ast_node_t   *ast;        /* 定义节点（借用，arena 管理）：函数 = AST_FUNC_DEF */
 } sema_symbol_t;
 
@@ -666,7 +669,7 @@ block_scope
 
 #### 2.9.4 Pass 3a：作用域树构建
 
-遍历 `sema->funcs` 队列，对每个函数按词法块结构建树（作用域树存入 `sema_func_t.scope`）。只注册符号（名字 + 声明类型 + TDZ 标志），**不做类型检查**。推断类型的变量 `type=NULL`，留给 Pass 3b 填充。
+遍历 `sema->funcs` 队列，对每个函数按词法块结构建树（作用域树存入 `sema_func_t.scope`）。只注册符号（名字 + 声明类型），**不做类型检查**。推断类型的变量 `type=NULL`，留给 Pass 3b 填充。
 
 ```c
 static void build_func(sema_t *sema, sema_func_t *sf) {
@@ -675,12 +678,11 @@ static void build_func(sema_t *sema, sema_func_t *sf) {
     sema_scope_add_child(sema->global_scope, fscope);
     sf->scope = fscope;
 
-    /* 注册参数（已初始化，待激活） */
+    /* 注册参数（已解析类型；运行时值在 Pass 3b 进入函数时定义到 VM scope） */
     for (ast_node_t *p = fn->params; p; p = p->next) {
         ast_var_def_t *vd = (ast_var_def_t*)p;
         sema_scope_define(fscope, vd->name, &(sema_symbol_t){
             .type = resolve_type(sema, vd->type_name),
-            .is_active = false,
         });
     }
 
@@ -693,7 +695,7 @@ static void build_func(sema_t *sema, sema_func_t *sf) {
 
 | AST 节点 | 作用域动作 |
 |----------|-----------|
-| `AST_VAR_DEF` | 注册符号到当前 scope（`is_tdz` 从节点标志拷贝；`type==NULL` 表示待推断） |
+| `AST_VAR_DEF` | 注册符号到当前 scope（`type==NULL` 表示待推断） |
 | `AST_BLOCK` | 新建子 scope，递归构建 |
 | `AST_IF` | then_body / else_body 各建一个子 scope（else 为嵌套 if 时同层递归） |
 | `AST_WHILE` | body 建一个子 scope |
@@ -708,29 +710,27 @@ static void build_func(sema_t *sema, sema_func_t *sf) {
 
 **子作用域迭代器（child_idx）**：两个阶段遍历同一棵 AST，子作用域出现顺序一致。Shadow VM 用 `size_t child_idx` 按序取子作用域（`vec_get(scope->children, child_idx++)`），保证作用域严格对应。
 
-**is_active 遮罩机制**：符号在定义点才激活。lookup 沿 parent 链查找，只返回 active 符号——正确处理变量名遮罩与"init 表达式引用外层同名变量"：
+**VM scope 链遮罩**：变量遮罩与自引用由 VM scope 链天然提供——定义**先求值 init、后 `scope_define`**，因此 init 求值时新变量尚未入 VM scope，`scope_lookup` 沿 parent 链解析到外层同名变量；`scope_define` 后才可见并遮罩外层：
 
 ```
-var x:i32 = 1;           // outer x
+var x:i32 = 1;           // outer x 定义到函数级 VM scope
 {
-    var x = x + 1;       // init 的 x 引用 outer x（inner x 未 active）
-                         // init 求值后才激活 inner x
-    x = x + 2;           // 此处的 x 是 inner x（已 active，遮罩 outer）
+    var x = x + 1;       // init 的 x：内层尚未 define → lookup 到 outer x（i32）
+                         // init 求值后 define inner x 到块级 VM scope（遮罩 outer）
+    x = x + 2;           // 此处的 x 是 inner x（块级 scope 先命中）
 }
-x = x + 3;               // outer x
+x = x + 3;               // 块级 VM scope 已 pop → outer x
 ```
 
 ```c
-static sema_symbol_t *sema_lookup(sema_scope_t *scope, strslice_t name) {
-    for (sema_scope_t *s = scope; s; s = s->parent) {
-        sema_symbol_t *sym = strmap_get(s->symbols, name);
-        if (sym && sym->is_active) return sym;
-    }
-    return NULL;
-}
+/* 变量读取（sema.c AST_IDENT）：从 VM scope 链 lookup shadow value */
+value_t *v = scope_lookup(sema->vm->current_scope, n->name);
+if (!v)        { /* undefined variable 诊断 */ }
+if (value_is_tdz(v)) { /* used before initialization 诊断 */ }
+return value_make_shadow(sema->vm, value_type(v));
 ```
 
-**TDZ 变量处理**：`var x:i32 = undefined;` 注册时 `is_tdz=true, is_active=true`（立即可见），lookup 命中后检查 `is_tdz` 报告"未初始化读取"；赋值退出 TDZ（`is_tdz=false, is_assigned=true`）。
+**TDZ 变量处理**（状态在 shadow value 上）：`var x:i32 = undefined;`（M1 语法入口待定）定义时构造声明类型 shadow value 并 `value_set_tdz(v, true)` 存入 VM scope（立即可见），读取时 `value_is_tdz` 报告"未初始化读取"；简单赋值经 `value_assign` 成功退出 TDZ（`value_set_tdz(lhs, false)`），类型错误则保持 TDZ。
 
 #### 2.9.6 表达式 walker（shadow value 求值）
 
@@ -747,7 +747,7 @@ static value_t *sema_expr(sema_t *sema, ast_node_t *node, sema_scope_t *scope);
 | `AST_BOOL_LIT` | shadow bool |
 | `AST_STRING_LIT` | shadow str |
 | `AST_CHAR_LIT` | shadow u8 |
-| `AST_IDENT` | `sema_lookup` 查符号 → shadow(类型)；未定义 / TDZ → 诊断 |
+| `AST_IDENT` | `scope_lookup`（VM scope 链）取 shadow value → shadow(类型)；未定义 / TDZ（`value_is_tdz`）→ 诊断 |
 | `AST_BINARY` | lhs/rhs shadow 求值 → vtable 分派；短路 `&&`/`||` 特殊处理（操作数必须 bool，结果 bool） |
 | `AST_UNARY` | 操作数 shadow → vtable 一元分派 |
 | `AST_CALL` | 构造 shadow callee（`value_make_shadow(vm, sym->type)`）→ `value_call` 分派 func_vcall shadow 分支校验签名 → 返回 return_type shadow |
@@ -823,8 +823,8 @@ static block_result_t sema_stmt(sema_t *sema, ast_node_t *stmt,
 
 | 语句 | 处理要点 |
 |------|---------|
-| `AST_VAR_DEF` | 非 TDZ：先求值 init（符号未激活 → 自引用解析到外层），再推断/校验类型，最后激活符号。TDZ：`is_tdz=true, is_active=true` |
-| `AST_ASSIGN` | `_ = expr` 为显式丢弃；简单赋值检查 `type_assignable` + 退出 TDZ；复合赋值 `x op= rhs` 展开为 `x = x op rhs`（shadow 走 vtable 协商）；TDZ 变量只允许简单赋值 |
+| `AST_VAR_DEF` | 构造 shadow value：TDZ 时 `value_set_tdz`；非 TDZ 先求值 init（未 define → 自引用解析到外层），显式类型经 `value_assign` 校验 init / 推断类型写回 `sym->type`。最后 `scope_define` 到当前 VM scope |
+| `AST_ASSIGN` | `_ = expr` 为显式丢弃；`scope_lookup` 取左值 shadow → `value_assign` 单一校验点（error → 诊断，成功清除 TDZ）；复合赋值 `x op= rhs` 展开为 `x = x op rhs`（shadow 走 vtable 协商）后再 `value_assign` 赋回 |
 | `AST_BLOCK` | 取子 scope（`child_idx++`），递归遍历 |
 | `AST_IF` | 条件必须 bool；then/else 各取子 scope；`definitely_returns = then && else` |
 | `AST_WHILE` | 条件必须 bool；`loop_depth++` 后遍历 body；不贡献 definitely_returns（循环体可能不执行） |
@@ -839,15 +839,9 @@ static block_result_t sema_stmt(sema_t *sema, ast_node_t *stmt,
 ```c
 /* 类型解析唯一入口：M1 内部 type_find；未来替换为类型表达式求值器 */
 const type_t *resolve_type(sema_t *sema, strslice_t name);
-
-/* 赋值兼容性：dst 可接受 src 当且仅当 implicit_cast 成功 */
-static bool type_assignable(sema_t *sema, const type_t *dst, const type_t *src) {
-    if (type_eq(dst, src)) return true;
-    value_t *s = value_make_shadow(sema->vm, src);
-    value_t *c = value_implicit_cast(sema->vm, s, dst);
-    return !value_is_error(sema->vm, c);
-}
 ```
+
+**赋值兼容性单一校验点在 `value_assign`**（不再有独立的 `sema_type_assignable`）：sema 构造声明类型 shadow 作为 dst，调用 `value_assign(vm, dst, src)` 分派到 vtable assign 槽——各类型 assign 的 shadow 分支只做类型协商（int：`value_implicit_cast` 向左值类型转换、bool：类型必须匹配、str：类型必须匹配），返回 error 即不兼容，由 sema 翻译为带位置诊断。变量定义初始化、简单赋值、复合赋值赋回、return 类型校验全部走此通道，行为与真实 VM 赋值完全一致。
 
 M1 无 const/volatile（不在 M1 阶段实现），符号表与类型检查不含 const 规则。
 
@@ -858,9 +852,12 @@ M1 无 const/volatile（不在 M1 阶段实现），符号表与类型检查不�
 | `type_find(vm, name)` | `resolve_type` 内部实现 |
 | `value_make_shadow(vm, type)` | 为每个表达式构造类型标记 |
 | `value_add/sub/mul/...` | 二元运算类型推导（shadow 输入 → shadow 输出） |
-| `value_implicit_cast` | 赋值/函数参数兼容性检查 |
+| `value_implicit_cast` | 函数参数兼容性检查（func_shadow_call 内）；int_assign 内部向左值类型转换 |
 | `value_explicit_cast` | as 转换合法性检查 |
-| `vm_push/pop_scope` | 每函数一个，shadow value 生命周期容器 |
+| `value_assign` | 赋值兼容性单一校验点（变量初始化 / 简单赋值 / 复合赋值赋回 / return 校验） |
+| `value_is_tdz` / `value_set_tdz` | TDZ 状态（shadow value）：读取检查 / 定义置位 / 赋值退出 |
+| `scope_define` / `scope_lookup` | 变量 shadow value 定义/查找（VM scope 链与 sema 作用域树同构，天然遮罩） |
+| `vm_push/pop_scope` | 与 sema 作用域树同构的 VM scope 树（函数级 / 块 / if / while / for 成对 push/pop） |
 | `type_func_sig` | Pass 2 注册签名类型到 vm 池（存 `sema_symbol_t.type`） |
 | `value_call` → `func_vcall` | 函数调用签名校验（shadow 分支 `func_shadow_call`，单一校验来源） |
 

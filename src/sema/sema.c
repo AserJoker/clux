@@ -84,14 +84,6 @@ size_t sema_count_siblings(const ast_node_t *node) {
   return n;
 }
 
-bool sema_type_assignable(sema_t *sema, const type_t *dst, const type_t *src) {
-  if (!dst || !src) return false; /* 待推断类型不可比较 */
-  if (type_eq(dst, src)) return true;
-  value_t *s = value_make_shadow(sema->vm, src);
-  value_t *c = value_implicit_cast(sema->vm, s, dst);
-  return !value_is_error(sema->vm, c);
-}
-
 /* 把操作数类型名写入诊断缓冲区 */
 static void op_type_name(value_t *v, char *buf, size_t cap) {
   if (!v) {
@@ -191,21 +183,22 @@ value_t *sema_expr(sema_t *sema, ast_node_t *node, sema_scope_t *scope) {
     case AST_STRING_LIT:
       return value_make_shadow(sema->vm, sema->vm->type_str);
     case AST_IDENT: {
+      /* 变量读取：从 VM scope 链 lookup shadow value（与 sema 作用域树同构，
+         天然遮罩）。TDZ 状态在 value 上：未初始化读取报错。 */
       ast_ident_t *n = (ast_ident_t *)node;
-      sema_symbol_t *sym = sema_lookup(scope, n->name);
-      if (!sym) {
+      value_t *v = scope_lookup(sema->vm->current_scope, n->name);
+      if (!v) {
         diag_error(sema->diag, sema_loc(sema, node),
                    "undefined variable '%.*s'", (int)n->name.len, n->name.ptr);
         return value_make_shadow(sema->vm, sema->vm->type_void);
       }
-      if (sym->is_tdz) {
+      if (value_is_tdz(v)) {
         diag_error(sema->diag, sema_loc(sema, node),
                    "variable '%.*s' used before initialization",
                    (int)n->name.len, n->name.ptr);
         return value_make_shadow(sema->vm, sema->vm->type_void);
       }
-      return value_make_shadow(sema->vm,
-                               sym->type ? sym->type : sema->vm->type_void);
+      return value_make_shadow(sema->vm, value_type(v));
     }
     case AST_BINARY:
       return shadow_binary(sema, (ast_binary_t *)node, scope);
@@ -363,7 +356,7 @@ static value_t *shadow_binary(sema_t *sema, ast_binary_t *node,
 static void pass1_names(sema_t *sema, ast_program_t *prog) {
   for (ast_node_t *f = prog->funcs; f; f = f->next) {
     ast_func_def_t *fn = (ast_func_def_t *)f;
-    sema_symbol_t init = {.is_active = true}; /* 函数定义顺序自由，立即激活 */
+    sema_symbol_t init = {0}; /* 函数定义顺序自由：Pass 1 全部注册，无遮罩问题 */
     if (!sema_scope_define(sema->global_scope, fn->name, &init)) {
       diag_error(sema->diag, sema_loc(sema, f), "duplicate function '%.*s'",
                  (int)fn->name.len, fn->name.ptr);

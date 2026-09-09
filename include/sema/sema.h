@@ -117,9 +117,6 @@ void sema_walk_function(sema_t *sema, sema_func_t *sf);
 /** 表达式求值（shadow value）：只有类型，data=NULL。 */
 value_t *sema_expr(sema_t *sema, ast_node_t *node, sema_scope_t *scope);
 
-/** 赋值兼容性：dst 可接受 src 当且仅当 implicit_cast 成功。 */
-bool sema_type_assignable(sema_t *sema, const type_t *dst, const type_t *src);
-
 /** 检查操作数必须为 bool；error/void shadow（错误恢复产物）静默通过。 */
 void sema_check_bool(sema_t *sema, ast_node_t *node, value_t *v,
                      const char *what);

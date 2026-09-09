@@ -56,6 +56,12 @@ value_t *value_make_shadow(vm_t *vm, const type_t *type);
 /** 判断 value 是否为 shadow（只有类型，无实际数据） */
 bool value_is_shadow(const value_t *v);
 
+/** 判断 value 是否处于 TDZ（未初始化：立即可见但只可赋值，不可读取） */
+bool value_is_tdz(const value_t *v);
+
+/** 设置/清除 value 的 TDZ 状态（赋值成功退出 TDZ 时清除） */
+void value_set_tdz(value_t *v, bool tdz);
+
 /* ---- error 构造 ---- */
 
 /** 创建 error value（不带位置信息），message 为 C 字符串 */
