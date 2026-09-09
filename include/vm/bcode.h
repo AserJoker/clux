@@ -60,7 +60,7 @@ typedef enum {
     BCODE_AND, BCODE_OR,
     BCODE_NEG, BCODE_NOT,
 
-    BCODE_CAST,            /* 类型表索引：显式转换 */
+    BCODE_CAST,            /* 显式转换：类型经栈顶 type value（LOAD 压入），弹 type+值 */
     BCODE_CALL,            /* argc：value_call（callee 在 stack[sp-1-argc]） */
     BCODE_RET,             /* 返回 interrupt 哨兵，栈顶即返回值 */
 

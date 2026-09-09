@@ -522,3 +522,259 @@ TEST_F(ExecTest, ErrorPropagatesThroughBinary) {
     ASSERT_NE(r, nullptr);
     EXPECT_TRUE(value_is_error(vm, r));
 }
+
+/* ================================================================ */
+/* 5. 函数（CREATE_FUNC_TYPE / PUSH_FUNCTION / DEFINE_FUNCTION /     */
+/*    CALL / RET）                                                  */
+/* ================================================================ */
+
+/* exec_run 注册函数后按名查模块作用域并调用（clux 无顶层语句，
+   入口函数由调用方显式触发）；未找到返回 NULL 由断言捕获 */
+static value_t *call_main(vm_t *vm, bytecode_t *bc) {
+    exec_run(vm, bc);
+    value_t *fn = scope_lookup(vm->current_scope, STRSLICE_LIT("main"));
+    if (!fn) return NULL;
+    return value_call(vm, fn, NULL, 0);
+}
+
+/* main() -> i32 { return 1 + 2; } → 3 */
+TEST_F(ExecTest, FunctionRegisterAndCallMain) {
+    /* JMP 守卫：跳过函数体直达注册段 */
+    size_t jmp_pc = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_JMP);
+    bcode_write_u32(bc, 0);
+
+    /* 函数体：1 + 2 → RET */
+    size_t body = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 1);
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 2);
+    bcode_write_op(bc, BCODE_ADD);
+    bcode_write_op(bc, BCODE_RET);
+
+    /* 注册段：[ret, is_variadic] → CREATE_FUNC_TYPE → PUSH_FUNCTION → DEFINE_FUNCTION */
+    size_t end = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
+    bcode_write_op(bc, BCODE_PUSH_BOOL); bcode_write_bool(bc, false);
+    bcode_write_op(bc, BCODE_CREATE_FUNC_TYPE); bcode_write_u32(bc, 0);
+    bcode_write_op(bc, BCODE_PUSH_FUNCTION); bcode_write_u32(bc, (uint32_t)body);
+    bcode_write_op(bc, BCODE_DEFINE_FUNCTION); bcode_write_str(bc, STRSLICE_LIT("main"));
+    bcode_write_op(bc, BCODE_HALT);
+    bcode_patch_u32(bc, jmp_pc + 4, (uint32_t)end);
+
+    value_t *r = call_main(vm, bc);
+    ASSERT_NE(r, nullptr);
+    EXPECT_FALSE(value_is_error(vm, r));
+    EXPECT_EQ(value_type(r), vm->type_i32);
+    EXPECT_EQ(read_sint(r), 3);
+}
+
+/* void 函数返回 undefined（PUSH_UNDEFINED + RET） */
+TEST_F(ExecTest, VoidFunctionReturnsUndefined) {
+    size_t jmp_pc = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_JMP);
+    bcode_write_u32(bc, 0);
+
+    size_t body = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_PUSH_UNDEFINED);
+    bcode_write_op(bc, BCODE_RET);
+
+    size_t end = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("void"));
+    bcode_write_op(bc, BCODE_PUSH_BOOL); bcode_write_bool(bc, false);
+    bcode_write_op(bc, BCODE_CREATE_FUNC_TYPE); bcode_write_u32(bc, 0);
+    bcode_write_op(bc, BCODE_PUSH_FUNCTION); bcode_write_u32(bc, (uint32_t)body);
+    bcode_write_op(bc, BCODE_DEFINE_FUNCTION); bcode_write_str(bc, STRSLICE_LIT("main"));
+    bcode_write_op(bc, BCODE_HALT);
+    bcode_patch_u32(bc, jmp_pc + 4, (uint32_t)end);
+
+    value_t *r = call_main(vm, bc);
+    ASSERT_NE(r, nullptr);
+    EXPECT_FALSE(value_is_error(vm, r));
+    EXPECT_TRUE(value_is_undefined(vm, r));
+}
+
+/* 显式转换：目标类型经栈顶 type value（LOAD 压入），弹 type + 值 */
+TEST_F(ExecTest, CastExplicitUsesTypeValueOnStack) {
+    /* i64 9999999999 → CAST(i32) → 截断为低 32 位 1410065407 */
+    bcode_write_op(bc, BCODE_PUSH_I64); bcode_write_i64(bc, 9999999999LL);
+    bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
+    bcode_write_op(bc, BCODE_CAST);
+    bcode_write_op(bc, BCODE_HALT);
+
+    EXPECT_EQ(run(), nullptr);
+    value_t *top = stack_top();
+    ASSERT_NE(top, nullptr);
+    EXPECT_EQ(value_type(top), vm->type_i32);
+    EXPECT_EQ(read_sint(top), 1410065407);
+}
+
+/* 实参多于形参（foo(a:i32) 传 2 个）→ error 传播 */
+TEST_F(ExecTest, CallArgCountMismatchPropagatesError) {
+    size_t jmp_pc = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_JMP);
+    bcode_write_u32(bc, 0);
+
+    /* foo 函数体：绑定参数 a → return a */
+    size_t foo_body = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("a"));
+    bcode_write_op(bc, BCODE_PUSH); bcode_write_str(bc, STRSLICE_LIT("a"));
+    bcode_write_op(bc, BCODE_RET);
+
+    /* main 函数体：foo(1, 2) → CALL 2 */
+    size_t main_body = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_PUSH); bcode_write_str(bc, STRSLICE_LIT("foo"));
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 1);
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 2);
+    bcode_write_op(bc, BCODE_CALL); bcode_write_u32(bc, 2);
+    bcode_write_op(bc, BCODE_RET);
+
+    /* 注册段 */
+    size_t end = bcode_tell(bc);
+    /* foo: (i32) -> i32 */
+    bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
+    bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
+    bcode_write_op(bc, BCODE_PUSH_BOOL); bcode_write_bool(bc, false);
+    bcode_write_op(bc, BCODE_CREATE_FUNC_TYPE); bcode_write_u32(bc, 1);
+    bcode_write_op(bc, BCODE_PUSH_FUNCTION); bcode_write_u32(bc, (uint32_t)foo_body);
+    bcode_write_op(bc, BCODE_DEFINE_FUNCTION); bcode_write_str(bc, STRSLICE_LIT("foo"));
+    /* main: () -> i32 */
+    bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
+    bcode_write_op(bc, BCODE_PUSH_BOOL); bcode_write_bool(bc, false);
+    bcode_write_op(bc, BCODE_CREATE_FUNC_TYPE); bcode_write_u32(bc, 0);
+    bcode_write_op(bc, BCODE_PUSH_FUNCTION); bcode_write_u32(bc, (uint32_t)main_body);
+    bcode_write_op(bc, BCODE_DEFINE_FUNCTION); bcode_write_str(bc, STRSLICE_LIT("main"));
+    bcode_write_op(bc, BCODE_HALT);
+    bcode_patch_u32(bc, jmp_pc + 4, (uint32_t)end);
+
+    value_t *r = call_main(vm, bc);
+    ASSERT_NE(r, nullptr);
+    EXPECT_TRUE(value_is_error(vm, r));
+}
+
+/* 递归：fact(5) = 120（函数体可看到自身符号，参数倒序 DEFINE 绑定） */
+TEST_F(ExecTest, RecursiveFactorial) {
+    size_t jmp_pc = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_JMP);
+    bcode_write_u32(bc, 0);
+
+    /* fact 函数体：n <= 1 ? 1 : n * fact(n - 1) */
+    size_t fact_body = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("n"));
+    bcode_write_op(bc, BCODE_PUSH); bcode_write_str(bc, STRSLICE_LIT("n"));
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 1);
+    bcode_write_op(bc, BCODE_LE);
+    size_t jz = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_JZ);
+    bcode_write_u32(bc, 0);
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 1);
+    bcode_write_op(bc, BCODE_RET);
+    size_t recur = bcode_tell(bc);
+    bcode_patch_u32(bc, jz + 4, (uint32_t)recur);
+    bcode_write_op(bc, BCODE_PUSH); bcode_write_str(bc, STRSLICE_LIT("n"));
+    bcode_write_op(bc, BCODE_PUSH); bcode_write_str(bc, STRSLICE_LIT("fact"));
+    bcode_write_op(bc, BCODE_PUSH); bcode_write_str(bc, STRSLICE_LIT("n"));
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 1);
+    bcode_write_op(bc, BCODE_SUB);
+    bcode_write_op(bc, BCODE_CALL); bcode_write_u32(bc, 1);
+    bcode_write_op(bc, BCODE_MUL);
+    bcode_write_op(bc, BCODE_RET);
+
+    /* main 函数体：fact(5) */
+    size_t main_body = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_PUSH); bcode_write_str(bc, STRSLICE_LIT("fact"));
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 5);
+    bcode_write_op(bc, BCODE_CALL); bcode_write_u32(bc, 1);
+    bcode_write_op(bc, BCODE_RET);
+
+    /* 注册段 */
+    size_t end = bcode_tell(bc);
+    /* fact: (i32) -> i32 */
+    bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
+    bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
+    bcode_write_op(bc, BCODE_PUSH_BOOL); bcode_write_bool(bc, false);
+    bcode_write_op(bc, BCODE_CREATE_FUNC_TYPE); bcode_write_u32(bc, 1);
+    bcode_write_op(bc, BCODE_PUSH_FUNCTION); bcode_write_u32(bc, (uint32_t)fact_body);
+    bcode_write_op(bc, BCODE_DEFINE_FUNCTION); bcode_write_str(bc, STRSLICE_LIT("fact"));
+    /* main: () -> i32 */
+    bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
+    bcode_write_op(bc, BCODE_PUSH_BOOL); bcode_write_bool(bc, false);
+    bcode_write_op(bc, BCODE_CREATE_FUNC_TYPE); bcode_write_u32(bc, 0);
+    bcode_write_op(bc, BCODE_PUSH_FUNCTION); bcode_write_u32(bc, (uint32_t)main_body);
+    bcode_write_op(bc, BCODE_DEFINE_FUNCTION); bcode_write_str(bc, STRSLICE_LIT("main"));
+    bcode_write_op(bc, BCODE_HALT);
+    bcode_patch_u32(bc, jmp_pc + 4, (uint32_t)end);
+
+    value_t *r = call_main(vm, bc);
+    ASSERT_NE(r, nullptr);
+    EXPECT_FALSE(value_is_error(vm, r));
+    EXPECT_EQ(value_type(r), vm->type_i32);
+    EXPECT_EQ(read_sint(r), 120);
+}
+
+/* 函数体可查看到模块变量（closure_scope 临时接线 root_scope）：
+   x = 5；main() -> i32 { return x + 1; } → 6 */
+TEST_F(ExecTest, FunctionBodySeesModuleVariables) {
+    size_t jmp_pc = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_JMP);
+    bcode_write_u32(bc, 0);
+
+    size_t main_body = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_PUSH); bcode_write_str(bc, STRSLICE_LIT("x"));
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 1);
+    bcode_write_op(bc, BCODE_ADD);
+    bcode_write_op(bc, BCODE_RET);
+
+    size_t end = bcode_tell(bc);
+    /* 模块级变量 x = 5（注册段 DEFINE 到 root_scope） */
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 5);
+    bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
+    bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("x"));
+    /* main: () -> i32 */
+    bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
+    bcode_write_op(bc, BCODE_PUSH_BOOL); bcode_write_bool(bc, false);
+    bcode_write_op(bc, BCODE_CREATE_FUNC_TYPE); bcode_write_u32(bc, 0);
+    bcode_write_op(bc, BCODE_PUSH_FUNCTION); bcode_write_u32(bc, (uint32_t)main_body);
+    bcode_write_op(bc, BCODE_DEFINE_FUNCTION); bcode_write_str(bc, STRSLICE_LIT("main"));
+    bcode_write_op(bc, BCODE_HALT);
+    bcode_patch_u32(bc, jmp_pc + 4, (uint32_t)end);
+
+    value_t *r = call_main(vm, bc);
+    ASSERT_NE(r, nullptr);
+    EXPECT_FALSE(value_is_error(vm, r));
+    EXPECT_EQ(value_type(r), vm->type_i32);
+    EXPECT_EQ(read_sint(r), 6);
+}
+
+/* 匿名函数表达式：var add = func():i32{ return 1; } → 走普通 DEFINE（非
+   DEFINE_FUNCTION），函数值 auto-track 归 scope 统一回收（无泄漏） */
+TEST_F(ExecTest, FunctionExpressionDefinedViaPlainDefine) {
+    size_t jmp_pc = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_JMP);
+    bcode_write_u32(bc, 0);
+
+    size_t body = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 1);
+    bcode_write_op(bc, BCODE_RET);
+
+    size_t end = bcode_tell(bc);
+    /* 函数表达式：构造签名 func():i32 → PUSH_FUNCTION → DEFINE "add"（普通双弹） */
+    bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
+    bcode_write_op(bc, BCODE_PUSH_BOOL); bcode_write_bool(bc, false);
+    bcode_write_op(bc, BCODE_CREATE_FUNC_TYPE); bcode_write_u32(bc, 0);
+    bcode_write_op(bc, BCODE_PUSH_FUNCTION); bcode_write_u32(bc, (uint32_t)body);
+    bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("add"));
+    bcode_write_op(bc, BCODE_HALT);
+    bcode_patch_u32(bc, jmp_pc + 4, (uint32_t)end);
+
+    /* 注册段执行完，add 应已在作用域内，且可直接调用 */
+    EXPECT_EQ(run(), nullptr);
+    value_t *fn = scope_lookup(vm->current_scope, STRSLICE_LIT("add"));
+    ASSERT_NE(fn, nullptr);
+    EXPECT_FALSE(value_is_error(vm, fn));
+
+    value_t *r = value_call(vm, fn, NULL, 0);
+    ASSERT_NE(r, nullptr);
+    EXPECT_FALSE(value_is_error(vm, r));
+    EXPECT_EQ(value_type(r), vm->type_i32);
+    EXPECT_EQ(read_sint(r), 1);
+}

@@ -1,6 +1,7 @@
 #include "vm/vm.h"
 #include "vm/type.h"
 #include "vm/value.h"
+#include "vm/function.h"
 #include "core/panic.h"
 #include "core/vec.h"
 
@@ -68,6 +69,9 @@ vm_t *vm_new(allocator_t *alloc) {
     /* 执行器操作数栈：借用引用，不拥有 value */
     vm->stack = vec_new(alloc, /*owns_element=*/false);
 
+    /* 函数对象池：func_t*，不 owns 元素，vm_destroy 手动释放 */
+    vm->functions = vec_new(alloc, /*owns_element=*/false);
+
     return vm;
 }
 
@@ -88,6 +92,21 @@ void vm_destroy(vm_t **pvm) {
 
     /* 执行器操作数栈（借用引用，不拥有，仅释放向量结构） */
     vec_free(vm->alloc, &vm->stack);
+
+    /* 函数对象池：统一释放 func_t 及其自建的孤立 closure_scope
+       （签名归 sig_types 池，不在此释放） */
+    if (vm->functions) {
+        size_t n = vec_len(vm->functions);
+        for (size_t i = 0; i < n; i++) {
+            func_t *fn = (func_t *)vec_get(vm->functions, i);
+            if (!fn) continue;
+            if (fn->owns_closure_scope && fn->closure_scope) {
+                scope_destroy(vm, &fn->closure_scope);
+            }
+            func_destroy(vm->alloc, &fn);
+        }
+        vec_free(vm->alloc, &vm->functions);
+    }
 
     /* 函数签名类型池：单遍释放（M1 签名只引用内置静态类型，无相互依赖） */
     if (vm->sig_types) {

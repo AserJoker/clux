@@ -48,6 +48,8 @@ struct func_t {
     scope_t        *closure_scope;
     scope_t        *root_scope;
     strslice_t      name;
+    bool            owns_closure_scope; /* true：closure_scope 由函数对象创建（bcode_function），
+                                           随 vm->functions 释放；false：调用方传入（不拥有） */
 };
 
 /* ---- 生命周期 ---- */
@@ -55,21 +57,27 @@ struct func_t {
 /**
  * 创建函数对象并包装为 func value。
  *
+ * - vm: 虚拟机上下文（alloc 取自 vm->alloc；func_t 注册进 vm->functions，
+ *   由 vm_destroy 统一释放生命周期）
  * - sig_type: 签名类型（func_type_t，由 type_func_sig 注册 intern）。
  *   成为 func value 的 type：调用点经 value_type() 取回签名，
  *   func_shadow_call 据此做参数数量/隐式转换校验。不可为 NULL。
  * - 返回 value_t*：data 存指向 func_t 的指针，type 即 sig_type。
- *   untracked（调用方管理生命周期）：value_dispose(vm, v) 释放 data 内
- *   func_t 与 data 块，再 allocator_free(alloc, &v)。
+ *   untracked（调用方管理生命周期）：value_dispose(vm, v) 释放 data 块
+ *   与 value_t 结构体；func_t 本体归 vm->functions，由 vm_destroy 释放。
  */
-value_t *func_new(allocator_t *alloc,
+value_t *func_new(vm_t *vm,
                   cfunc_t cfunc,
                   scope_t *closure_scope,
                   scope_t *root_scope,
                   const type_t *sig_type,
                   strslice_t name);
 
-/** 销毁函数对象（释放 func_t 自身；签名归 vm 类型池所有） */
+/**
+ * 销毁函数对象（释放 func_t 自身；签名归 vm 类型池所有）。
+ * 仅供 vm_destroy 遍历 vm->functions 时调用，普通代码不应直接使用
+ * （函数对象生命周期由 vm 统一管理）。
+ */
 void func_destroy(allocator_t *alloc, func_t **fn);
 
 #ifdef __cplusplus

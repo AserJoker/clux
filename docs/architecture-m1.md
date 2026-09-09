@@ -633,16 +633,16 @@ void exec_run(exec_t *e) {
 | `LOAD` | strtable 索引 | 从 global scope 按名查 **type value** 压栈（类型注册见 2.7.5 下注） | `scope_lookup` |
 | `PUSH_UNDEFINED` | — | 压入 void 类型 value，标记"类型待推导" | `value_make_void` |
 | `DEFINE` | strtable 索引 | 弹栈定义变量：**栈顶为 type value（`LOAD` 压入）或 void/undefined（`PUSH_UNDEFINED` 压入）时作为类型说明符再弹一个值；否则栈顶即值本身（函数参数定义场景）**；无初始值（值为 void）标记 TDZ | `scope_define` + `value_set_tdz` |
-| `CREATE_FUNC_TYPE` | 参数个数 argc | 弹栈 `[return_type, param_1..param_argc, is_variadic]`（压栈序）→ `type_func_sig` intern 签名类型 → 构造 type value 压栈（见 2.7.6） | `type_func_sig` |
-| `PUSH_FUNCTION` | 入口 pc | 读入口 pc 立即数 → **构造 `bcode_function_t{entry_pc}`** → 弹栈顶签名类型（`CREATE_FUNC_TYPE` 产物）→ 组装 **func value** 压栈（函数定义模板见 2.7.6） | `value_make` |
-| `DEFINE_FUNCTION` | strtable 索引 | 弹栈顶 **func value** 直接定义：value 自带签名类型（无类型说明符），函数名固定不可重命名（区别于 `DEFINE` 的 value,type 双弹） | `scope_define` |
+| `CREATE_FUNC_TYPE` | 参数个数 argc | 弹栈 `[return_type, param_1..param_argc, is_variadic]`（压栈序）→ `type_func_sig` intern 签名类型（按签名去重，同签名共享一个 type_t）→ 构造 type value 压栈（见 2.7.6） | `type_func_sig` |
+| `PUSH_FUNCTION` | 入口 pc | 读入口 pc 立即数 → **`bcode_function_new` 构造 `bcode_function_t{entry_pc}`**（自封装：建孤立 closure_scope + 注册 vm->functions 池）→ 弹栈顶签名类型（`CREATE_FUNC_TYPE` 产物）→ 组装 **func value** 压栈（函数定义模板见 2.7.6） | `bcode_function_new` |
+| `DEFINE_FUNCTION` | strtable 索引 | 弹栈顶 **func value** 直接定义：value 自带签名类型（无类型说明符），函数名固定不可重命名（区别于 `DEFINE` 的 value,type 双弹）；函数值 auto-track 归 scope 统一回收（与 `DEFINE` 一致），func_t 本体归 vm->functions 池 | `scope_define` |
 | `ADD SUB MUL DIV MOD` | — | 弹两引用 → 运算 → 压结果引用 | `value_add` 等 |
 | `EQ NE LT LE GT GE` | — | 同上 | `value_eq` 等 |
 | `AND OR` | — | 同上 | `value_band` 等 |
 | `NEG NOT` | — | 弹一引用 → 一元运算 → 压结果 | `value_neg`/`value_lnot` |
-| `CAST` | 类型表索引 | 显式转换 | `value_explicit_cast` |
-| `CALL` | argc | callee 在 `stack[sp-1-argc]`、实参 `args=&stack[sp-argc]`（调用点先 `PUSH "name"`）→ 清理 callee+实参 → **`value_call(vm, callee, args, argc)`**（scope/frame 由 `bcode_function_t` 基类回调完成，见 2.7.6）→ 结果压栈 | `value_call` |
-| `RET` | — | 返回值保留栈顶 → 恢复 caller_scope + return_pc | `scope_destroy` |
+| `CAST` | —（无操作数） | 类型经**栈顶 type value**（`LOAD` 压入）传递：弹 type value → 弹被转换值 → `value_explicit_cast(vm, value, *(const type_t**)data)` | `value_explicit_cast` |
+| `CALL` | argc | callee 在 `stack[sp-1-argc]`、实参 `args=&stack[sp-argc]`（调用点先 `PUSH "name"`）→ **args 复制进 VLA**（`value_call` 内压栈可能 realloc 使栈缓冲悬垂）→ 清理 callee+实参 → **`value_call(vm, callee, args, argc)`**（scope/frame 由 `func_vcall` + `bcode_call_cfunc` 完成，见 2.7.6）→ 结果压栈 | `value_call` |
+| `RET` | — | 栈顶即返回值，返回 **interrupt 哨兵**（`INTERRUPT_RETURN`），由 `bcode_call_cfunc` 子循环捕获 | `value_make_interrupt` |
 | `JMP` | 目标 pc | `*pc = read_u32(...)`（绝对字节偏移） | — |
 | `JZ JNZ` | 目标 pc | 弹引用 → **`value_explicit_cast(v, bool)`**（失败/TDZ 返回 error）→ 读 `*(bool*)data` 判断跳转（clux 严格 bool，无 truthy 概念） | `value_explicit_cast` |
 | `PUSH_SCOPE` | — | `scope_new(alloc, current)` 压入 | `scope_new` |
@@ -662,7 +662,7 @@ var c:i32;          =>  PUSH_UNDEFINED;  LOAD "i32";  DEFINE "c";   /* 无初始
 
 - **undefined 视为 void 类型的变量**：不引入新类型，`PUSH_UNDEFINED` 构造 type_void 的 value，作为"类型待推导 / 未初始化"标记。`DEFINE` 遇 void 类型说明符时从初始值推断实际类型；值也为 void（无初始值）则变量以 TDZ 状态定义（读前必须赋值）。
 - **TDZ**：VM 层已有 `value_t.is_tdz` + `value_is_tdz`/`value_set_tdz`，无需新增。
-- **基本类型注册 global scope**：VM 初始化时把 i8..i64/u8..u64/f32/f64/bool/str/void 等基本类型以 **type value** 注册进 global scope（复用现有 `g_type_type`，VTABLE_TYPE，data 存 `const type_t*`），`LOAD "i32"` 即按名查出的 type value。注意 `vm_init_builtins` 目前只挂 `vm->type_*` 字段，需调整为先建 global_scope 再注册（见 2.6.6 待办）。
+- **基本类型注册 global scope**：VM 初始化（`vm_new`）时把 i8..i64/u8..u64/f32/f64/bool/str/void/type/func 等基本类型以 **type value** 注册进 global scope（复用 `g_type_type`，VTABLE_TYPE，data 存 `const type_t*`，见 vm.c `vm_register_builtin_types`），`LOAD "i32"` 即按名查出的 type value。
 
 #### 2.7.6 函数调用与 interrupt 哨兵
 
@@ -687,32 +687,31 @@ typedef struct bcode_function_t {
 } bcode_function_t;
 ```
 
-`value_call` → vtable 分派 `func_vcall`（现有 vm API，src/vm/type_func.c），**通用调用流程全部复用**：
+`value_call` → vtable 分派 `func_vcall`（src/vm/type_func.c），**通用调用流程全部复用**：
 
 1. 保存现场（caller_root / caller_scope）
-2. 切函数 root_scope / closure_scope
+2. 切函数 root_scope；**临时接线孤立 closure_scope → root_scope**（函数体可查看到模块变量），进入 closure_scope
 3. push 函数体匿名局部作用域
 4. 参数 safe_cast + clone 到 local_args（类型兜底，sema 已静态校验）
 5. 调 `base.cfunc`（= `bcode_call_cfunc`）
 6. 返回值 safe_cast + clone 到调用方作用域
 7. 平衡作用域栈（正常 pop / error 砍子树）
-8. 恢复现场
+8. 恢复现场（含 closure_scope 临时 parent 接线恢复）
 
-**`bcode_call_cfunc`（bcode_function_t 的执行回调）**：
+**`bcode_call_cfunc`（bcode_function_t 的执行回调，src/vm/bcode_function.c）**：
 
 ```
 bcode_call_cfunc(vm, fn, argc, local_args):
   local_args 按序压操作数栈（压栈顺序 a, b → 栈顶是 b）
-  保存 exec->pc；exec->pc = entry_pc
-  驱动指令循环执行函数体：
-    函数体头部倒序 DEFINE "b"; DEFINE "a" 弹栈绑定参数（**不按名绑定**）
-    ...函数体...
-    RET 返回 interrupt 哨兵 → 循环捕获（栈顶即返回值）
-  恢复 exec->pc
-  返回栈顶值（由 func_vcall 继续 clone 回 caller）
+  保存 vm->pc / vm->halted；vm->halted = false
+  r = exec_drive(vm, vm->bc, entry_pc)   -- 与主循环共用的指令驱动循环
+  恢复 vm->pc / vm->halted
+  RET 哨兵：弹哨兵，栈顶即返回值（借用引用，由 func_vcall clone 回 caller）
+  error：弹 error 引用后传播（func_vcall 走 error 平衡路径）
+  函数体走完未 RET（编译错误）：无返回值 → NULL
 ```
 
-**interrupt 哨兵消费点移到 bcode_call_cfunc 子循环**：函数调用被 `func_vcall` 包裹成同步调用，`RET` 只返回哨兵，由执行回调的循环捕获取返回值；弹帧/恢复现场由 `func_vcall` 的保存/恢复逻辑完成，不再需要独立 frame 栈。执行器主循环的统一出口只处理 error（引擎级硬错误）。未来 BREAK/CONTINUE 哨兵同理由执行回调捕获。
+**interrupt 哨兵消费点移到 bcode_call_cfunc 子循环**：函数调用被 `func_vcall` 包裹成同步调用，`RET` 只返回哨兵（`value_make_interrupt(INTERRUPT_RETURN)`），由执行回调的循环捕获取返回值；弹帧/恢复现场由 `func_vcall` 的保存/恢复逻辑完成，不再需要独立 frame 栈。`exec_drive`（主循环与函数子循环共用）统一出口：error / interrupt 直接返回（结果已压操作数栈）。未来 BREAK/CONTINUE 哨兵同理由执行回调捕获。
 
 **调用模型统一（FFI / vm 预注册 / 手工注册 / 字节码函数）**：`CALL` 指令永远走 `value_call` → `func_vcall`，通用流程（作用域切换、参数 clone、返回 clone、错误平衡）对**所有**函数实现共享：
 
@@ -749,10 +748,16 @@ L_FUNC_END:                       ; 构造签名类型 + 函数值，DEFINE_FUNC
 - **CREATE_FUNC_TYPE 构造签名类型**：弹栈格式 `[返回值, 参数1..argc, 是否可变]`（压栈序），回调调 `type_func_sig` intern 签名类型（按签名去重，同签名共享一个 type_t）并构造 type value 压栈。`is_variadic` 由编译器恒压 `PUSH_BOOL false`（clux 函数不支持可变参数，可变是 FFI 的）。
 - **void 函数返回 undefined**：为统一性，void 类型函数实际 `return undefined`——函数体末尾（或显式 `return;`）编译为 `PUSH_UNDEFINED; RET;`。`RET` 语义统一为"栈顶即返回值"：非 void 函数返回表达式求值结果，void 函数返回 void 类型的 undefined value。`return expr;` => `...expr...; RET`。
 - **clux 函数不支持可变参数**（可变是 FFI 的）：`argc` 固定等于签名参数个数，sema 已静态校验，运行时无需变参处理。
-- **PUSH_FUNCTION 构造 bcode_function_t**：操作数为**入口 pc 立即数**（编译期把 `L_FUNC_START` 标签回填为绝对字节偏移），回调读 pc 构造 `bcode_function_t{ .base = func_new(alloc), .entry_pc = pc }`（分配，随函数值由 scope 管理；base.cfunc = `bcode_call_cfunc`），再**弹栈顶签名类型**（CREATE_FUNC_TYPE 产物）组装 func value（type = 签名类型，data = bcode_function_t）压栈，随后 `DEFINE_FUNCTION "add"` 把函数注册进当前 scope——函数是一等值。**不查任何函数表**。
+- **PUSH_FUNCTION 构造 bcode_function_t**：操作数为**入口 pc 立即数**（编译期把 `L_FUNC_START` 标签回填为绝对字节偏移），回调调 **`bcode_function_new(vm, sig, entry_pc, vm->root_scope)`**（bcode_function 模块自封装创建：`base.cfunc = bcode_call_cfunc`、自建孤立 closure_scope、注册 `vm->functions` 池），再**弹栈顶签名类型**（CREATE_FUNC_TYPE 产物）组装 func value（type = 签名类型，data = bcode_function_t）压栈，随后 `DEFINE_FUNCTION "add"` 把函数注册进当前 scope——函数是一等值。**不查任何函数表**。
 - **DEFINE_FUNCTION 与 DEFINE 的区别**：函数值本身携带签名类型（value.type），且函数名固定不可重命名（定义语句非变量赋值），所以用单值弹栈（value, define），无类型说明符；普通 `DEFINE` 是 value, type 双弹。
 
 `bcode_function_t` **不是编译期预建的表**，由 `PUSH_FUNCTION` 执行时构造——除基类 `func_t` 外只多一个入口字节偏移 `entry_pc`，不含参数名、不含 AST 节点指针；区别于运行时 `func_t`（C 函数值）与 AST 层 `ast_func_def_t`（AST 节点）。`CALL` 只需 `value_call`，scope/frame 处理在 `func_vcall` 通用流程 + `bcode_call_cfunc` 执行回调内。
+
+**函数对象生命周期统一归 vm（`vm->functions` 池）**：所有函数值共享同一 `func_t*`（`func_clone` 浅拷贝指针），因此 `func_t` 不能由某个 value dispose 释放（double free）——`func_dispose` 为空操作（`value_dispose` 只释放 data 块与 value_t 结构体），`func_t` 本体注册进 `vm->functions`，`vm_destroy` 遍历统一释放（`bcode_function_t` 自建的 `owns_closure_scope` 先 `scope_destroy` 再 `func_destroy`）。`func_t.owns_closure_scope` 区分自建 scope（bcode_function）与调用方传入（func_new，不拥有）。
+
+**closure_scope = 孤立作用域（parent=NULL）**：clux 用**显式闭包捕获**——函数对象创建时 `scope_new(alloc, NULL)` 建孤立 scope，不挂任何作用域树（不随定义点作用域销毁）；`func_vcall` 调用期间临时让 `closure_scope->parent = root_scope` 使函数体可查看到模块变量，调用结束恢复原 parent。该作用域跟随函数对象销毁（`vm_destroy` 释放 functions 时处理）。
+
+**exec_run 只注册不执行（clux 无顶层语句）**：`exec_run` 只驱动函数注册段（`JMP` 守卫跳过的 `CREATE_FUNC_TYPE` / `PUSH_FUNCTION` / `DEFINE_FUNCTION` 序列），入口函数由调用方在 `exec_run` 之后 `scope_lookup(vm->current_scope, "main")` + `value_call(vm, fn, NULL, 0)` 显式触发（driver 职责）。
 
 #### 2.7.7 控制流编译模板
 
@@ -795,6 +800,9 @@ if (c) A else B:          while (c) B:            a && b:
 | 表达式中间结果 | 当前 scope（匿名 track） | `POP_SCOPE` |
 | 字符串表字符串 | 字符串表（编译期收集，只读） | `bytecode_destroy` |
 | 栈元素 | **借用，无人拥有** | 随 scope 销毁自然失效 |
+| 函数对象 `func_t` | **`vm->functions` 池**（`func_dispose` 空操作，value 只释放 data 块） | `vm_destroy` 遍历释放 |
+| 签名类型 `func_type_t` | **`vm->sig_types` 池**（按签名去重 intern） | `vm_destroy` 释放 |
+| 孤立 closure_scope | 函数对象（`owns_closure_scope`） | 随函数对象销毁（`vm_destroy`） |
 
 ### 2.8 诊断 (include/diag/diagnostic.h, src/diag/diagnostic.c) —— 尚未实现（diag/ 目录为空）
 

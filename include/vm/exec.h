@@ -30,9 +30,21 @@ extern "C" {
 typedef value_t *(*bcode_handler_t)(vm_t *vm, bytecode_t *bc, size_t *pc);
 
 /**
+ * 驱动循环：从 start_pc 执行指令直到 HALT（返回 NULL）/ error（返回 error）
+ * / interrupt（返回 interrupt）。返回值（非 NULL）已压入操作数栈。
+ * 主循环（exec_run）与函数执行子循环（bcode_call_cfunc）共用；
+ * 子循环调用时保存/恢复 vm->pc 与 vm->halted。
+ */
+value_t *exec_drive(vm_t *vm, bytecode_t *bc, size_t start_pc);
+
+/**
  * 执行字节码模块直到 HALT 或 error。
  * 执行前清空操作数栈；结束后返回 error（若出错）或 NULL（正常 HALT）。
  * 返回的 error 生命周期挂在 current_scope 下，调用方不手动释放。
+ *
+ * clux 无顶层语句：exec_run 只执行函数注册段（JMP 守卫 + 函数值构造 +
+ * DEFINE_FUNCTION），不执行任何函数体。入口函数（main）由调用方在
+ * exec_run 之后 scope_lookup + value_call 显式触发。
  */
 value_t *exec_run(vm_t *vm, bytecode_t *bc);
 

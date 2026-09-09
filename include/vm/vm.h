@@ -48,6 +48,11 @@ typedef struct vm_t {
     /* ---- 函数签名类型池（按签名去重 intern，vm 拥有生命周期） ---- */
     vec_t *sig_types;    /* func_type_t*，元素为签名类型（sig 非空） */
 
+    /* ---- 函数对象池（func_t / bcode_function_t*，vm 统一持有生命周期） ---- */
+    /* 所有函数值共享同一 func_t*（clone 浅拷贝指针），因此 func_t 不能由
+     * 某个 value dispose 释放（double free）；归本池统一释放。 */
+    vec_t *functions;    /* func_t*，元素为函数对象（不 owns，vm_destroy 手动释放） */
+
     /* ---- 执行器状态（复用 vm 上下文，不另建 exec_t） ---- */
     vec_t       *stack;   /* 操作数栈：value_t* 借用引用（不拥有，归 scope） */
     bytecode_t  *bc;      /* 当前执行中的字节码模块（嵌套调用时切换） */

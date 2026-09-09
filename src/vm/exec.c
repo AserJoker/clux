@@ -4,6 +4,7 @@
 #include "vm/type.h"
 #include "vm/type_type.h"
 #include "vm/type_interrupt.h"
+#include "vm/bcode_function.h"
 #include "core/panic.h"
 #include "core/string.h"
 #include "core/vec.h"
@@ -209,10 +210,73 @@ static value_t *op_not(vm_t *vm, bytecode_t *bc, size_t *pc) {
 /* ---- 显式转换 ---- */
 
 static value_t *op_cast(vm_t *vm, bytecode_t *bc, size_t *pc) {
-    /* 类型表索引：M1 暂用 type value 压栈 + 弹栈取目标类型，索引位预留 */
-    uint32_t idx = bcode_read_u32(bc, pc);
-    (void)idx;
-    return value_make_error(vm, "exec: CAST not implemented");
+    /* 类型经栈顶 type value 传递（LOAD 压入），无立即数操作数：
+       弹 type value → 弹被转换值 → value_explicit_cast（error/TDZ 内部短路） */
+    (void)bc; (void)pc;
+    value_t *vtype = exec_stack_pop(vm);
+    value_t *value = exec_stack_pop(vm);
+    const type_t *target = *(const type_t **)value_data(vtype);
+    return value_explicit_cast(vm, value, target);
+}
+
+/* ---- 函数 ---- */
+
+static value_t *op_create_func_type(vm_t *vm, bytecode_t *bc, size_t *pc) {
+    /* 弹栈格式 [return, param1..argc, is_variadic]（压栈序，docs 2.7.6）：
+       栈顶 is_variadic（PUSH_BOOL false）→ 倒序取参数 → 返回值类型 */
+    uint32_t argc = bcode_read_u32(bc, pc);
+    value_t *variadic_v = exec_stack_pop(vm);
+    bool is_variadic = *(const bool *)value_data(variadic_v);
+    const type_t *params[argc > 0 ? argc : 1];
+    for (uint32_t i = argc; i-- > 0; ) {
+        params[i] = *(const type_t **)value_data(exec_stack_pop(vm));
+    }
+    const type_t *ret = *(const type_t **)value_data(exec_stack_pop(vm));
+    /* intern 签名类型（按签名去重，同签名共享一个 type_t） */
+    const type_t *sig = type_func_sig(vm, params, argc, ret, is_variadic);
+    return type_as_value(vm, sig);
+}
+
+static value_t *op_push_function(vm_t *vm, bytecode_t *bc, size_t *pc) {
+    /* entry_pc 立即数；弹栈顶签名类型（CREATE_FUNC_TYPE 产物），
+       构造 bcode_function_t（封装在 bcode_function 模块内） */
+    uint32_t entry_pc = bcode_read_u32(bc, pc);
+    value_t *sig_v = exec_stack_pop(vm);
+    const type_t *sig = *(const type_t **)value_data(sig_v);
+    return bcode_function_new(vm, sig, entry_pc, vm->root_scope);
+}
+
+static value_t *op_define_function(vm_t *vm, bytecode_t *bc, size_t *pc) {
+    /* 单值弹栈（函数值自带签名类型，无类型说明符；与 DEFINE 双弹区分）。
+       函数值是 auto-track 的普通一等值：scope_define clone 进 scope 后，
+       原值壳归 scope 统一回收（与 op_define 一致，不手动释放，避免 double
+       free）；func_t 本体归 vm->functions 池 */
+    strslice_t name = bcode_read_str(bc, pc);
+    value_t *fnv = exec_stack_pop(vm);
+    value_t *stored = scope_define(vm, vm->current_scope, name.ptr, fnv);
+    if (value_is_error(vm, stored)) return stored;
+    return NULL;
+}
+
+static value_t *op_call(vm_t *vm, bytecode_t *bc, size_t *pc) {
+    /* callee 在 stack[sp-1-argc]，args 为紧随其后的 argc 个引用。
+       args 复制进 VLA（value_call 内部压栈可能 realloc 使栈缓冲悬垂）；
+       借用引用，值本体归 scope。 */
+    uint32_t argc = bcode_read_u32(bc, pc);
+    size_t sp = vec_len(vm->stack);
+    value_t *callee = exec_stack_peek(vm, argc);
+    value_t *args[argc > 0 ? argc : 1];
+    for (uint32_t i = 0; i < argc; i++) {
+        args[i] = (value_t *)vec_get(vm->stack, sp - argc + i);
+    }
+    for (uint32_t i = 0; i <= argc; i++) exec_stack_pop(vm);
+    return value_call(vm, callee, args, argc);
+}
+
+static value_t *op_ret(vm_t *vm, bytecode_t *bc, size_t *pc) {
+    /* 栈顶即返回值；返回 interrupt 哨兵由 bcode_call_cfunc 子循环捕获 */
+    (void)bc; (void)pc;
+    return value_make_interrupt(vm, INTERRUPT_RETURN);
 }
 
 /* ---- 控制流 ---- */
@@ -307,6 +371,11 @@ static const bcode_handler_t HANDLERS[] = {
     [BCODE_NEG]            = op_neg,
     [BCODE_NOT]            = op_not,
     [BCODE_CAST]           = op_cast,
+    [BCODE_CREATE_FUNC_TYPE] = op_create_func_type,
+    [BCODE_PUSH_FUNCTION]  = op_push_function,
+    [BCODE_DEFINE_FUNCTION] = op_define_function,
+    [BCODE_CALL]           = op_call,
+    [BCODE_RET]            = op_ret,
     [BCODE_JMP]            = op_jmp,
     [BCODE_JZ]             = op_jz,
     [BCODE_JNZ]            = op_jnz,
@@ -317,30 +386,31 @@ static const bcode_handler_t HANDLERS[] = {
 };
 
 /* ================================================================ */
-/* 主循环                                                            */
+/* 驱动循环 + 主循环                                                  */
 /* ================================================================ */
+
+value_t *exec_drive(vm_t *vm, bytecode_t *bc, size_t start_pc) {
+    vm->pc = start_pc;
+    for (;;) {
+        if (vm->halted) return NULL;  /* HALT 指令设 halted，正常退出 */
+        bcode_op_t op = bcode_read_op(bc, &vm->pc);
+        bcode_handler_t h = HANDLERS[op];
+        if (!h) return value_make_error(vm, "exec: unimplemented opcode");
+        value_t *r = h(vm, bc, &vm->pc);
+        if (r) exec_stack_push(vm, r);
+        if (value_is_error(vm, r)) return r;      /* 引擎级硬错误，停止 */
+        if (value_is_interrupt(vm, r)) return r;  /* RET 哨兵，函数子循环捕获 */
+    }
+}
 
 value_t *exec_run(vm_t *vm, bytecode_t *bc) {
     vm->bc     = bc;
-    vm->pc     = 0;
     vm->halted = false;
 
     /* 清空操作数栈（借用引用，不释放） */
     while (!vec_is_empty(vm->stack)) vec_pop(vm->stack);
 
-    while (!vm->halted) {
-        bcode_op_t op = bcode_read_op(bc, &vm->pc);
-        bcode_handler_t h = HANDLERS[op];
-        if (!h) {
-            vm->halted = true;
-            return value_make_error(vm, "exec: unimplemented opcode");
-        }
-        value_t *r = h(vm, bc, &vm->pc);
-        if (r) exec_stack_push(vm, r);
-        if (value_is_error(vm, r)) {
-            vm->halted = true;
-            return r;
-        }
-    }
-    return NULL;
+    /* clux 无顶层语句：只执行函数注册段，入口函数由调用方
+       scope_lookup + value_call 显式触发 */
+    return exec_drive(vm, bc, 0);
 }

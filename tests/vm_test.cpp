@@ -593,7 +593,7 @@ static value_t *sum_variadic(vm_t *vm, func_t *self, size_t argc, value_t **args
 TEST_F(ValueCore, VariadicFuncAcceptsExtraArgs) {
     const type_t *sig = type_func_sig(vm, NULL, 0, vm->type_i64, true);
     /* func value：data 存 func_t*，type 即签名类型；untracked，手动释放 */
-    value_t *fv = func_new(vm->alloc, sum_variadic, vm->global_scope,
+    value_t *fv = func_new(vm, sum_variadic, vm->global_scope,
                            vm->root_scope, sig, STRSLICE_LIT("sum_variadic"));
     ASSERT_NE(fv, nullptr);
     EXPECT_EQ(value_type(fv), sig);
@@ -619,7 +619,7 @@ TEST_F(ValueCore, NonVariadicFuncRejectsExtraArgs) {
     const type_t *params[1] = { NULL };  /* 无类型约束，但 param_count=1 */
     const type_t *sig = type_func_sig(vm, params, 1, vm->type_void, false);
     /* func value：data 存 func_t*，type 即签名类型；untracked，手动释放 */
-    value_t *fv = func_new(vm->alloc, sum_variadic, vm->global_scope,
+    value_t *fv = func_new(vm, sum_variadic, vm->global_scope,
                            vm->root_scope, sig, STRSLICE_LIT("fixed"));
     ASSERT_NE(fv, nullptr);
     EXPECT_EQ(value_type(fv), sig);

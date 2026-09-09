@@ -12,10 +12,10 @@
 /* ---- dispose ---- */
 
 static void func_dispose(vm_t *vm, value_t *v) {
-    func_t **fp = (func_t **)value_data(v);
-    if (fp && *fp) {
-        func_destroy(vm->alloc, fp);
-    }
+    /* func_t 归 vm->functions 统一释放（clone 浅拷贝指针，value dispose 不能
+       释放共享的 func_t，否则 double free）；value_dispose 已释放 data 块 */
+    (void)vm;
+    (void)v;
 }
 
 /* ---- clone ---- */
@@ -123,7 +123,13 @@ static value_t *func_vcall(vm_t *vm, value_t *callee, value_t **args, size_t arg
     /* 2. 切换到函数的模块作用域 */
     vm->root_scope = fn->root_scope;
 
-    /* 3. 进入闭包作用域 */
+    /* 3. 临时接线孤立 closure_scope → root_scope（函数体可查看到模块变量），
+       进入闭包作用域；调用结束恢复 parent（见步骤 9） */
+    scope_t *saved_closure_parent = NULL;
+    if (fn->closure_scope) {
+        saved_closure_parent = fn->closure_scope->parent;
+        fn->closure_scope->parent = fn->root_scope;
+    }
     vm->current_scope = fn->closure_scope;
 
     /* 4. push 匿名局部作用域 */
@@ -199,7 +205,10 @@ static value_t *func_vcall(vm_t *vm, value_t *callee, value_t **args, size_t arg
         }
     }
 
-    /* 9. 恢复现场 */
+    /* 9. 恢复现场（含孤立 closure_scope 的临时 parent 接线） */
+    if (fn->closure_scope) {
+        fn->closure_scope->parent = saved_closure_parent;
+    }
     vm->root_scope    = caller_root;
     vm->current_scope = caller_scope;
 
