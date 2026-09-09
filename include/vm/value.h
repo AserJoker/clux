@@ -5,6 +5,7 @@ extern "C" {
 #endif
 
 #include "vm/type.h"
+#include "vm/type_interrupt.h"
 #include "core/allocator.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -38,6 +39,9 @@ bool value_is_void(const value_t *v);
 /** 判断 value 是否为 error（引擎级硬错误） */
 bool value_is_error(vm_t *vm, const value_t *v);
 
+/** 判断 value 是否为 interrupt（引擎级控制流哨兵） */
+bool value_is_interrupt(vm_t *vm, const value_t *v);
+
 /* ---- 构造器 ---- */
 
 /** 从已有 data 指针构造 value（堆分配 + auto-track 到 current_scope）。
@@ -69,6 +73,22 @@ value_t *value_make_error(vm_t *vm, const char *message);
 
 /** 创建 error value（带位置信息） */
 value_t *value_make_error_loc(vm_t *vm, const char *message, const char *location);
+
+/* ---- undefined 构造 ---- */
+
+/** 创建 undefined value（void 类型，data=NULL，标记"类型待推导"） */
+value_t *value_make_undefined(vm_t *vm);
+
+/** 判断 value 是否为 undefined（void 类型 value） */
+bool value_is_undefined(vm_t *vm, const value_t *v);
+
+/* ---- interrupt 构造 ---- */
+
+/** 创建 interrupt value（引擎级控制流哨兵，data 内联 interrupt_data_t） */
+value_t *value_make_interrupt(vm_t *vm, interrupt_kind_t kind);
+
+/** 读取 interrupt value 的 kind（非 interrupt value 时返回 INTERRUPT_RETURN） */
+interrupt_kind_t value_interrupt_kind(vm_t *vm, const value_t *v);
 
 /* ---- 内存分配辅助 ---- */
 

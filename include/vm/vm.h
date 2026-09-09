@@ -42,6 +42,7 @@ typedef struct vm_t {
     type_t *type_type;   /* 元类型：type 的 type */
     type_t *type_func;   /* 函数类型基类（无签名） */
     type_t *type_error;  /* 错误类型（引擎级硬错误） */
+    type_t *type_interrupt; /* interrupt 类型（引擎级控制流哨兵） */
 
     /* ---- 函数签名类型池（按签名去重 intern，vm 拥有生命周期） ---- */
     vec_t *sig_types;    /* func_type_t*，元素为签名类型（sig 非空） */

@@ -1,6 +1,7 @@
 #include "vm/value.h"
 #include "vm/vm.h"
 #include "vm/type_error.h"
+#include "vm/type_interrupt.h"
 #include "core/panic.h"
 #include "core/string.h"
 
@@ -125,6 +126,34 @@ value_t *value_make_error_loc(vm_t *vm, const char *message, const char *locatio
     ed.location = location ? string_from_cstr(vm->alloc, location) : NULL;
     void *data = value_alloc_data_copy(vm->alloc, vm->type_error, &ed);
     return value_make(vm, vm->type_error, data);
+}
+
+/* ---- undefined 工具 ---- */
+
+value_t *value_make_undefined(vm_t *vm) {
+    return value_make(vm, vm->type_void, NULL);
+}
+
+bool value_is_undefined(vm_t *vm, const value_t *v) {
+    return v && vm && v->type == vm->type_void;
+}
+
+/* ---- interrupt 工具 ---- */
+
+bool value_is_interrupt(vm_t *vm, const value_t *v) {
+    return v && vm && v->type == vm->type_interrupt;
+}
+
+value_t *value_make_interrupt(vm_t *vm, interrupt_kind_t kind) {
+    interrupt_data_t id;
+    id.kind = kind;
+    void *data = value_alloc_data_copy(vm->alloc, vm->type_interrupt, &id);
+    return value_make(vm, vm->type_interrupt, data);
+}
+
+interrupt_kind_t value_interrupt_kind(vm_t *vm, const value_t *v) {
+    if (!value_is_interrupt(vm, v)) return INTERRUPT_RETURN;
+    return ((interrupt_data_t *)value_data(v))->kind;
 }
 
 /* ---- 运算分派 ---- */

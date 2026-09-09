@@ -13,6 +13,7 @@
 #include "vm/type_type.h"
 #include "vm/type_func.h"
 #include "vm/type_error.h"
+#include "vm/type_interrupt.h"
 
 #include <string.h>
 #include <stdalign.h>
@@ -223,6 +224,7 @@ static type_t g_type_type = { NULL, {NULL,0}, 0, 0 };
 /* func 基类声明为 func_type_t 布局：无签名（sig 全零），向下转型安全 */
 static func_type_t g_type_func = { { NULL, {NULL,0}, 0, 0 }, { NULL, 0, NULL, false } };
 static type_t g_type_error = { NULL, {NULL,0}, 0, 0 };
+static type_t g_type_interrupt = { NULL, {NULL,0}, 0, 0 };
 
 void vm_init_builtins(vm_t *vm) {
     static const char S_I8[]  = "i8",   S_I16[] = "i16", S_I32[] = "i32", S_I64[] = "i64";
@@ -231,6 +233,7 @@ void vm_init_builtins(vm_t *vm) {
     static const char S_BOOL[] = "bool", S_STR[] = "str";
     static const char S_VOID[] = "void", S_TYPE[] = "type", S_FUNC[] = "func";
     static const char S_ERROR[] = "error";
+    static const char S_INTERRUPT[] = "interrupt";
 
     /* 函数签名类型池（type_func_sig intern 用）；元素由 vm_destroy 手动释放，
        vec 只持有指针数组（与 scope owned 同一模式） */
@@ -256,6 +259,10 @@ void vm_init_builtins(vm_t *vm) {
     g_type_error = (type_t){ &VTABLE_ERROR, STRSLICE_LIT(S_ERROR),
                              sizeof(error_data_t), alignof(error_data_t) };
 
+    /* interrupt_data_t 内联在 value data 块中（引擎级控制流哨兵） */
+    g_type_interrupt = (type_t){ &VTABLE_INTERRUPT, STRSLICE_LIT(S_INTERRUPT),
+                                 sizeof(interrupt_data_t), alignof(interrupt_data_t) };
+
     vm->type_i8   = &g_type_i8;
     vm->type_i16  = &g_type_i16;
     vm->type_i32  = &g_type_i32;
@@ -272,4 +279,5 @@ void vm_init_builtins(vm_t *vm) {
     vm->type_type = &g_type_type;
     vm->type_func = &g_type_func.base;
     vm->type_error = &g_type_error;
+    vm->type_interrupt = &g_type_interrupt;
 }

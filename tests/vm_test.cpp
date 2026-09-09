@@ -9,6 +9,7 @@ extern "C" {
 #include "vm/scope.h"
 #include "vm/type.h"
 #include "vm/type_error.h"
+#include "vm/type_interrupt.h"
 #include "vm/function.h"
 #include "core/allocator.h"
 #include "core/string.h"
@@ -1998,4 +1999,81 @@ TEST_F(ValueCore, TdzAssignTypeMismatchReturnsError) {
     EXPECT_TRUE(value_is_error(vm, r));
     EXPECT_TRUE(value_is_tdz(lhs)); /* 赋值失败不退出 TDZ */
     raw_free(vm, b);
+}
+
+/* ---- interrupt 机制（引擎级控制流哨兵） ---- */
+
+TEST_F(ValueCore, MakeInterruptIsTracked) {
+    value_t *it = value_make_interrupt(vm, INTERRUPT_RETURN);
+    EXPECT_EQ(value_type(it), vm->type_interrupt);
+    EXPECT_TRUE(value_is_interrupt(vm, it));
+    EXPECT_EQ(value_interrupt_kind(vm, it), INTERRUPT_RETURN);
+    /* auto-track 到 current_scope，vm_destroy 释放 */
+}
+
+TEST_F(ValueCore, NonInterruptIsNotInterrupt) {
+    value_t *v = make_i32_raw(vm, 1);
+    EXPECT_FALSE(value_is_interrupt(vm, v));
+    raw_free(vm, v);
+
+    value_t *it = value_make_interrupt(vm, INTERRUPT_RETURN);
+    EXPECT_TRUE(value_is_interrupt(vm, it));
+}
+
+TEST_F(ValueCore, InterruptKindOnNonInterruptReturnsReturn) {
+    value_t *v = make_i32_raw(vm, 1);
+    EXPECT_EQ(value_interrupt_kind(vm, v), INTERRUPT_RETURN);
+    raw_free(vm, v);
+}
+
+TEST_F(ValueCore, InterruptNotErrorAndViceVersa) {
+    /* interrupt 与 error 同级但互斥：哨兵不短路运算，error 短路 */
+    value_t *it = value_make_interrupt(vm, INTERRUPT_RETURN);
+    value_t *err = value_make_error(vm, "e");
+    EXPECT_FALSE(value_is_error(vm, it));
+    EXPECT_FALSE(value_is_interrupt(vm, err));
+}
+
+TEST_F(ValueCore, InterruptClonePropagates) {
+    /* scope_define/值传递对 interrupt clone：kind 保持 */
+    value_t *it = value_make_interrupt(vm, INTERRUPT_RETURN);
+    value_t *c  = value_clone(vm, it);
+    EXPECT_TRUE(value_is_interrupt(vm, c));
+    EXPECT_EQ(value_interrupt_kind(vm, c), INTERRUPT_RETURN);
+}
+
+/* ---- undefined（void 类型 value） ---- */
+
+TEST_F(ValueCore, MakeUndefinedIsVoidType) {
+    value_t *u = value_make_undefined(vm);
+    EXPECT_EQ(value_type(u), vm->type_void);
+    EXPECT_TRUE(value_is_undefined(vm, u));
+    /* auto-track 到 current_scope，vm_destroy 释放 */
+}
+
+TEST_F(ValueCore, NonUndefinedIsNotUndefined) {
+    value_t *v = make_i32_raw(vm, 1);
+    EXPECT_FALSE(value_is_undefined(vm, v));
+    raw_free(vm, v);
+
+    value_t *u = value_make_undefined(vm);
+    EXPECT_TRUE(value_is_undefined(vm, u));
+}
+
+TEST_F(ValueCore, UndefinedCloneableForScopeDefine) {
+    /* VTABLE_VOID 补 clone 槽后：undefined 可被 scope_define clone 持有 */
+    value_t *u = value_make_undefined(vm);
+    value_t *c = value_clone(vm, u);
+    EXPECT_FALSE(value_is_error(vm, c));
+    EXPECT_TRUE(value_is_undefined(vm, c));
+}
+
+TEST_F(ValueCore, UndefinedScopeDefineAndPop) {
+    /* undefined 入 scope 后可正常弹出销毁，无泄漏 */
+    value_t *u = value_make_undefined(vm);
+    vm_push_scope(vm);
+    value_t *stored = scope_define(vm, vm->current_scope, "u", u);
+    ASSERT_NE(stored, nullptr);
+    EXPECT_TRUE(value_is_undefined(vm, stored));
+    vm_pop_scope(vm);
 }
