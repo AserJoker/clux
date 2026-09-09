@@ -17,12 +17,13 @@ clux run <file.cx>
   │      │  语法错误：panic mode 恢复，收集诊断（退出码 1，不进入 sema）
   │
   ├─ ④ Semantic Analysis (shadow value 驱动)
-  │      │  使用 shadow value（is_shadow=true, data=NULL）遍历 AST，
-  │      │  复用 VM vtable 类型协商路径做类型检查与推导。
+  │      │  先构建 sema 作用域树（scope 节点带完整符号表），
+  │      │  再按作用域树用 shadow value 遍历 AST 做类型检查与推导。
   │      │  所有类型验证通过后才进入字节码编译。
   │      ├─ Pass 1: Name Collection — 收集所有顶层名称(函数名)
   │      ├─ Pass 2: Type Collection — 收集函数签名(参数类型+返回类型)
-  │      └─ Pass 3: Body Processing  — shadow value 遍历函数体(名称解析+类型检查+结果类型推导)
+  │      ├─ Pass 3a: Scope Tree Construction — 每函数构建词法作用域树+符号表
+  │      └─ Pass 3b: Shadow VM Run — 严格按作用域树遍历函数体(名称解析+类型检查+结果类型推导)
   │      │  语义错误：收集诊断（退出码 1）
   │
   ├─ ⑤ Bytecode Compiler ──→ 字节码模块（func/module 两粒度）
@@ -79,13 +80,14 @@ func add(a:i32, b:i32):i32 {
 |------|---------------|---------------------------------------------------|
 | 1    | Name Collection | 遍历顶层节点，将所有顶层名称（函数名、类型名等）注册到全局作用域（仅名称，无签名/定义） |
 | 2    | Type Collection | 遍历顶层节点，将函数签名（参数类型+返回类型）和类型定义的完整信息注册到全局作用域 |
-| 3    | Body Processing | 遍历函数体，执行名称解析和类型检查，此时所有顶层符号和类型已知 |
+| 3a   | Scope Tree Construction | 遍历每个函数体，构建词法作用域树（block 结构 → scope 树），每个 scope 节点注册完整符号表 |
+| 3b   | Shadow VM Run | 按预建作用域树严格对应地遍历函数体，用 shadow value 执行类型检查与结果类型推导 |
 
 三遍扫描的好处：
 - 消除前置声明的需求，函数和类型定义顺序自由
 - Pass 1 快速检测重复定义
 - Pass 2 建立完整的类型信息，使 Pass 3 中的函数调用能正确匹配签名
-- 函数体内部仍为单遍处理（只需全局信息已就绪）
+- Pass 3 拆分为 3a/3b 两个子阶段：作用域结构与类型检查彻底分离。3a 只建结构（scope 树 + 符号表，不做类型检查），3b 按树遍历做类型检查（scope 管理与检查逻辑不纠缠）
 - 后续里程碑加入 struct/union 等类型定义后，Pass 1 同样收集类型名，Pass 2 处理类型内部结构
 
 ## 2. 模块职责
@@ -471,7 +473,7 @@ struct func_t {
 - `func_vcall`：函数调用，非 variadic 函数检查参数数量，variadic 函数允许 `argc > param_count`
 - 短路运算符 `&&` / `||` 不走 vtable binary 分派，在调用层按 op token 做惰性求值
 
-### 2.6 Shadow Value (include/vm/value.h) —— 尚未实现
+### 2.6 Shadow Value (include/vm/value.h) —— 已实现（2026-09-08）
 
 语义分析阶段使用 shadow value 做类型检查与推导。Shadow value 复用 VM vtable 运算路径，不引入独立的 sema 类型系统。
 
@@ -487,8 +489,10 @@ struct value_t {
 ```
 
 - `is_shadow=true` 时 `data=NULL`，所有运算只进行类型计算不操作实际数据
-- `value_make_shadow(vm, type)` 构造器：分配 value_t，设 type，data=NULL，is_shadow=true
+- `value_make_shadow(vm, type)` 构造器：分配 value_t，设 type，data=NULL，is_shadow=true，auto-track 到当前 scope
+- `value_is_shadow(v)` 访问器（value_t 为不透明类型，外部经访问器判断）
 - shadow 标志放在 `value_t` 内部（非 type_t 层面）
+- clone 槽显式实现（int/float/bool/str/type 各有 clone），value_clone 对 shadow 直接返回新 shadow；NULL clone 槽 = error
 
 **传播规则：**
 
@@ -498,8 +502,9 @@ struct value_t {
 | shadow ⊕ shadow | shadow |
 | assign/cast 对 shadow | 只检查类型兼容性，不拷贝数据 |
 | clone 对 shadow | 返回新的 shadow（不分配 data） |
+| dispose 对 shadow | 跳过 data 释放（data==NULL） |
 
-**传播位置：** 在 **vtable 函数内部**（非 DISPATCH 宏层）。Shadow value 需要经历完整的类型协商流程（VTABLE_BINARY 的 promote、implicit_cast、safe_cast），在类型检查/协商完成之后、实际读写 data 之前检查 `is_shadow`。如果是 shadow 则用结果类型构造 shadow 返回值，不分配/拷贝 data。
+**传播位置：** 在 **vtable 函数内部**（非 DISPATCH 宏层）。Shadow value 需要经历完整的类型协商流程（VTABLE_BINARY 的 promote、implicit_cast、safe_cast），在类型检查/协商完成之后、实际读写 data 之前检查 `is_shadow`。如果是 shadow 则用结果类型构造 shadow 返回值，不分配/拷贝 data。类型协商错误（如 i32 + f64 禁止隐式）由 vtable 返回 error value，sema 捕获后转为诊断。
 
 **执行流水线中的位置：**
 
@@ -574,13 +579,303 @@ bool diag_has_error(const diag_buf_t *db);
 
 输出格式：`<file>:<line>:<col>: error: <message>`。
 
-### 2.9 语义分析 (include/sema/resolver.h, src/sema/resolver.c) —— 尚未实现
+### 2.9 语义分析 (include/sema/sema.h, symbol.h + src/sema/sema.c, stmt.c, symbol.c) —— 尚未实现
 
-遍历 AST，使用 shadow value 做类型检查与推导：
-1. **名称解析**：绑定标识符到声明，检查变量定义
-2. **类型检查**：用 shadow value 遍历表达式，复用 vtable 类型协商路径验证类型合法性
-3. **类型推导**：shadow value 运算结果携带推导出的类型信息
-4. 全部通过后才进入字节码编译，运行时不再做类型检查
+语义分析分两个阶段：**先构建 sema 作用域树**（scope 节点带完整符号表），**再按作用域树用 shadow value 遍历 AST** 做类型检查与推导。作用域结构与类型检查彻底分离。
+
+**核心契约：** sema 是处理类型错误的最后一个阶段。sema 通过后，字节码编译器和 VM 可以假定一切类型正确，运行时不再做类型检查。vtable 运算返回的 error value 被 sema 捕获并转为诊断，不传播到下游。
+
+**类型解析预留：** 所有类型解析收敛到独立入口 `resolve_type(sema, name)`，M1 内部为 `type_find(vm, name)` 查表。未来类型本身是编译期表达式（`[N]T` / `[]T` / `*T` / `<T1,T2>` / const 修饰），需要替换为类型表达式求值器（type_expr AST → type_t），该接口形态保证调用方不变。
+
+#### 2.9.1 模块结构
+
+```
+include/sema/
+  sema.h       — sema_t 上下文 + 公共 API (sema_create / sema_analyze / sema_destroy)
+  symbol.h     — sema_symbol_t, sema_scope_t（sema 侧符号表）
+
+src/sema/
+  sema.c       — 上下文管理 + 三遍编排 + 表达式 walker（shadow value 求值）
+  stmt.c       — 语句 walker
+  symbol.c     — sema 侧符号表实现
+```
+
+sema 侧符号表独立于 VM scope：sema 需要追踪 TDZ 状态、激活状态等**编译期语义概念**，不属于运行时 VM scope 的职责。VM scope 仅作为 shadow value 的生命周期容器（每函数一个）。
+
+#### 2.9.2 数据结构
+
+```c
+typedef enum {
+    SEMA_SCOPE_GLOBAL,    /* 全局作用域（函数名） */
+    SEMA_SCOPE_FUNCTION,  /* 函数作用域（参数 + 函数体顶层变量） */
+    SEMA_SCOPE_BLOCK,     /* 块作用域 */
+    SEMA_SCOPE_FOR,       /* for 作用域（init 变量） */
+} sema_scope_kind_t;
+
+typedef struct sema_symbol_t {
+    const type_t *type;       /* 已解析类型；NULL = 待推断（shadow VM 阶段填充） */
+    bool          is_tdz;     /* TDZ 中（未初始化，只可赋值不可读取） */
+    bool          is_assigned; /* 已赋值（退出 TDZ 的依据） */
+    bool          is_active;  /* shadow VM 到达定义点后激活（遮罩机制） */
+    func_t       *func;       /* 函数符号：Pass 2 填充签名 */
+    sema_scope_t *func_scope; /* 函数符号：Pass 3a 填充作用域树 */
+} sema_symbol_t;
+
+typedef struct sema_scope_t {
+    struct sema_scope_t *parent;
+    vec_t              *children;   /* sema_scope_t* 子作用域（按出现顺序） */
+    strmap_t           *symbols;    /* name -> sema_symbol_t* */
+    sema_scope_kind_t   kind;
+} sema_scope_t;
+
+typedef struct sema_t {
+    vm_t         *vm;                 /* 复用 VM 类型注册表 + vtable + shadow value */
+    diag_buf_t   *diag;               /* 诊断收集器 */
+    sema_scope_t *global_scope;       /* 全局作用域树根 */
+
+    /* 函数上下文（Pass 3b 时设置） */
+    const type_t *func_return_type;   /* NULL = void */
+    bool          func_has_return;
+
+    /* 循环上下文 */
+    int           loop_depth;         /* 0 = 不在循环中 */
+} sema_t;
+```
+
+作用域树示例（`{ if(cond) {} else{} }`）：
+
+```
+block_scope
+├── then_block_scope    (block1)
+└── else_block_scope    (block2)
+```
+
+#### 2.9.3 Pass 1/2：Name / Type Collection
+
+- **Pass 1**：遍历 `AST_PROGRAM` 顶层 `AST_FUNC_DEF` 兄弟链，函数名注册到 global scope，检测重复定义
+- **Pass 2**：解析参数类型与返回类型（经 `resolve_type`），创建 `func_t` 并填入 `sema_symbol_t.func`。参数类型未知 → 诊断
+
+#### 2.9.4 Pass 3a：作用域树构建
+
+遍历函数体，按词法块结构建树。只注册符号（名字 + 声明类型 + TDZ 标志），**不做类型检查**。推断类型的变量 `type=NULL`，留给 Pass 3b 填充。
+
+```c
+static sema_scope_t *build_func_scope(sema_t *sema, ast_func_def_t *fn) {
+    sema_scope_t *fscope = sema_scope_new(SEMA_SCOPE_FUNCTION, sema->global_scope);
+
+    /* 注册参数（已初始化，待激活） */
+    for (ast_node_t *p = fn->params; p; p = p->next) {
+        ast_var_def_t *vd = (ast_var_def_t*)p;
+        sema_scope_define(fscope, vd->name, &(sema_symbol_t){
+            .type = resolve_type(sema, vd->type_name),
+            .is_active = false,
+        });
+    }
+
+    /* 函数体 block 直接用 fscope（不再嵌套一层） */
+    build_block(sema, (ast_block_t*)fn->body, fscope);
+    return fscope;
+}
+```
+
+块内语句的 scope 构建规则——只在创建子作用域的节点上递归：
+
+| AST 节点 | 作用域动作 |
+|----------|-----------|
+| `AST_VAR_DEF` | 注册符号到当前 scope（`is_tdz` 从节点标志拷贝；`type==NULL` 表示待推断） |
+| `AST_BLOCK` | 新建子 scope，递归构建 |
+| `AST_IF` | then_body / else_body 各建一个子 scope（else 为嵌套 if 时同层递归） |
+| `AST_WHILE` | body 建一个子 scope |
+| `AST_FOR` | 建 for scope（init 变量注册到 for scope），body 建 for scope 的子 scope |
+| 其他语句 | 不创建作用域 |
+
+#### 2.9.5 Pass 3b：Shadow VM 运行
+
+按预建作用域树，严格对应地遍历 AST。核心机制：
+
+**子作用域迭代器（child_idx）**：两个阶段遍历同一棵 AST，子作用域出现顺序一致。Shadow VM 用 `size_t child_idx` 按序取子作用域（`vec_get(scope->children, child_idx++)`），保证作用域严格对应。
+
+**is_active 遮罩机制**：符号在定义点才激活。lookup 沿 parent 链查找，只返回 active 符号——正确处理变量名遮罩与"init 表达式引用外层同名变量"：
+
+```
+var x:i32 = 1;           // outer x
+{
+    var x = x + 1;       // init 的 x 引用 outer x（inner x 未 active）
+                         // init 求值后才激活 inner x
+    x = x + 2;           // 此处的 x 是 inner x（已 active，遮罩 outer）
+}
+x = x + 3;               // outer x
+```
+
+```c
+static sema_symbol_t *sema_lookup(sema_scope_t *scope, strslice_t name) {
+    for (sema_scope_t *s = scope; s; s = s->parent) {
+        sema_symbol_t *sym = strmap_get(s->symbols, name);
+        if (sym && sym->is_active) return sym;
+    }
+    return NULL;
+}
+```
+
+**TDZ 变量处理**：`var x:i32 = undefined;` 注册时 `is_tdz=true, is_active=true`（立即可见），lookup 命中后检查 `is_tdz` 报告"未初始化读取"；赋值退出 TDZ（`is_tdz=false, is_assigned=true`）。
+
+#### 2.9.6 表达式 walker（shadow value 求值）
+
+每个表达式节点返回一个 **shadow value**（只有类型，data=NULL）。shadow value 经 vtable 运算路径，类型协商结果即为推导结果类型。
+
+```c
+static value_t *sema_expr(sema_t *sema, ast_node_t *node, sema_scope_t *scope);
+```
+
+| AST 节点 | 处理 |
+|----------|------|
+| `AST_INT_LIT` | 解析后缀定类型（`42i8`→i8，`42`→i32 默认） |
+| `AST_FLOAT_LIT` | 解析后缀定类型（`3.14f32`→f32，`3.14`→f64 默认） |
+| `AST_BOOL_LIT` | shadow bool |
+| `AST_STRING_LIT` | shadow str |
+| `AST_CHAR_LIT` | shadow u8 |
+| `AST_IDENT` | `sema_lookup` 查符号 → shadow(类型)；未定义 / TDZ → 诊断 |
+| `AST_BINARY` | lhs/rhs shadow 求值 → vtable 分派；短路 `&&`/`||` 特殊处理（操作数必须 bool，结果 bool） |
+| `AST_UNARY` | 操作数 shadow → vtable 一元分派 |
+| `AST_CALL` | `shadow_call`：校验签名 → 返回 return_type shadow |
+| `AST_CAST` | `resolve_type` 目标 → `value_explicit_cast` 校验转换合法性 |
+
+二元运算（非短路）走 vtable，类型不兼容时返回 error value，sema 转为诊断：
+
+```c
+static value_t *shadow_binary(sema_t *sema, ast_binary_t *node, sema_scope_t *scope) {
+    if (is_short_circuit(node->op)) {
+        value_t *lhs = sema_expr(sema, node->lhs, scope);
+        check_bool(sema, node->lhs, lhs, "logical operator");
+        value_t *rhs = sema_expr(sema, node->rhs, scope);
+        check_bool(sema, node->rhs, rhs, "logical operator");
+        return value_make_shadow(sema->vm, sema->vm->type_bool);
+    }
+
+    value_t *lhs = sema_expr(sema, node->lhs, scope);
+    value_t *rhs = sema_expr(sema, node->rhs, scope);
+    value_t *result = dispatch_binary(sema->vm, node->op, lhs, rhs);
+
+    if (value_is_error(sema->vm, result)) {
+        diag_error(sema->diag, loc(node), "type mismatch: %s %.*s %s", ...);
+        return value_make_shadow(sema->vm, sema->vm->type_void);
+    }
+    return result;  /* shadow in → shadow out */
+}
+```
+
+#### 2.9.7 函数调用（shadow 版本）
+
+**value_call / func_vcall 完全不动**——保持运行时语义（cfunc 执行、作用域切换、返回值 clone）。sema 阶段用户函数 cfunc 为 NULL，`func_vcall` 会返回 "invalid function"，所以 shadow 版本走独立的参数校验路径，但**校验逻辑与 func_vcall 对齐**（数量检查 + 逐参数 `value_implicit_cast` 验证兼容性）。差异仅在调用之后：运行时走 cfunc 执行，shadow 版本校验完参数直接构造 `return_type` 的 shadow value。
+
+```c
+static value_t *shadow_call(sema_t *sema, ast_call_t *node, sema_scope_t *scope) {
+    sema_symbol_t *sym = sema_lookup(sema->global_scope, node->name);
+    if (!sym || !sym->func) {
+        diag_error(sema->diag, loc(node), "undefined function '%.*s'", ...);
+        return value_make_shadow(sema->vm, sema->vm->type_void);
+    }
+    func_t *fn = sym->func;
+
+    /* 参数数量校验（与 func_vcall 一致：variadic 允许 argc > param_count） */
+    size_t argc = count_siblings(node->args);
+    if (!fn->is_variadic && argc != fn->param_count)
+        diag_error(..., "expects %zu arguments, got %zu", fn->param_count, argc);
+    else if (fn->is_variadic && argc < fn->param_count)
+        diag_error(..., "variadic function expects at least %zu arguments", ...);
+
+    /* 逐个参数：shadow 求值 + implicit_cast 校验（与 func_vcall 对齐） */
+    ast_node_t *arg = node->args;
+    for (size_t i = 0; arg; i++, arg = arg->next) {
+        value_t *av = sema_expr(sema, arg, scope);
+        if (i < fn->param_count && fn->params[i]
+            && !type_eq(value_type(av), fn->params[i])) {
+            value_t *casted = value_implicit_cast(sema->vm, av, fn->params[i]);
+            if (value_is_error(sema->vm, casted))
+                diag_error(..., "argument %zu: cannot convert %s to %s", ...);
+        }
+        /* variadic 额外参数：求值但类型不限（printf 的 ...） */
+    }
+
+    /* shadow 版本：不执行 cfunc、不做作用域切换，直接构造 return_type 的 shadow value */
+    return value_make_shadow(sema->vm,
+        fn->return_type ? fn->return_type : sema->vm->type_void);
+}
+```
+
+#### 2.9.8 语句 walker 与控制流分析
+
+语句不返回值，但有副作用（定义变量、检查赋值规则、验证控制流）。每个语句返回 `block_result_t{bool definitely_returns}` 用于返回路径完整性分析。
+
+```c
+static block_result_t sema_stmt(sema_t *sema, ast_node_t *stmt,
+                                 sema_scope_t *scope, size_t *child_idx);
+```
+
+| 语句 | 处理要点 |
+|------|---------|
+| `AST_VAR_DEF` | 非 TDZ：先求值 init（符号未激活 → 自引用解析到外层），再推断/校验类型，最后激活符号。TDZ：`is_tdz=true, is_active=true` |
+| `AST_ASSIGN` | `_ = expr` 为显式丢弃；简单赋值检查 `type_assignable` + 退出 TDZ；复合赋值 `x op= rhs` 展开为 `x = x op rhs`（shadow 走 vtable 协商）；TDZ 变量只允许简单赋值 |
+| `AST_BLOCK` | 取子 scope（`child_idx++`），递归遍历 |
+| `AST_IF` | 条件必须 bool；then/else 各取子 scope；`definitely_returns = then && else` |
+| `AST_WHILE` | 条件必须 bool；`loop_depth++` 后遍历 body；不贡献 definitely_returns（循环体可能不执行） |
+| `AST_FOR` | init 在 for scope；条件必须 bool；body 是 for scope 的子 scope；`loop_depth++` 遍历 |
+| `AST_RETURN` | 校验值类型可赋给返回类型；void 函数禁止返回值；返回 `definitely_returns=true` |
+| `AST_BREAK/CONTINUE` | `loop_depth == 0` → "break/continue outside loop" 诊断 |
+| `AST_EXPR_STMT` | 结果必须为 void，否则必须用 `_ = ...` 显式丢弃 |
+| `AST_BLOCK`（顶层） | `definitely_returns` 传递到函数级：非 void 函数所有路径必须 return |
+
+#### 2.9.9 类型解析与赋值兼容性
+
+```c
+/* 类型解析唯一入口：M1 内部 type_find；未来替换为类型表达式求值器 */
+const type_t *resolve_type(sema_t *sema, strslice_t name);
+
+/* 赋值兼容性：dst 可接受 src 当且仅当 implicit_cast 成功 */
+static bool type_assignable(sema_t *sema, const type_t *dst, const type_t *src) {
+    if (type_eq(dst, src)) return true;
+    value_t *s = value_make_shadow(sema->vm, src);
+    value_t *c = value_implicit_cast(sema->vm, s, dst);
+    return !value_is_error(sema->vm, c);
+}
+```
+
+M1 无 const/volatile（不在 M1 阶段实现），符号表与类型检查不含 const 规则。
+
+#### 2.9.10 与 VM 的集成
+
+| VM 设施 | sema 中的用途 |
+|---------|-------------|
+| `type_find(vm, name)` | `resolve_type` 内部实现 |
+| `value_make_shadow(vm, type)` | 为每个表达式构造类型标记 |
+| `value_add/sub/mul/...` | 二元运算类型推导（shadow 输入 → shadow 输出） |
+| `value_implicit_cast` | 赋值/函数参数兼容性检查 |
+| `value_explicit_cast` | as 转换合法性检查 |
+| `vm_push/pop_scope` | 每函数一个，shadow value 生命周期容器 |
+| `func_t`（Pass 2 创建） | 函数签名来源（shadow_call 校验用） |
+
+**不使用的 VM 设施**：`value_call` / `func_vcall`（sema 不执行函数调用，shadow_call 独立校验签名）。
+
+#### 2.9.11 公共 API 与 driver 集成
+
+```c
+sema_t *sema_create(vm_t *vm, diag_buf_t *diag);
+bool    sema_analyze(sema_t *sema, ast_node_t *program);  /* 三遍扫描 */
+void    sema_destroy(sema_t **sema);
+```
+
+```c
+if (parser_error(parser)) return 1;          /* 语法错误不进 sema */
+
+sema_t *sema = sema_create(vm, diag);
+if (!sema_analyze(sema, ast)) {
+    diag_print_all(diag);                    /* 语义错误 */
+    return 1;
+}
+/* sema 通过 → 进入字节码编译 */
+```
+
+作用域树是持久化数据，sema 结束后不销毁，交由字节码编译器复用（变量类型静态分派、作用域结构定位 load/store、TDZ 初始化信息）。
 
 ### 2.10 Driver（include/driver/driver.h, src/driver/driver.c）—— 已实现（当前阶段：加载 + 词法 → 单词表）
 

@@ -1,0 +1,592 @@
+#include "sema/sema.h"
+#include "parser/ast_assign.h"
+#include "parser/ast_block.h"
+#include "parser/ast_expr_stmt.h"
+#include "parser/ast_for.h"
+#include "parser/ast_func_def.h"
+#include "parser/ast_if.h"
+#include "parser/ast_program.h"
+#include "parser/ast_return.h"
+#include "parser/ast_var_def.h"
+#include "parser/ast_while.h"
+#include "parser/lexer.h"
+#include <stdio.h>
+#include <string.h>
+
+/* ===========================================================================
+ * Pass 3a：作用域树构建 + 控制流分析
+ *
+ * 遍历函数体，按词法块结构建树。只注册符号（名字 + 声明类型 + TDZ 标志），
+ * 不做类型检查。推断类型的变量 type=NULL，留给 Pass 3b 填充。
+ * 子作用域按出现顺序追加（child_idx 在 Pass 3b 中按序取用，严格对应）。
+ *
+ * 建树同时做纯结构性的返回路径完整性分析（block_result_t.definitely_returns）：
+ * 与类型无关，因此不需要等 Pass 3b 的 shadow 运行。非 void 函数所有路径
+ * 必须 return 在此阶段即可检查。
+ * =========================================================================== */
+
+typedef struct build_result {
+  bool definitely_returns; /* 该块保证返回（所有路径都 return） */
+} build_result_t;
+
+static build_result_t build_block(sema_t *sema, ast_block_t *block,
+                                  sema_scope_t *scope);
+static build_result_t build_func_if(sema_t *sema, ast_if_t *it,
+                                    sema_scope_t *scope);
+
+static void build_func(sema_t *sema, ast_func_def_t *fn) {
+  sema_symbol_t *sym = sema_lookup(sema->global_scope, fn->name);
+  if (!sym) return; /* Pass 1 重复定义已诊断 */
+
+  sema_scope_t *fscope =
+      sema_scope_new(sema->vm->alloc, SEMA_SCOPE_FUNCTION, sema->global_scope);
+  sema_scope_add_child(sema->global_scope, fscope);
+  sym->func_scope = fscope;
+
+  /* 注册参数（已解析类型，待激活） */
+  for (ast_node_t *p = fn->params; p; p = p->next) {
+    ast_var_def_t *vd = (ast_var_def_t *)p;
+    sema_symbol_t init = {.type = resolve_type(sema, vd->type_name),
+                          .is_active = false};
+    if (!sema_scope_define(fscope, vd->name, &init)) {
+      diag_error(sema->diag, sema_loc(sema, p),
+                 "duplicate parameter '%.*s'", (int)vd->name.len,
+                 vd->name.ptr);
+    }
+  }
+
+  /* 函数体 block 直接用 fscope（不再嵌套一层） */
+  build_result_t r = build_block(sema, (ast_block_t *)fn->body, fscope);
+
+  /* 控制流分析：非 void 函数所有路径必须 return（纯结构，不依赖类型） */
+  const type_t *rt = fn->return_type.len ? resolve_type(sema, fn->return_type)
+                                         : NULL;
+  if (rt && !type_eq(rt, sema->vm->type_void) && !r.definitely_returns) {
+    diag_error(sema->diag, sema_loc(sema, &fn->base),
+               "function '%.*s' must return a value on all paths",
+               (int)fn->name.len, fn->name.ptr);
+  }
+}
+
+static build_result_t build_block(sema_t *sema, ast_block_t *block,
+                                  sema_scope_t *scope) {
+  build_result_t r = {0};
+  for (ast_node_t *s = block->stmts; s; s = s->next) {
+    if (r.definitely_returns) {
+      /* 严格检查：return 后不可达语句报错。
+         不建作用域、不注册符号——Pass 3b 同步跳过（child_idx 保持对齐）。 */
+      diag_error(sema->diag, sema_loc(sema, s), "unreachable statement");
+      continue;
+    }
+    switch (s->kind) {
+      case AST_VAR_DEF: {
+        ast_var_def_t *vd = (ast_var_def_t *)s;
+        const type_t *vt = NULL;
+        if (vd->type_name.len) {
+          vt = resolve_type(sema, vd->type_name);
+          if (!vt) {
+            diag_error(sema->diag, sema_loc(sema, s), "unknown type '%.*s'",
+                       (int)vd->type_name.len, vd->type_name.ptr);
+          }
+        }
+        sema_symbol_t init = {
+            .type = vt,
+            .is_tdz = vd->is_tdz,
+            .is_active = false, /* Pass 3b 到达定义点后激活 */
+        };
+        if (!sema_scope_define(scope, vd->name, &init)) {
+          diag_error(sema->diag, sema_loc(sema, s),
+                     "duplicate variable '%.*s'", (int)vd->name.len,
+                     vd->name.ptr);
+        }
+        break;
+      }
+      case AST_BLOCK: {
+        sema_scope_t *child =
+            sema_scope_new(sema->vm->alloc, SEMA_SCOPE_BLOCK, scope);
+        sema_scope_add_child(scope, child);
+        build_result_t cr = build_block(sema, (ast_block_t *)s, child);
+        if (cr.definitely_returns) r.definitely_returns = true;
+        break;
+      }
+      case AST_IF: {
+        ast_if_t *it = (ast_if_t *)s;
+        sema_scope_t *then_scope =
+            sema_scope_new(sema->vm->alloc, SEMA_SCOPE_BLOCK, scope);
+        sema_scope_add_child(scope, then_scope);
+        build_result_t tr = build_block(sema, (ast_block_t *)it->then_body,
+                                        then_scope);
+        build_result_t er = {0};
+        if (it->else_body) {
+          if (it->else_body->kind == AST_IF) {
+            /* else-if 链：同层递归（子作用域顺序与 3b 一致） */
+            er = build_func_if(sema, (ast_if_t *)it->else_body, scope);
+          } else {
+            sema_scope_t *else_scope =
+                sema_scope_new(sema->vm->alloc, SEMA_SCOPE_BLOCK, scope);
+            sema_scope_add_child(scope, else_scope);
+            er = build_block(sema, (ast_block_t *)it->else_body, else_scope);
+          }
+        }
+        if (tr.definitely_returns && er.definitely_returns)
+          r.definitely_returns = true;
+        break;
+      }
+      case AST_WHILE: {
+        ast_while_t *wl = (ast_while_t *)s;
+        sema_scope_t *body_scope =
+            sema_scope_new(sema->vm->alloc, SEMA_SCOPE_BLOCK, scope);
+        sema_scope_add_child(scope, body_scope);
+        sema->loop_depth++;
+        build_block(sema, (ast_block_t *)wl->body, body_scope);
+        sema->loop_depth--;
+        break; /* 循环体可能不执行，不贡献 definitely_returns */
+      }
+      case AST_FOR: {
+        ast_for_t *fr = (ast_for_t *)s;
+        sema_scope_t *for_scope =
+            sema_scope_new(sema->vm->alloc, SEMA_SCOPE_FOR, scope);
+        sema_scope_add_child(scope, for_scope);
+        /* init 变量注册到 for scope */
+        if (fr->init && fr->init->kind == AST_VAR_DEF) {
+          ast_var_def_t *vd = (ast_var_def_t *)fr->init;
+          const type_t *vt = NULL;
+          if (vd->type_name.len) {
+            vt = resolve_type(sema, vd->type_name);
+            if (!vt) {
+              diag_error(sema->diag, sema_loc(sema, fr->init),
+                         "unknown type '%.*s'", (int)vd->type_name.len,
+                         vd->type_name.ptr);
+            }
+          }
+          sema_symbol_t init_sym = {
+              .type = vt,
+              .is_tdz = vd->is_tdz,
+              .is_active = false,
+          };
+          if (!sema_scope_define(for_scope, vd->name, &init_sym)) {
+            diag_error(sema->diag, sema_loc(sema, fr->init),
+                       "duplicate variable '%.*s'", (int)vd->name.len,
+                       vd->name.ptr);
+          }
+        }
+        /* body 是 for scope 的子 scope */
+        sema_scope_t *body_scope =
+            sema_scope_new(sema->vm->alloc, SEMA_SCOPE_BLOCK, for_scope);
+        sema_scope_add_child(for_scope, body_scope);
+        sema->loop_depth++;
+        build_block(sema, (ast_block_t *)fr->body, body_scope);
+        sema->loop_depth--;
+        break; /* 循环体可能不执行，不贡献 definitely_returns */
+      }
+      case AST_RETURN:
+        r.definitely_returns = true;
+        break; /* 后续语句在循环顶部报 unreachable */
+      case AST_BREAK:
+      case AST_CONTINUE:
+        if (sema->loop_depth == 0) {
+          diag_error(sema->diag, sema_loc(sema, s), "'%.*s' outside loop",
+                     (int)(s->kind == AST_BREAK ? 5 : 8),
+                     s->kind == AST_BREAK ? "break" : "continue");
+        }
+        break;
+      default:
+        break; /* 其他语句不创建作用域 */
+    }
+  }
+  return r;
+}
+
+/* if 语句的作用域构建入口（含 else-if 同层递归） */
+static build_result_t build_func_if(sema_t *sema, ast_if_t *it,
+                                    sema_scope_t *scope) {
+  sema_scope_t *then_scope =
+      sema_scope_new(sema->vm->alloc, SEMA_SCOPE_BLOCK, scope);
+  sema_scope_add_child(scope, then_scope);
+  build_result_t tr =
+      build_block(sema, (ast_block_t *)it->then_body, then_scope);
+  build_result_t er = {0};
+  if (it->else_body) {
+    if (it->else_body->kind == AST_IF) {
+      er = build_func_if(sema, (ast_if_t *)it->else_body, scope);
+    } else {
+      sema_scope_t *else_scope =
+          sema_scope_new(sema->vm->alloc, SEMA_SCOPE_BLOCK, scope);
+      sema_scope_add_child(scope, else_scope);
+      er = build_block(sema, (ast_block_t *)it->else_body, else_scope);
+    }
+  }
+  return (build_result_t){.definitely_returns =
+                              tr.definitely_returns && er.definitely_returns};
+}
+
+void sema_build_scope_tree(sema_t *sema, ast_node_t *program) {
+  ast_program_t *prog = (ast_program_t *)program;
+  for (ast_node_t *f = prog->funcs; f; f = f->next) {
+    if (f->kind == AST_FUNC_DEF) build_func(sema, (ast_func_def_t *)f);
+  }
+}
+
+/* ===========================================================================
+ * Pass 3b：Shadow VM 运行
+ *
+ * 按预建作用域树严格对应遍历 AST。child_idx 是当前作用域的 children 迭代器：
+ * 遇到创建子作用域的语句时按序取子作用域（vec_get(children, child_idx++)）。
+ * =========================================================================== */
+
+typedef struct block_result {
+  bool definitely_returns; /* 该块保证返回（所有路径都 return） */
+} block_result_t;
+
+static block_result_t walk_block(sema_t *sema, ast_node_t *block,
+                                 sema_scope_t *scope, size_t *child_idx);
+static block_result_t walk_stmt(sema_t *sema, ast_node_t *stmt,
+                                sema_scope_t *scope, size_t *child_idx);
+static block_result_t walk_if(sema_t *sema, ast_if_t *it, sema_scope_t *scope,
+                              size_t *child_idx);
+
+/* ---- 语句：变量定义 ---- */
+
+static void shadow_var_def(sema_t *sema, ast_var_def_t *vd,
+                           sema_scope_t *scope) {
+  sema_symbol_t *sym = sema_scope_find_local(scope, vd->name);
+  if (!sym) return; /* 3a 重复定义已诊断，符号未注册 */
+
+  if (vd->is_tdz) {
+    /* TDZ：立即可见但不可读（只可赋值），由赋值退出 TDZ */
+    sym->is_tdz = true;
+    sym->is_active = true;
+    return;
+  }
+
+  /* 非 TDZ：先求值 init（sym 未激活 → 自引用解析到外层同名符号） */
+  value_t *init = sema_expr(sema, vd->init, scope);
+  bool init_bad = value_is_error(sema->vm, init) ||
+                  type_eq(value_type(init), sema->vm->type_void);
+
+  if (vd->type_name.len) {
+    /* 显式类型：校验 init 可赋给该类型 */
+    if (!init_bad && sym->type &&
+        !sema_type_assignable(sema, sym->type, value_type(init))) {
+      char tn[64], itn[64];
+      sema_type_name(sym->type, tn, sizeof(tn));
+      sema_type_name(value_type(init), itn, sizeof(itn));
+      diag_error(sema->diag, sema_loc(sema, vd->init),
+                 "cannot initialize variable '%.*s' of type %s with %s",
+                 (int)vd->name.len, vd->name.ptr, tn, itn);
+    }
+  } else {
+    /* 推断类型：init 类型即变量类型 */
+    if (!init_bad) sym->type = value_type(init);
+  }
+
+  /* 定义点后激活 */
+  sym->is_active = true;
+}
+
+/* ---- 语句：赋值 ---- */
+
+/* 复合赋值 token（+= 等）→ 基础二元运算 */
+static value_t *(*compound_binop(const token_t *op))(vm_t *, value_t *,
+                                                     value_t *) {
+  if (token_is(op, "+=")) return value_add;
+  if (token_is(op, "-=")) return value_sub;
+  if (token_is(op, "*=")) return value_mul;
+  if (token_is(op, "/=")) return value_div;
+  if (token_is(op, "%=")) return value_mod;
+  return NULL;
+}
+
+static void shadow_assign(sema_t *sema, ast_assign_t *as,
+                          sema_scope_t *scope) {
+  /* 显式丢弃：_ = expr（不查符号表，直接求值右值） */
+  if (strslice_eq(as->name, STRSLICE_LIT("_"))) {
+    if (!token_is(as->op, "=")) {
+      diag_error(sema->diag, sema_loc(sema, &as->base),
+                 "discard '_' only supports simple assignment '='");
+    }
+    sema_expr(sema, as->value, scope);
+    return;
+  }
+
+  sema_symbol_t *sym = sema_lookup(scope, as->name);
+  if (!sym) {
+    diag_error(sema->diag, sema_loc(sema, &as->base),
+               "undefined variable '%.*s' in assignment", (int)as->name.len,
+               as->name.ptr);
+    return;
+  }
+
+  value_t *rhs = sema_expr(sema, as->value, scope);
+  bool rhs_bad = value_is_error(sema->vm, rhs) ||
+                 type_eq(value_type(rhs), sema->vm->type_void);
+
+  if (token_is(as->op, "=")) {
+    /* TDZ 变量只允许简单赋值：赋值退出 TDZ */
+    if (sym->is_tdz) {
+      if (!rhs_bad && sym->type &&
+          !sema_type_assignable(sema, sym->type, value_type(rhs))) {
+        char tn[64], rn[64];
+        sema_type_name(sym->type, tn, sizeof(tn));
+        sema_type_name(value_type(rhs), rn, sizeof(rn));
+        diag_error(sema->diag, sema_loc(sema, as->value),
+                   "cannot assign %s to variable '%.*s' of type %s", rn,
+                   (int)as->name.len, as->name.ptr, tn);
+      }
+      sym->is_tdz = false;
+      sym->is_assigned = true;
+      return;
+    }
+    /* 常规赋值：类型必须可赋 */
+    if (!rhs_bad && sym->type &&
+        !sema_type_assignable(sema, sym->type, value_type(rhs))) {
+      char tn[64], rn[64];
+      sema_type_name(sym->type, tn, sizeof(tn));
+      sema_type_name(value_type(rhs), rn, sizeof(rn));
+      diag_error(sema->diag, sema_loc(sema, as->value),
+                 "cannot assign %s to variable '%.*s' of type %s", rn,
+                 (int)as->name.len, as->name.ptr, tn);
+    }
+    return;
+  }
+
+  /* 复合赋值 x op= rhs → x = x op rhs（shadow 走 vtable 类型协商） */
+  value_t *(*op)(vm_t *, value_t *, value_t *) = compound_binop(as->op);
+  if (!op) {
+    char ob[16];
+    size_t len = 0;
+    const char *text = as->op ? token_get_text(as->op, &len) : NULL;
+    snprintf(ob, sizeof(ob), "%.*s", (int)len, text ? text : "?");
+    diag_error(sema->diag, sema_loc(sema, &as->base),
+               "unsupported compound assignment operator '%s'", ob);
+    return;
+  }
+  value_t *lhs = value_make_shadow(sema->vm,
+                                   sym->type ? sym->type
+                                             : (rhs_bad ? sema->vm->type_void
+                                                        : value_type(rhs)));
+  value_t *result = op(sema->vm, lhs, rhs);
+  if (value_is_error(sema->vm, result)) {
+    char ob[16], tn[64], rn[64];
+    size_t len = 0;
+    const char *text = as->op ? token_get_text(as->op, &len) : NULL;
+    snprintf(ob, sizeof(ob), "%.*s", (int)len, text ? text : "?");
+    sema_type_name(value_type(lhs), tn, sizeof(tn));
+    sema_type_name(value_type(rhs), rn, sizeof(rn));
+    diag_error(sema->diag, sema_loc(sema, &as->base),
+               "type mismatch: cannot apply '%s' to %s and %s", ob, tn, rn);
+    return;
+  }
+  /* 复合赋值结果必须能赋回变量 */
+  if (sym->type && !sema_type_assignable(sema, sym->type, value_type(result))) {
+    char tn[64], rn[64];
+    sema_type_name(sym->type, tn, sizeof(tn));
+    sema_type_name(value_type(result), rn, sizeof(rn));
+    diag_error(sema->diag, sema_loc(sema, &as->base),
+               "cannot assign %s to variable '%.*s' of type %s", rn,
+               (int)as->name.len, as->name.ptr, tn);
+  }
+}
+
+/* ---- 语句：控制流 ---- */
+
+static block_result_t walk_return(sema_t *sema, ast_return_t *rt,
+                                  sema_scope_t *scope) {
+  block_result_t r = {.definitely_returns = true};
+  if (rt->value) {
+    value_t *v = sema_expr(sema, rt->value, scope);
+    bool v_bad = value_is_error(sema->vm, v) ||
+                 type_eq(value_type(v), sema->vm->type_void);
+    if (!v_bad) {
+      if (!sema->func_return_type) {
+        diag_error(sema->diag, sema_loc(sema, rt->value),
+                   "void function cannot return a value");
+      } else if (!sema_type_assignable(sema, sema->func_return_type,
+                                       value_type(v))) {
+        char tn[64], rn[64];
+        sema_type_name(sema->func_return_type, tn, sizeof(tn));
+        sema_type_name(value_type(v), rn, sizeof(rn));
+        diag_error(sema->diag, sema_loc(sema, rt->value),
+                   "cannot return %s from function returning %s", rn, tn);
+      }
+    }
+  } else {
+    if (sema->func_return_type) {
+      char tn[64];
+      sema_type_name(sema->func_return_type, tn, sizeof(tn));
+      diag_error(sema->diag, sema_loc(sema, &rt->base),
+                 "function returning %s must return a value", tn);
+    }
+  }
+  sema->func_has_return = true;
+  return r;
+}
+
+static block_result_t walk_while(sema_t *sema, ast_while_t *wl,
+                                 sema_scope_t *scope, size_t *child_idx) {
+  value_t *cond = sema_expr(sema, wl->cond, scope);
+  sema_check_bool(sema, wl->cond, cond, "while condition");
+
+  sema_scope_t *body_scope = sema_scope_child(scope, (*child_idx)++);
+  walk_block(sema, wl->body, body_scope ? body_scope : scope, child_idx);
+  return (block_result_t){0}; /* 循环体可能不执行，不贡献 definitely_returns */
+}
+
+static block_result_t walk_for(sema_t *sema, ast_for_t *fr,
+                               sema_scope_t *scope, size_t *child_idx) {
+  sema_scope_t *for_scope = sema_scope_child(scope, (*child_idx)++);
+  sema_scope_t *fs = for_scope ? for_scope : scope;
+
+  /* init 在 for scope 内求值 */
+  if (fr->init) {
+    switch (fr->init->kind) {
+      case AST_VAR_DEF:
+        shadow_var_def(sema, (ast_var_def_t *)fr->init, fs);
+        break;
+      case AST_ASSIGN:
+        shadow_assign(sema, (ast_assign_t *)fr->init, fs);
+        break;
+      case AST_EXPR_STMT:
+        sema_expr(sema, ((ast_expr_stmt_t *)fr->init)->expr, fs);
+        break;
+      default:
+        break;
+    }
+  }
+
+  if (fr->cond) {
+    value_t *c = sema_expr(sema, fr->cond, fs);
+    sema_check_bool(sema, fr->cond, c, "for condition");
+  }
+
+  /* body 是 for scope 的子 scope */
+  size_t for_child_idx = 0;
+  sema_scope_t *body_scope = sema_scope_child(for_scope, for_child_idx++);
+  walk_block(sema, fr->body, body_scope ? body_scope : fs, child_idx);
+
+  if (fr->update) sema_expr(sema, fr->update, fs);
+
+  return (block_result_t){0};
+}
+
+static block_result_t walk_if(sema_t *sema, ast_if_t *it, sema_scope_t *scope,
+                              size_t *child_idx) {
+  block_result_t r = {0};
+  value_t *cond = sema_expr(sema, it->cond, scope);
+  sema_check_bool(sema, it->cond, cond, "if condition");
+
+  block_result_t tr = {0};
+  sema_scope_t *then_scope = sema_scope_child(scope, (*child_idx)++);
+  tr = walk_block(sema, it->then_body, then_scope ? then_scope : scope,
+                  child_idx);
+
+  block_result_t er = {0};
+  if (it->else_body) {
+    if (it->else_body->kind == AST_IF) {
+      er = walk_if(sema, (ast_if_t *)it->else_body, scope, child_idx);
+    } else {
+      sema_scope_t *else_scope = sema_scope_child(scope, (*child_idx)++);
+      er = walk_block(sema, it->else_body, else_scope ? else_scope : scope,
+                      child_idx);
+    }
+  }
+  r.definitely_returns = tr.definitely_returns && er.definitely_returns;
+  return r;
+}
+
+/* ---- 语句分派 ---- */
+
+static block_result_t walk_stmt(sema_t *sema, ast_node_t *stmt,
+                                sema_scope_t *scope, size_t *child_idx) {
+  block_result_t r = {0};
+  switch (stmt->kind) {
+    case AST_VAR_DEF:
+      shadow_var_def(sema, (ast_var_def_t *)stmt, scope);
+      break;
+    case AST_ASSIGN:
+      shadow_assign(sema, (ast_assign_t *)stmt, scope);
+      break;
+    case AST_BLOCK: {
+      sema_scope_t *child = sema_scope_child(scope, (*child_idx)++);
+      r = walk_block(sema, stmt, child ? child : scope, child_idx);
+      break;
+    }
+    case AST_IF:
+      r = walk_if(sema, (ast_if_t *)stmt, scope, child_idx);
+      break;
+    case AST_WHILE:
+      r = walk_while(sema, (ast_while_t *)stmt, scope, child_idx);
+      break;
+    case AST_FOR:
+      r = walk_for(sema, (ast_for_t *)stmt, scope, child_idx);
+      break;
+    case AST_RETURN:
+      r = walk_return(sema, (ast_return_t *)stmt, scope);
+      break;
+    case AST_BREAK:
+    case AST_CONTINUE:
+      break; /* 位置检查已在 Pass 3a 完成 */
+    case AST_EXPR_STMT: {
+      ast_expr_stmt_t *es = (ast_expr_stmt_t *)stmt;
+      value_t *v = sema_expr(sema, es->expr, scope);
+      if (!value_is_error(sema->vm, v) &&
+          !type_eq(value_type(v), sema->vm->type_void)) {
+        char tn[64];
+        sema_type_name(value_type(v), tn, sizeof(tn));
+        diag_error(sema->diag, sema_loc(sema, es->expr),
+                   "expression result of type %s is unused; use '_ = expr' "
+                   "to discard",
+                   tn);
+      }
+      break;
+    }
+    default:
+      break;
+  }
+  return r;
+}
+
+static block_result_t walk_block(sema_t *sema, ast_node_t *block,
+                                 sema_scope_t *scope, size_t *child_idx) {
+  block_result_t r = {0};
+  ast_block_t *b = (ast_block_t *)block;
+  for (ast_node_t *s = b->stmts; s; s = s->next) {
+    block_result_t sr = walk_stmt(sema, s, scope, child_idx);
+    if (sr.definitely_returns) {
+      r.definitely_returns = true;
+      break; /* 之后的语句不可达，不再检查 */
+    }
+  }
+  return r;
+}
+
+/* ---- 函数入口 ---- */
+
+void sema_walk_function(sema_t *sema, ast_node_t *func_def) {
+  if (func_def->kind != AST_FUNC_DEF) return;
+  ast_func_def_t *fn = (ast_func_def_t *)func_def;
+  sema_symbol_t *sym = sema_lookup(sema->global_scope, fn->name);
+  if (!sym || !sym->func_scope) return;
+
+  /* 激活参数：Pass 3a 注册为 inactive，进入函数体前激活（参数立即可读） */
+  for (ast_node_t *p = fn->params; p; p = p->next) {
+    ast_var_def_t *vd = (ast_var_def_t *)p;
+    sema_symbol_t *ps = sema_scope_find_local(sym->func_scope, vd->name);
+    if (ps) ps->is_active = true;
+  }
+
+  sema->func_return_type =
+      fn->return_type.len ? resolve_type(sema, fn->return_type) : NULL;
+  sema->func_has_return = false;
+
+  /* shadow value 生命周期容器：每函数一个 VM scope */
+  vm_push_scope(sema->vm);
+  size_t child_idx = 0;
+  /* 返回路径完整性分析已在 Pass 3a（建树阶段）完成；
+     walk_block 的 block_result_t 仅用于跳过不可达语句的类型检查 */
+  (void)walk_block(sema, fn->body, sym->func_scope, &child_idx);
+  vm_pop_scope(sema->vm);
+
+  /* 返回路径完整性分析已在 Pass 3a（建树阶段）完成 */
+  sema->func_return_type = NULL;
+}

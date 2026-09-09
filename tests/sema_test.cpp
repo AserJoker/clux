@@ -1,0 +1,632 @@
+/*
+ * Description: sema (semantic analysis) unit tests
+ * Create: 2026-09-08
+ *
+ * 覆盖：sema 生命周期、三遍扫描（Pass 1 函数名 / Pass 2 签名 / Pass 3a
+ * 作用域树 / Pass 3b shadow VM 类型检查）、诊断产出、作用域树结构、
+ * is_active 遮罩、返回路径完整性分析。
+ */
+
+#include <gtest/gtest.h>
+#include <cstring>
+#include <string>
+
+extern "C" {
+#include "core/allocator.h"
+#include "core/arena.h"
+#include "core/vec.h"
+#include "core/stream.h"
+#include "diag/diagnostic.h"
+#include "parser/lexer.h"
+#include "parser/parser.h"
+#include "parser/ast_node.h"
+#include "parser/ast_program.h"
+#include "sema/sema.h"
+#include "sema/symbol.h"
+#include "vm/vm.h"
+}
+
+#include "test_common.h"
+
+namespace {
+
+/* ---- Helper: lex source text into a token pool (lexer kept alive) ---- */
+
+struct LexResult {
+    vec_t   *tokens;
+    lexer_t *lexer;
+    char    *source_buf;
+};
+
+static LexResult lex_source(allocator_t *alloc, const char *src) {
+    LexResult result;
+    result.source_buf = (char *)malloc(strlen(src) + 1);
+    strcpy(result.source_buf, src);
+
+    stream_source_t mem_src =
+        stream_source_mem(alloc, result.source_buf, strlen(src), false);
+    istream_t *stream = istream_open(alloc, mem_src);
+    result.lexer = lexer_create(alloc, stream, "test.clx");
+
+    result.tokens = vec_new(alloc, true);
+    for (;;) {
+        token_t *t = lexer_next(result.lexer);
+        token_kind_t k = token_get_kind(t);
+        vec_push(result.tokens, alloc, t);
+        if (k == TOKEN_TYPE_EOF || k == TOKEN_TYPE_ERROR) break;
+    }
+    return result;
+}
+
+static void lex_result_destroy(allocator_t *alloc, LexResult &lr) {
+    lexer_close(&lr.lexer);
+    vec_free(alloc, &lr.tokens);
+    free(lr.source_buf);
+    lr.source_buf = nullptr;
+}
+
+/* ---- Fixture ---- */
+
+class SemaTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        alloc_ = create_allocator(malloc, free);
+        arena_ = arena_new_default(alloc_);
+        vm_    = vm_new(alloc_);
+        diag_  = diag_buf_new(alloc_);
+    }
+
+    void TearDown() override {
+        if (sema_) {
+            sema_scope_t *tree = sema_->global_scope;
+            sema_destroy(&sema_);
+            if (tree) sema_scope_destroy(&tree);
+        }
+        if (lex_.lexer) lex_result_destroy(alloc_, lex_);
+        vm_destroy(&vm_);
+        diag_buf_destroy(&diag_);
+        arena_destroy(alloc_, &arena_);
+        EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc_);
+    }
+
+    /** 完整流水线：lex → parse → sema_analyze（lexer 保持存活保证 slice 有效） */
+    bool analyze(const char *src) {
+        lex_ = lex_source(alloc_, src);
+
+        parser_t *parser = parser_create(alloc_, arena_, lex_.tokens);
+        ast_ = parser_parse(parser);
+        parser_destroy(&parser);
+        if (!ast_ || ast_->kind != AST_PROGRAM) return false;
+
+        sema_ = sema_create(vm_, diag_, lex_.tokens);
+        return sema_analyze(sema_, ast_);
+    }
+
+    /** 断言第 i 条诊断消息包含 substr（i 从 0 起） */
+    void expect_message(size_t i, const char *substr) const {
+        ASSERT_GT(diag_count(diag_), i);
+        const diagnostic_t *items = diag_items(diag_);
+        ASSERT_NE(items, nullptr);
+        EXPECT_NE(std::strstr(items[i].message, substr), nullptr)
+            << "message[" << i << "] = " << items[i].message;
+    }
+
+    allocator_t *alloc_ = nullptr;
+    arena_t     *arena_ = nullptr;
+    vm_t        *vm_    = nullptr;
+    diag_buf_t  *diag_  = nullptr;
+    LexResult    lex_{};
+    ast_node_t  *ast_   = nullptr;
+    sema_t      *sema_  = nullptr;
+};
+
+/* ================================================================ */
+/* 生命周期                                                          */
+/* ================================================================ */
+
+TEST_F(SemaTest, CreateWithNullArgsReturnsNull) {
+    EXPECT_EQ(sema_create(nullptr, diag_, nullptr), nullptr);
+    EXPECT_EQ(sema_create(vm_, nullptr, nullptr), nullptr);
+    EXPECT_EQ(sema_create(vm_, diag_, nullptr), nullptr);
+}
+
+TEST_F(SemaTest, AnalyzeNullProgram) {
+    lex_ = lex_source(alloc_, "");
+    sema_t *s = sema_create(vm_, diag_, lex_.tokens);
+    ASSERT_NE(s, nullptr);
+    EXPECT_FALSE(sema_analyze(s, nullptr));
+    sema_destroy(&s);
+    EXPECT_EQ(s, nullptr);
+}
+
+/* ================================================================ */
+/* 合法程序：无诊断                                                   */
+/* ================================================================ */
+
+TEST_F(SemaTest, EmptyFunction) {
+    EXPECT_TRUE(analyze("func main() { }"));
+    EXPECT_FALSE(diag_has_error(diag_));
+}
+
+TEST_F(SemaTest, VarInferenceAndUse) {
+    EXPECT_TRUE(analyze("func main() { var x = 1; var y = x; }"));
+    EXPECT_FALSE(diag_has_error(diag_));
+
+    /* 作用域树：global → main 函数作用域 */
+    ASSERT_EQ(sema_scope_children_count(sema_->global_scope), 1u);
+    sema_scope_t *fscope = sema_scope_child(sema_->global_scope, 0);
+    ASSERT_NE(fscope, nullptr);
+
+    sema_symbol_t *x = sema_scope_find_local(fscope, STRSLICE_LIT("x"));
+    ASSERT_NE(x, nullptr);
+    EXPECT_TRUE(x->is_active);
+    EXPECT_FALSE(x->is_tdz);
+    EXPECT_EQ(x->type, vm_->type_i32); /* 推断出 i32 */
+
+    sema_symbol_t *y = sema_scope_find_local(fscope, STRSLICE_LIT("y"));
+    ASSERT_NE(y, nullptr);
+    EXPECT_TRUE(y->is_active);
+    EXPECT_EQ(y->type, vm_->type_i32); /* 从 x 传播 */
+}
+
+TEST_F(SemaTest, ExplicitTypeAnnotation) {
+    EXPECT_TRUE(analyze("func main() { var x:i64 = 1; var y:f64 = 1.5; }"));
+    EXPECT_FALSE(diag_has_error(diag_));
+}
+
+TEST_F(SemaTest, ImplicitCastInit) {
+    /* 同类别加宽可隐式转换：i32→i64、f32→f64（f32 值经 var 显式标注产生） */
+    EXPECT_TRUE(analyze(
+        "func main() {"
+        "  var a:i64 = 1;"
+        "  var c:f64 = 1.5;"
+        "  var d:f64 = 1.5;"
+        "  var e:f64 = d;"
+        "}"));
+    if (diag_has_error(diag_)) {
+        size_t n = diag_count(diag_);
+        const diagnostic_t *all = diag_items(diag_);
+        std::string joined;
+        for (size_t k = 0; all && k < n; k++) {
+            joined += std::string(" [") + all[k].message + "]";
+        }
+        ADD_FAILURE() << "unexpected diagnostics:" << joined;
+    }
+    EXPECT_FALSE(diag_has_error(diag_));
+}
+
+TEST_F(SemaTest, BinaryOpsTypeCheck) {
+    EXPECT_TRUE(analyze(
+        "func main() {"
+        "  var a = 1 + 2;"
+        "  var b = 3.0 * 4.0;"
+        "  var c = a < 10;"
+        "  var d = c && true;"
+        "  var e = ~1;"
+        "  var f = -a;"
+        "}"));
+    EXPECT_FALSE(diag_has_error(diag_));
+}
+
+TEST_F(SemaTest, FunctionOrderFreedom) {
+    /* Pass 1 先收集全部函数名：main 可调用定义在后面的 foo */
+    EXPECT_TRUE(analyze("func main() { foo(); } func foo() { }"));
+    EXPECT_FALSE(diag_has_error(diag_));
+}
+
+TEST_F(SemaTest, CallReturnTypeShadow) {
+    EXPECT_TRUE(analyze(
+        "func add(a:i32, b:i32):i32 { return a + b; }"
+        "func main() { var r = add(1, 2); }"));
+    EXPECT_FALSE(diag_has_error(diag_));
+
+    sema_scope_t *fscope = sema_scope_child(sema_->global_scope, 1);
+    ASSERT_NE(fscope, nullptr);
+    sema_symbol_t *r = sema_scope_find_local(fscope, STRSLICE_LIT("r"));
+    ASSERT_NE(r, nullptr);
+    EXPECT_EQ(r->type, vm_->type_i32); /* shadow_call 返回 return_type shadow */
+}
+
+TEST_F(SemaTest, VoidCallAsStatement) {
+    EXPECT_TRUE(analyze("func foo() { } func main() { foo(); }"));
+    EXPECT_FALSE(diag_has_error(diag_));
+}
+
+TEST_F(SemaTest, AllPathsReturn) {
+    EXPECT_TRUE(analyze(
+        "func f(b:bool):i32 { if (b) { return 1; } else { return 2; } }"));
+    EXPECT_FALSE(diag_has_error(diag_));
+}
+
+TEST_F(SemaTest, ReturnThenUnreachableStatement) {
+    /* 严格检查：return 后不可达语句报错 */
+    EXPECT_FALSE(analyze(
+        "func f():i32 { return 1; var x = 2; }"));
+    expect_message(0, "unreachable statement");
+}
+
+TEST_F(SemaTest, WhileAndForLoops) {
+    EXPECT_TRUE(analyze(
+        "func main() {"
+        "  var i:i32 = 0;"
+        "  while (i < 10) { i += 1; }"
+        "  for (var j:i32 = 0; j < 5; j = j + 1) { }"
+        "}"));
+    EXPECT_FALSE(diag_has_error(diag_));
+}
+
+TEST_F(SemaTest, DiscardUnderscore) {
+    EXPECT_TRUE(analyze("func main() { _ = 1 + 2; }"));
+    EXPECT_FALSE(diag_has_error(diag_));
+}
+
+TEST_F(SemaTest, BreakContinueInsideLoop) {
+    EXPECT_TRUE(analyze(
+        "func main() {"
+        "  while (true) { break; }"
+        "  for (var i:i32 = 0; i < 3; i = i + 1) { continue; }"
+        "}"));
+    EXPECT_FALSE(diag_has_error(diag_));
+}
+
+TEST_F(SemaTest, ShadowingSelfReferenceResolvesOuter) {
+    /* if body 内 var x = x + 1 的 x 在 init 求值时未激活 → 解析到外层 x */
+    EXPECT_TRUE(analyze(
+        "func main() {"
+        "  var x = 1;"
+        "  if (true) { var x = x + 1; }"
+        "}"));
+    EXPECT_FALSE(diag_has_error(diag_));
+}
+
+/* ================================================================ */
+/* 类型错误：诊断产出                                                 */
+/* ================================================================ */
+
+TEST_F(SemaTest, UndefinedVariable) {
+    EXPECT_FALSE(analyze("func main() { x = 1; }"));
+    expect_message(0, "undefined variable 'x'");
+}
+
+TEST_F(SemaTest, UndefinedVariableInExpr) {
+    EXPECT_FALSE(analyze("func main() { var y = x + 1; }"));
+    expect_message(0, "undefined variable 'x'");
+}
+
+TEST_F(SemaTest, SelfReferenceUndefined) {
+    /* var x = x + 1 自引用：自身未激活，外层无 x → undefined */
+    EXPECT_FALSE(analyze("func main() { var x = x + 1; }"));
+    expect_message(0, "undefined variable 'x'");
+}
+
+TEST_F(SemaTest, VarInitTypeMismatch) {
+    EXPECT_FALSE(analyze("func main() { var x:i32 = \"s\"; }"));
+    expect_message(0, "cannot initialize variable 'x' of type i32");
+}
+
+TEST_F(SemaTest, VarInitNotAssignableFloatToInt) {
+    EXPECT_FALSE(analyze("func main() { var x:i32 = 1.5; }"));
+    expect_message(0, "cannot initialize variable 'x'");
+}
+
+TEST_F(SemaTest, AssignTypeMismatch) {
+    EXPECT_FALSE(analyze("func main() { var x:i32 = 1; x = \"s\"; }"));
+    expect_message(0, "cannot assign str to variable 'x' of type i32");
+}
+
+TEST_F(SemaTest, UndefinedFunctionCall) {
+    EXPECT_FALSE(analyze("func main() { bar(); }"));
+    expect_message(0, "undefined function 'bar'");
+}
+
+TEST_F(SemaTest, CallArgCountMismatch) {
+    EXPECT_FALSE(analyze(
+        "func foo(a:i32) { }"
+        "func main() { foo(); }"));
+    expect_message(0, "expects 1 arguments, got 0");
+}
+
+TEST_F(SemaTest, CallArgTooMany) {
+    EXPECT_FALSE(analyze(
+        "func foo(a:i32) { }"
+        "func main() { foo(1, 2); }"));
+    expect_message(0, "expects 1 arguments, got 2");
+}
+
+TEST_F(SemaTest, CallArgTypeMismatch) {
+    EXPECT_FALSE(analyze(
+        "func foo(a:i32) { }"
+        "func main() { foo(\"s\"); }"));
+    expect_message(0, "cannot convert str to i32");
+}
+
+TEST_F(SemaTest, BinaryTypeMismatch) {
+    EXPECT_FALSE(analyze("func main() { var x = 1 + \"s\"; }"));
+    expect_message(0, "cannot apply '+' to i32 and str");
+}
+
+TEST_F(SemaTest, UnaryTypeMismatch) {
+    EXPECT_FALSE(analyze("func main() { var x = !1; }"));
+    expect_message(0, "logical not operand must be bool");
+}
+
+TEST_F(SemaTest, LogicalOpRequiresBool) {
+    EXPECT_FALSE(analyze("func main() { var x = 1 && true; }"));
+    expect_message(0, "logical operator operand must be bool");
+}
+
+TEST_F(SemaTest, IfCondRequiresBool) {
+    EXPECT_FALSE(analyze("func main() { if (1) { } }"));
+    expect_message(0, "if condition operand must be bool");
+}
+
+TEST_F(SemaTest, WhileCondRequiresBool) {
+    EXPECT_FALSE(analyze("func main() { while (1) { } }"));
+    expect_message(0, "while condition operand must be bool");
+}
+
+TEST_F(SemaTest, ForCondRequiresBool) {
+    EXPECT_FALSE(analyze(
+        "func main() { for (var i:i32 = 0; i + 1; i = i + 1) { } }"));
+    expect_message(0, "for condition operand must be bool");
+}
+
+TEST_F(SemaTest, ExprResultUnused) {
+    EXPECT_FALSE(analyze("func main() { 1 + 2; }"));
+    expect_message(0, "expression result of type i32 is unused");
+}
+
+TEST_F(SemaTest, NonVoidReturnMismatch) {
+    EXPECT_FALSE(analyze("func f():i32 { return \"s\"; }"));
+    expect_message(0, "cannot return str from function returning i32");
+}
+
+TEST_F(SemaTest, VoidFunctionReturnsValue) {
+    EXPECT_FALSE(analyze("func f() { return 1; }"));
+    expect_message(0, "void function cannot return a value");
+}
+
+TEST_F(SemaTest, NonVoidMissingReturnOnAllPaths) {
+    EXPECT_FALSE(analyze(
+        "func f(b:bool):i32 { if (b) { return 1; } }"));
+    expect_message(0, "must return a value on all paths");
+}
+
+TEST_F(SemaTest, MissingReturnEntirely) {
+    EXPECT_FALSE(analyze("func f():i32 { var x = 1; }"));
+    expect_message(0, "must return a value on all paths");
+}
+
+TEST_F(SemaTest, MissingReturnElseIfChainEnd) {
+    /* else-if 链缺最终 else：最后一条路径不返回 → 非 void 函数必须报错 */
+    EXPECT_FALSE(analyze(
+        "func f(a:bool, b:bool):i32 {"
+        "  if (a) { return 1; }"
+        "  else if (b) { return 2; }"
+        "}"));
+    expect_message(0, "must return a value on all paths");
+}
+
+TEST_F(SemaTest, ReturnInLoopDoesNotGuaranteeAllPaths) {
+    /* 循环体内 return 不贡献 definitely_returns：条件可能为 false 直接跳过 */
+    EXPECT_FALSE(analyze(
+        "func f():i32 { while (true) { return 1; } }"));
+    expect_message(0, "must return a value on all paths");
+}
+
+TEST_F(SemaTest, ReturnAfterIfNoElseNotGuaranteed) {
+    /* if 无 else + 尾部 return：if 可能不执行，但尾部 return 兜底 → 合法 */
+    EXPECT_TRUE(analyze(
+        "func f(b:bool):i32 { if (b) { return 1; } return 2; }"));
+    EXPECT_FALSE(diag_has_error(diag_));
+}
+
+TEST_F(SemaTest, ExplicitVoidFunctionNoReturnRequired) {
+    /* 显式 :void 不要求 return */
+    EXPECT_TRUE(analyze("func f():void { var x = 1; }"));
+    EXPECT_FALSE(diag_has_error(diag_));
+}
+
+TEST_F(SemaTest, UnreachableAfterIfAllPathsReturn) {
+    /* then/else 全 return 后的语句不可达 */
+    EXPECT_FALSE(analyze(
+        "func f(b:bool):i32 {"
+        "  if (b) { return 1; } else { return 2; }"
+        "  var x = 3;"
+        "}"));
+    expect_message(0, "unreachable statement");
+}
+
+TEST_F(SemaTest, BreakInsideLoopIsLegal) {
+    EXPECT_TRUE(analyze(
+        "func main() { while (true) { break; } }"));
+    EXPECT_FALSE(diag_has_error(diag_));
+}
+
+TEST_F(SemaTest, ContinueInsideForIsLegal) {
+    EXPECT_TRUE(analyze(
+        "func main() {"
+        "  for (var i:i32 = 0; i < 5; i = i + 1) { continue; }"
+        "}"));
+    EXPECT_FALSE(diag_has_error(diag_));
+}
+
+TEST_F(SemaTest, BreakOutsideLoop) {
+    EXPECT_FALSE(analyze("func main() { break; }"));
+    expect_message(0, "'break' outside loop");
+}
+
+TEST_F(SemaTest, ContinueOutsideLoop) {
+    EXPECT_FALSE(analyze("func main() { continue; }"));
+    expect_message(0, "'continue' outside loop");
+}
+
+TEST_F(SemaTest, DuplicateVariable) {
+    EXPECT_FALSE(analyze("func main() { var x = 1; var x = 2; }"));
+    expect_message(0, "duplicate variable 'x'");
+}
+
+TEST_F(SemaTest, DuplicateParameter) {
+    EXPECT_FALSE(analyze("func f(a:i32, a:i32) { }"));
+    expect_message(0, "duplicate parameter 'a'");
+}
+
+TEST_F(SemaTest, DuplicateFunction) {
+    EXPECT_FALSE(analyze("func foo() { } func foo() { }"));
+    expect_message(0, "duplicate function 'foo'");
+}
+
+TEST_F(SemaTest, NarrowingInitRejected) {
+    /* i32 字面量收窄到 i16：隐式转换不允许（VM 只允许同类别加宽） */
+    EXPECT_FALSE(analyze("func main() { var x:i16 = 1; }"));
+    EXPECT_TRUE(diag_has_error(diag_));
+}
+
+TEST_F(SemaTest, CompoundAssignTypeMismatch) {
+    EXPECT_FALSE(analyze(
+        "func main() { var x:i32 = 1; x += \"s\"; }"));
+    expect_message(0, "cannot apply '+=' to i32 and str");
+}
+
+TEST_F(SemaTest, MultipleErrorsAccumulate) {
+    /* 两条独立错误：undefined var 不再级联二次 type mismatch */
+    EXPECT_FALSE(analyze(
+        "func f() {"
+        "  var b = missing + 1;"
+        "  var c = 1 + \"s\";"
+        "}"));
+    EXPECT_EQ(diag_count(diag_), 2u);
+    expect_message(0, "undefined variable 'missing'");
+    expect_message(1, "cannot apply '+' to i32 and str");
+}
+
+/* ================================================================ */
+/* 作用域树结构                                                      */
+/* ================================================================ */
+
+TEST_F(SemaTest, ScopeTreeGlobalToFunction) {
+    analyze("func main() { } func other() { }");
+
+    ASSERT_EQ(sema_scope_children_count(sema_->global_scope), 2u);
+    sema_scope_t *main_scope = sema_scope_child(sema_->global_scope, 0);
+    sema_scope_t *other_scope = sema_scope_child(sema_->global_scope, 1);
+    ASSERT_NE(main_scope, nullptr);
+    ASSERT_NE(other_scope, nullptr);
+    EXPECT_EQ(main_scope->kind, SEMA_SCOPE_FUNCTION);
+    EXPECT_EQ(other_scope->kind, SEMA_SCOPE_FUNCTION);
+    EXPECT_EQ(main_scope->parent, sema_->global_scope);
+}
+
+TEST_F(SemaTest, ScopeTreeNestedBlocks) {
+    /* M1 无裸块语句：用 if / while / for 构造嵌套作用域 */
+    analyze(
+        "func main() {"
+        "  var a = 1;"
+        "  if (true) { var b = 2; }"
+        "  while (true) { var c = 3; }"
+        "}");
+
+    sema_scope_t *fscope = sema_scope_child(sema_->global_scope, 0);
+    ASSERT_NE(fscope, nullptr);
+
+    /* a 在函数作用域；b/c 各自在独立子作用域（if body / while body） */
+    EXPECT_NE(sema_scope_find_local(fscope, STRSLICE_LIT("a")), nullptr);
+    EXPECT_EQ(sema_scope_find_local(fscope, STRSLICE_LIT("b")), nullptr);
+    EXPECT_EQ(sema_scope_find_local(fscope, STRSLICE_LIT("c")), nullptr);
+
+    ASSERT_EQ(sema_scope_children_count(fscope), 2u);
+    sema_scope_t *b1 = sema_scope_child(fscope, 0);
+    sema_scope_t *b2 = sema_scope_child(fscope, 1);
+    ASSERT_NE(b1, nullptr);
+    ASSERT_NE(b2, nullptr);
+    EXPECT_EQ(b1->kind, SEMA_SCOPE_BLOCK);
+    EXPECT_EQ(b2->kind, SEMA_SCOPE_BLOCK);
+    EXPECT_NE(sema_scope_find_local(b1, STRSLICE_LIT("b")), nullptr);
+    EXPECT_NE(sema_scope_find_local(b2, STRSLICE_LIT("c")), nullptr);
+
+    /* 子作用域中 lookup 沿 parent 链可看到外层 a */
+    EXPECT_NE(sema_lookup(b1, STRSLICE_LIT("a")), nullptr);
+}
+
+TEST_F(SemaTest, ScopeTreeIfElse) {
+    analyze("func main() { if (true) { } else { } }");
+
+    sema_scope_t *fscope = sema_scope_child(sema_->global_scope, 0);
+    ASSERT_NE(fscope, nullptr);
+    ASSERT_EQ(sema_scope_children_count(fscope), 2u); /* then / else */
+    EXPECT_NE(sema_scope_child(fscope, 0), nullptr);
+    EXPECT_NE(sema_scope_child(fscope, 1), nullptr);
+}
+
+TEST_F(SemaTest, ScopeTreeElseIfChain) {
+    analyze("func main() { if (true) { } else if (true) { } else { } }");
+
+    sema_scope_t *fscope = sema_scope_child(sema_->global_scope, 0);
+    ASSERT_NE(fscope, nullptr);
+    /* then + else-if-then + else = 3 个同层子作用域 */
+    ASSERT_EQ(sema_scope_children_count(fscope), 3u);
+}
+
+TEST_F(SemaTest, ScopeTreeFor) {
+    analyze("func main() { for (var i:i32 = 0; i < 5; i = i + 1) { } }");
+
+    sema_scope_t *fscope = sema_scope_child(sema_->global_scope, 0);
+    ASSERT_NE(fscope, nullptr);
+    ASSERT_EQ(sema_scope_children_count(fscope), 1u);
+
+    sema_scope_t *for_scope = sema_scope_child(fscope, 0);
+    ASSERT_NE(for_scope, nullptr);
+    EXPECT_EQ(for_scope->kind, SEMA_SCOPE_FOR);
+
+    /* init 变量注册到 for scope */
+    sema_symbol_t *i = sema_scope_find_local(for_scope, STRSLICE_LIT("i"));
+    ASSERT_NE(i, nullptr);
+    EXPECT_EQ(i->type, vm_->type_i32);
+
+    /* body 是 for scope 的子作用域 */
+    ASSERT_EQ(sema_scope_children_count(for_scope), 1u);
+    EXPECT_EQ(sema_scope_child(for_scope, 0)->kind, SEMA_SCOPE_BLOCK);
+}
+
+TEST_F(SemaTest, ScopeTreeWhileBody) {
+    analyze("func main() { while (true) { var t = 1; } }");
+
+    sema_scope_t *fscope = sema_scope_child(sema_->global_scope, 0);
+    ASSERT_NE(fscope, nullptr);
+    ASSERT_EQ(sema_scope_children_count(fscope), 1u);
+
+    sema_scope_t *body = sema_scope_child(fscope, 0);
+    ASSERT_NE(body, nullptr);
+    EXPECT_NE(sema_scope_find_local(body, STRSLICE_LIT("t")), nullptr);
+}
+
+TEST_F(SemaTest, ShadowingBlocksInactiveOuterNotVisible) {
+    /* 同名变量在不同作用域：子作用域内遮罩外层，外层符号类型不受影响 */
+    analyze(
+        "func main() {"
+        "  var x = 1;"
+        "  if (true) { var x = 2.5; }"
+        "  var y = x;"
+        "}");
+    EXPECT_FALSE(diag_has_error(diag_));
+
+    sema_scope_t *fscope = sema_scope_child(sema_->global_scope, 0);
+    ASSERT_NE(fscope, nullptr);
+    sema_symbol_t *x = sema_scope_find_local(fscope, STRSLICE_LIT("x"));
+    ASSERT_NE(x, nullptr);
+    EXPECT_EQ(x->type, vm_->type_i32); /* 外层 x 保持 i32 */
+    sema_symbol_t *y = sema_scope_find_local(fscope, STRSLICE_LIT("y"));
+    ASSERT_NE(y, nullptr);
+    EXPECT_EQ(y->type, vm_->type_i32); /* var y = x 解析到外层 i32 x */
+}
+
+TEST_F(SemaTest, BlockVariableDoesNotLeakOut) {
+    EXPECT_FALSE(analyze(
+        "func main() {"
+        "  if (true) { var x = 1; }"
+        "  x = 2;"
+        "}"));
+    expect_message(0, "undefined variable 'x' in assignment");
+}
+
+} /* namespace */
