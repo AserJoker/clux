@@ -23,13 +23,38 @@ extern "C" {
  * error value 被 sema 捕获并转为诊断，不传播到下游。
  * =========================================================================== */
 
+/* ---- sema 层函数对象 ---- */
+
+/**
+ * sema_func_t: 语义分析层的函数单元（统一登记在 sema->funcs 队列）
+ *
+ * - def: 函数定义 AST 节点（AST_FUNC_DEF，借用，arena 管理，不拥有）
+ * - scope: 函数作用域树（Pass 3 构建；局部函数/泛型实例在解析中补建）
+ * - name: 函数名（借用 def->name 的 strslice，诊断用）
+ *
+ * 签名类型不在此持有：函数符号 sema_symbol_t::type 即签名类型
+ * （func_type_t，vm 池 intern）。符号表只负责名字解析（sym->ast 指向 def），
+ * 函数自身状态（作用域树）由本对象承担——为局部函数提升与泛型单态化
+ * 预留：解析过程中发现的新函数（局部函数 / 泛型实例）追加到 sema->funcs
+ * 队列末尾，Pass 3 按序处理（队列驱动）。
+ */
+typedef struct sema_func_t {
+    ast_node_t   *def;    /* AST_FUNC_DEF（借用） */
+    sema_scope_t *scope;  /* 函数作用域树（Pass 3 填充） */
+    strslice_t    name;   /* 函数名（诊断用） */
+} sema_func_t;
+
 typedef struct sema_t {
     vm_t         *vm;           /* 复用 VM 类型注册表 + vtable + shadow value */
     diag_buf_t   *diag;         /* 诊断收集器 */
     vec_t        *tokens;       /* token pool（借用，诊断取源码位置） */
     sema_scope_t *global_scope; /* 全局作用域树根 */
 
-    /* 函数上下文（Pass 3b 时设置） */
+    /* 函数队列：sema 层全部函数（顶层函数 Pass 1 登记；局部函数/泛型实例
+       在 Pass 3 解析中追加，队列驱动、可增长）。sema 拥有元素生命周期。 */
+    vec_t        *funcs;        /* sema_func_t* */
+
+    /* 函数上下文（Pass 3 walk 时设置） */
     const type_t *func_return_type; /* NULL = void */
     bool          func_has_return;
 
@@ -77,16 +102,17 @@ location_t sema_loc(sema_t *sema, ast_node_t *node);
 void sema_type_name(const type_t *t, char *buf, size_t cap);
 
 /**
- * Pass 3a 作用域树构建（stmt.c 实现）：遍历函数体，按词法块结构建树，
- * 只注册符号（名字 + 声明类型 + TDZ 标志），不做类型检查。
+ * Pass 3a 作用域树构建（stmt.c 实现）：遍历 sema->funcs 队列，对每个函数
+ * 按词法块结构建树，只注册符号（名字 + 声明类型 + TDZ 标志），不做类型检查。
+ * 作用域树存入 sema_func_t::scope。
  */
-void sema_build_scope_tree(sema_t *sema, ast_node_t *program);
+void sema_build_scope_tree(sema_t *sema);
 
 /**
  * Pass 3b 单个函数的 shadow VM 运行（stmt.c 实现）。
- * 严格按预建作用域树遍历函数体，做类型检查与推导。
+ * 严格按预建作用域树（sf->scope）遍历函数体，做类型检查与推导。
  */
-void sema_walk_function(sema_t *sema, ast_node_t *func_def);
+void sema_walk_function(sema_t *sema, sema_func_t *sf);
 
 /** 表达式求值（shadow value）：只有类型，data=NULL。 */
 value_t *sema_expr(sema_t *sema, ast_node_t *node, sema_scope_t *scope);

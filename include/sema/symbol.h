@@ -4,7 +4,7 @@
 #include "core/strmap.h"
 #include "core/strslice.h"
 #include "core/vec.h"
-#include "vm/function.h"
+#include "parser/ast_node.h"
 #include "vm/type.h"
 #include <stdbool.h>
 #include <stddef.h>
@@ -34,12 +34,14 @@ typedef enum {
 typedef struct _sema_scope_t sema_scope_t;
 
 struct _sema_symbol_t {
-  const type_t *type; /* 已解析类型；NULL = 待推断（shadow VM 阶段填充） */
+  const type_t *type; /* 已解析类型；NULL = 待推断（shadow VM 阶段填充）。
+                         函数符号：签名类型（func_type_t，vm 池 intern）。 */
   bool          is_tdz;     /* TDZ 中（未初始化，只可赋值不可读取） */
   bool          is_assigned; /* 已赋值（退出 TDZ 的依据） */
   bool          is_active;  /* shadow VM 到达定义点后激活（遮罩机制） */
-  func_t       *func;       /* 函数符号：Pass 2 填充签名 */
-  sema_scope_t *func_scope; /* 函数符号：Pass 3a 填充作用域树 */
+  ast_node_t   *ast;        /* 定义节点（借用，arena 管理，不拥有）：
+                               函数符号 = AST_FUNC_DEF（Pass 2 填充）；
+                               变量符号 = AST_VAR_DEF */
 };
 typedef struct _sema_symbol_t sema_symbol_t;
 
@@ -64,7 +66,7 @@ sema_scope_t *sema_scope_new(allocator_t *alloc, sema_scope_kind_t kind,
                              sema_scope_t *parent);
 
 /**
- * 递归销毁整棵作用域子树（children、symbols、每个符号的 func_t）。
+ * 递归销毁整棵作用域子树（children、symbols、每个符号的 ast）。
  * 作用域树是持久化数据：sema 结束后不销毁，由字节码编译器复用，
  * 编译完成后由调用方（driver / 测试）调用本函数释放。
  * No-op if `scope` or `*scope` is NULL.
@@ -86,7 +88,7 @@ sema_scope_t *sema_scope_child(const sema_scope_t *scope, size_t idx);
 
 /**
  * 定义符号到当前作用域（name 按 slice 拷贝为 NUL 终止字符串存储）。
- * `init` 按值拷贝构造符号（type/is_tdz/is_active/func 等字段）。
+ * `init` 按值拷贝构造符号（type/is_tdz/is_active/ast 等字段）。
  * 同作用域已有同名符号 → 返回 NULL（重复定义，由调用方报诊断）。
  * Panics on out-of-memory.
  */

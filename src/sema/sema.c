@@ -1,5 +1,6 @@
 #include "sema/sema.h"
 #include "core/panic.h"
+#include "core/string.h"
 #include "parser/ast_binary.h"
 #include "parser/ast_bool_lit.h"
 #include "parser/ast_call.h"
@@ -15,6 +16,7 @@
 #include "parser/ast_unary.h"
 #include "parser/ast_var_def.h"
 #include "parser/lexer.h"
+#include "vm/type_error.h"
 #include <string.h>
 
 /* ===========================================================================
@@ -30,6 +32,7 @@ sema_t *sema_create(vm_t *vm, diag_buf_t *diag, vec_t *tokens) {
   sema->diag = diag;
   sema->tokens = tokens;
   sema->global_scope = NULL;
+  sema->funcs = vec_new(vm->alloc, false); /* 元素手动释放（sema_func_t 无 dispose） */
   sema->func_return_type = NULL;
   sema->func_has_return = false;
   sema->loop_depth = 0;
@@ -38,7 +41,16 @@ sema_t *sema_create(vm_t *vm, diag_buf_t *diag, vec_t *tokens) {
 
 void sema_destroy(sema_t **sema) {
   if (!sema || !*sema) return;
-  allocator_free((*sema)->vm->alloc, (void **)sema);
+  allocator_t *alloc = (*sema)->vm->alloc;
+  if ((*sema)->funcs) {
+    size_t n = vec_len((*sema)->funcs);
+    for (size_t i = 0; i < n; i++) {
+      sema_func_t *sf = (sema_func_t *)vec_get((*sema)->funcs, i);
+      allocator_free(alloc, (void **)&sf);
+    }
+    vec_free(alloc, &(*sema)->funcs);
+  }
+  allocator_free(alloc, (void **)sema);
 }
 
 /* ===========================================================================
@@ -147,9 +159,6 @@ static void op_text(const token_t *op, char *buf, size_t cap) {
 static value_t *shadow_binary(sema_t *sema, ast_binary_t *node,
                               sema_scope_t *scope);
 
-static value_t *shadow_call(sema_t *sema, ast_call_t *node,
-                            sema_scope_t *scope);
-
 value_t *sema_expr(sema_t *sema, ast_node_t *node, sema_scope_t *scope) {
   if (!node) return value_make_shadow(sema->vm, sema->vm->type_void);
   switch (node->kind) {
@@ -232,8 +241,48 @@ value_t *sema_expr(sema_t *sema, ast_node_t *node, sema_scope_t *scope) {
       }
       return result;
     }
-    case AST_CALL:
-      return shadow_call(sema, (ast_call_t *)node, scope);
+    case AST_CALL: {
+      /* 函数调用：符号查找 + 实参 shadow 求值（sema 职责）→ 构造带签名
+         type_t 的 shadow callee → value_call 分派到 func_vcall 的 shadow
+         分支（唯一校验点：参数数量/隐式转换，不执行 cfunc）→ 错误翻译为诊断 */
+      ast_call_t *call = (ast_call_t *)node;
+      if (!call->callee || call->callee->kind != AST_IDENT) {
+        diag_error(sema->diag, sema_loc(sema, &call->base),
+                   "M1: callee must be a function name");
+        return value_make_shadow(sema->vm, sema->vm->type_void);
+      }
+      ast_ident_t *name = (ast_ident_t *)call->callee;
+      sema_symbol_t *sym = sema_lookup(sema->global_scope, name->name);
+      if (!sym || !sym->ast) {
+        diag_error(sema->diag, sema_loc(sema, &call->base),
+                   "undefined function '%.*s'", (int)name->name.len,
+                   name->name.ptr);
+        return value_make_shadow(sema->vm, sema->vm->type_void);
+      }
+
+      /* 逐个实参 shadow 求值（错误恢复产物保留为 void shadow，由
+         func_shadow_call 跳过，避免级联二次诊断） */
+      size_t argc = sema_count_siblings(call->args);
+      value_t *arg_shadows[argc > 0 ? argc : 1];
+      ast_node_t *arg = call->args;
+      for (size_t i = 0; arg; arg = arg->next, i++) {
+        arg_shadows[i] = sema_expr(sema, arg, scope);
+      }
+
+      /* shadow callee：data=NULL 只带签名类型（sym->type），受 vm scope
+         管理（auto-track） */
+      value_t *callee_shadow = value_make_shadow(sema->vm, sym->type);
+      value_t *result = value_call(sema->vm, callee_shadow, arg_shadows, argc);
+
+      if (value_is_error(sema->vm, result)) {
+        error_data_t *ed = (error_data_t *)value_data(result);
+        const char *msg = ed && ed->message ? string_cstr(ed->message)
+                                            : "function call failed";
+        diag_error(sema->diag, sema_loc(sema, &call->base), "%s", msg);
+        return value_make_shadow(sema->vm, sema->vm->type_void);
+      }
+      return result; /* shadow in → shadow out（return_type shadow） */
+    }
     case AST_CAST: {
       ast_cast_t *n = (ast_cast_t *)node;
       value_t *expr = sema_expr(sema, n->expr, scope);
@@ -307,64 +356,6 @@ static value_t *shadow_binary(sema_t *sema, ast_binary_t *node,
   return result; /* shadow in → shadow out */
 }
 
-/* shadow 版本的函数调用：校验签名后直接构造 return_type 的 shadow value。
-   value_call / func_vcall 完全不动（运行时语义保持）。 */
-static value_t *shadow_call(sema_t *sema, ast_call_t *node,
-                            sema_scope_t *scope) {
-  if (!node->callee || node->callee->kind != AST_IDENT) {
-    diag_error(sema->diag, sema_loc(sema, &node->base),
-               "M1: callee must be a function name");
-    return value_make_shadow(sema->vm, sema->vm->type_void);
-  }
-  ast_ident_t *name = (ast_ident_t *)node->callee;
-  sema_symbol_t *sym = sema_lookup(sema->global_scope, name->name);
-  if (!sym || !sym->func) {
-    diag_error(sema->diag, sema_loc(sema, &node->base),
-               "undefined function '%.*s'", (int)name->name.len,
-               name->name.ptr);
-    return value_make_shadow(sema->vm, sema->vm->type_void);
-  }
-  func_t *fn = sym->func;
-
-  /* 参数数量校验（与 func_vcall 一致：variadic 允许 argc > param_count） */
-  size_t argc = sema_count_siblings(node->args);
-  if (!fn->is_variadic && argc != fn->param_count) {
-    diag_error(sema->diag, sema_loc(sema, &node->base),
-               "function '%.*s' expects %zu arguments, got %zu",
-               (int)fn->name.len, fn->name.ptr, fn->param_count, argc);
-  } else if (fn->is_variadic && argc < fn->param_count) {
-    diag_error(sema->diag, sema_loc(sema, &node->base),
-               "variadic function '%.*s' expects at least %zu arguments",
-               (int)fn->name.len, fn->name.ptr, fn->param_count);
-  }
-
-  /* 逐个参数：shadow 求值 + implicit_cast 校验（与 func_vcall 对齐） */
-  ast_node_t *arg = node->args;
-  for (size_t i = 0; arg; i++, arg = arg->next) {
-    value_t *av = sema_expr(sema, arg, scope);
-    /* 错误恢复产物（void/error shadow）跳过，避免二次诊断 */
-    if (value_is_error(sema->vm, av)) continue;
-    if (type_eq(value_type(av), sema->vm->type_void)) continue;
-    if (i < fn->param_count && fn->params[i] &&
-        !type_eq(value_type(av), fn->params[i])) {
-      value_t *casted = value_implicit_cast(sema->vm, av, fn->params[i]);
-      if (value_is_error(sema->vm, casted)) {
-        char an[64], pn[64];
-        op_type_name(av, an, sizeof(an));
-        sema_type_name(fn->params[i], pn, sizeof(pn));
-        diag_error(sema->diag, sema_loc(sema, arg),
-                   "argument %zu: cannot convert %s to %s", i + 1, an, pn);
-      }
-    }
-    /* variadic 额外参数：求值但类型不限（printf 的 ...） */
-  }
-
-  /* shadow 版本：不执行 cfunc、不做作用域切换，直接构造 return_type shadow */
-  return value_make_shadow(sema->vm,
-                           fn->return_type ? fn->return_type
-                                           : sema->vm->type_void);
-}
-
 /* ===========================================================================
  * Pass 1/2：函数名收集 + 类型解析（func_t 签名）
  * =========================================================================== */
@@ -376,24 +367,37 @@ static void pass1_names(sema_t *sema, ast_program_t *prog) {
     if (!sema_scope_define(sema->global_scope, fn->name, &init)) {
       diag_error(sema->diag, sema_loc(sema, f), "duplicate function '%.*s'",
                  (int)fn->name.len, fn->name.ptr);
+      continue; /* 重复定义不入队 */
     }
+    /* 登记 sema 层函数对象（Pass 3 队列驱动；局部函数/泛型实例将来追加） */
+    sema_func_t *sf = allocator_new_ex(sema->vm->alloc, "sema_func_t",
+                                       sizeof(sema_func_t), NULL, NULL, NULL,
+                                       1);
+    if (!sf) panic("sema: out of memory allocating sema_func");
+    sf->def = f;
+    sf->scope = NULL;
+    sf->name = fn->name;
+    vec_push(sema->funcs, sema->vm->alloc, sf);
   }
 }
 
-static void pass2_types(sema_t *sema, ast_program_t *prog) {
-  for (ast_node_t *f = prog->funcs; f; f = f->next) {
+static void pass2_types(sema_t *sema) {
+  size_t n = vec_len(sema->funcs);
+  for (size_t i = 0; i < n; i++) {
+    sema_func_t *sf = (sema_func_t *)vec_get(sema->funcs, i);
+    ast_node_t *f = sf->def;
     ast_func_def_t *fn = (ast_func_def_t *)f;
     sema_symbol_t *sym = sema_lookup(sema->global_scope, fn->name);
-    if (!sym) continue; /* Pass 1 重复定义已诊断 */
-    if (sym->func) continue; /* 重复函数名：首个定义已建签名（Pass 1 已诊断） */
+    if (!sym) continue;
+    if (sym->ast) continue; /* 理论上不可达：队列只含有效函数 */
 
-    size_t n = sema_count_siblings(fn->params);
+    size_t nparams = sema_count_siblings(fn->params);
     const type_t **params = NULL;
-    if (n > 0) {
+    if (nparams > 0) {
       params = allocator_new_ex(sema->vm->alloc, "type_t*", sizeof(type_t *),
-                                NULL, NULL, NULL, n);
-      size_t i = 0;
-      for (ast_node_t *p = fn->params; p; p = p->next, i++) {
+                                NULL, NULL, NULL, nparams);
+      size_t j = 0;
+      for (ast_node_t *p = fn->params; p; p = p->next, j++) {
         ast_var_def_t *vd = (ast_var_def_t *)p;
         const type_t *t = resolve_type(sema, vd->type_name);
         if (!t) {
@@ -402,7 +406,7 @@ static void pass2_types(sema_t *sema, ast_program_t *prog) {
                      (int)vd->type_name.len, vd->type_name.ptr,
                      (int)vd->name.len, vd->name.ptr);
         }
-        params[i] = t; /* 失败置 NULL，位置对齐，shadow_call 校验时跳过 */
+        params[j] = t; /* 失败置 NULL，位置对齐，func_shadow_call 校验时跳过 */
       }
     }
 
@@ -415,12 +419,15 @@ static void pass2_types(sema_t *sema, ast_program_t *prog) {
       }
     }
 
-    func_t *func = func_new(sema->vm->alloc, NULL, NULL, NULL, fn->name);
-    func->params = params;
-    func->param_count = n;
-    func->return_type = rt;
-    func->is_variadic = false;
-    sym->func = func;
+    /* 注册签名类型（按签名去重 intern 到 vm 类型池，type_func_sig 复制 params）；
+       符号统一记录定义 AST 节点（函数 = AST_FUNC_DEF）；签名类型存于
+       sym->type，调用点经 value_make_shadow(vm, sym->type) 构造 shadow callee */
+    const type_t *sig = type_func_sig(sema->vm, params, nparams, rt, false);
+    sym->type = sig;
+    sym->ast = f;
+
+    /* params 临时数组已被 type_func_sig 复制，此处释放 */
+    if (params) allocator_free(sema->vm->alloc, (void **)&params);
   }
 }
 
@@ -437,18 +444,20 @@ bool sema_analyze(sema_t *sema, ast_node_t *program) {
   if (!sema->global_scope) return false;
 
   pass1_names(sema, prog);
-  pass2_types(sema, prog);
+  pass2_types(sema);
 
   /* Pass 3a：作用域树构建 + 控制流分析（符号注册、break/continue 位置检查、
      不可达语句、非 void 函数返回路径完整性）。快速失败：3a 有错误则
      不进入 3b——控制流/结构错误已使作用域树不可信，继续 shadow run
      只会产生级联的二次诊断。 */
-  sema_build_scope_tree(sema, program);
+  sema_build_scope_tree(sema);
   if (diag_has_error(sema->diag)) return false;
 
-  /* Pass 3b：shadow VM 运行（按作用域树严格对应遍历，纯类型检查与推导） */
-  for (ast_node_t *f = prog->funcs; f; f = f->next) {
-    sema_walk_function(sema, f);
+  /* Pass 3b：shadow VM 运行（按作用域树严格对应遍历，纯类型检查与推导）。
+     队列驱动：遍历 sema->funcs，解析过程中队列可增长（局部函数提升 /
+     泛型单态化追加到队尾），len 每次重取自动覆盖新函数。 */
+  for (size_t i = 0; i < vec_len(sema->funcs); i++) {
+    sema_walk_function(sema, (sema_func_t *)vec_get(sema->funcs, i));
   }
 
   return !diag_has_error(sema->diag);

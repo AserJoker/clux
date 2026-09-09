@@ -40,14 +40,7 @@ void sema_scope_destroy(sema_scope_t **scope) {
   }
   vec_free(alloc, &self->children);
 
-  /* 2. 释放每个符号的 func_t，然后销毁符号表（strmap 释放符号结构） */
-  const vec_t *keys = strmap_keys(self->symbols);
-  size_t kn = vec_len(keys);
-  for (size_t i = 0; i < kn; i++) {
-    const char *key = (const char *)vec_get(keys, i);
-    sema_symbol_t *sym = (sema_symbol_t *)strmap_get(self->symbols, key);
-    if (sym && sym->func) func_destroy(alloc, &sym->func);
-  }
+  /* 2. 符号的 ast 借用 AST（arena 管理），不释放；直接销毁符号表 */
   strmap_free(alloc, &self->symbols);
 
   /* 3. 释放自身 */

@@ -34,14 +34,13 @@ static build_result_t build_block(sema_t *sema, ast_block_t *block,
 static build_result_t build_func_if(sema_t *sema, ast_if_t *it,
                                     sema_scope_t *scope);
 
-static void build_func(sema_t *sema, ast_func_def_t *fn) {
-  sema_symbol_t *sym = sema_lookup(sema->global_scope, fn->name);
-  if (!sym) return; /* Pass 1 重复定义已诊断 */
+static void build_func(sema_t *sema, sema_func_t *sf) {
+  ast_func_def_t *fn = (ast_func_def_t *)sf->def;
 
   sema_scope_t *fscope =
       sema_scope_new(sema->vm->alloc, SEMA_SCOPE_FUNCTION, sema->global_scope);
   sema_scope_add_child(sema->global_scope, fscope);
-  sym->func_scope = fscope;
+  sf->scope = fscope;
 
   /* 注册参数（已解析类型，待激活） */
   for (ast_node_t *p = fn->params; p; p = p->next) {
@@ -220,10 +219,10 @@ static build_result_t build_func_if(sema_t *sema, ast_if_t *it,
                               tr.definitely_returns && er.definitely_returns};
 }
 
-void sema_build_scope_tree(sema_t *sema, ast_node_t *program) {
-  ast_program_t *prog = (ast_program_t *)program;
-  for (ast_node_t *f = prog->funcs; f; f = f->next) {
-    if (f->kind == AST_FUNC_DEF) build_func(sema, (ast_func_def_t *)f);
+void sema_build_scope_tree(sema_t *sema) {
+  size_t n = vec_len(sema->funcs);
+  for (size_t i = 0; i < n; i++) {
+    build_func(sema, (sema_func_t *)vec_get(sema->funcs, i));
   }
 }
 
@@ -562,16 +561,14 @@ static block_result_t walk_block(sema_t *sema, ast_node_t *block,
 
 /* ---- 函数入口 ---- */
 
-void sema_walk_function(sema_t *sema, ast_node_t *func_def) {
-  if (func_def->kind != AST_FUNC_DEF) return;
-  ast_func_def_t *fn = (ast_func_def_t *)func_def;
-  sema_symbol_t *sym = sema_lookup(sema->global_scope, fn->name);
-  if (!sym || !sym->func_scope) return;
+void sema_walk_function(sema_t *sema, sema_func_t *sf) {
+  ast_func_def_t *fn = (ast_func_def_t *)sf->def;
+  if (!sf->scope) return; /* 建树失败（结构错误已诊断），不进入 shadow run */
 
   /* 激活参数：Pass 3a 注册为 inactive，进入函数体前激活（参数立即可读） */
   for (ast_node_t *p = fn->params; p; p = p->next) {
     ast_var_def_t *vd = (ast_var_def_t *)p;
-    sema_symbol_t *ps = sema_scope_find_local(sym->func_scope, vd->name);
+    sema_symbol_t *ps = sema_scope_find_local(sf->scope, vd->name);
     if (ps) ps->is_active = true;
   }
 
@@ -584,7 +581,7 @@ void sema_walk_function(sema_t *sema, ast_node_t *func_def) {
   size_t child_idx = 0;
   /* 返回路径完整性分析已在 Pass 3a（建树阶段）完成；
      walk_block 的 block_result_t 仅用于跳过不可达语句的类型检查 */
-  (void)walk_block(sema, fn->body, sym->func_scope, &child_idx);
+  (void)walk_block(sema, fn->body, sf->scope, &child_idx);
   vm_pop_scope(sema->vm);
 
   /* 返回路径完整性分析已在 Pass 3a（建树阶段）完成 */

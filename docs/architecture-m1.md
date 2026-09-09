@@ -613,12 +613,12 @@ typedef enum {
 } sema_scope_kind_t;
 
 typedef struct sema_symbol_t {
-    const type_t *type;       /* 已解析类型；NULL = 待推断（shadow VM 阶段填充） */
+    const type_t *type;       /* 已解析类型；NULL = 待推断（shadow VM 阶段填充）。
+                                 函数符号 = 签名类型（func_type_t，vm 池 intern） */
     bool          is_tdz;     /* TDZ 中（未初始化，只可赋值不可读取） */
     bool          is_assigned; /* 已赋值（退出 TDZ 的依据） */
     bool          is_active;  /* shadow VM 到达定义点后激活（遮罩机制） */
-    func_t       *func;       /* 函数符号：Pass 2 填充签名 */
-    sema_scope_t *func_scope; /* 函数符号：Pass 3a 填充作用域树 */
+    ast_node_t   *ast;        /* 定义节点（借用，arena 管理）：函数 = AST_FUNC_DEF */
 } sema_symbol_t;
 
 typedef struct sema_scope_t {
@@ -628,10 +628,17 @@ typedef struct sema_scope_t {
     sema_scope_kind_t   kind;
 } sema_scope_t;
 
+typedef struct sema_func_t {
+    ast_node_t   *def;    /* AST_FUNC_DEF（借用） */
+    sema_scope_t *scope;  /* 函数作用域树（Pass 3 填充） */
+    strslice_t    name;   /* 函数名（诊断用） */
+} sema_func_t;
+
 typedef struct sema_t {
     vm_t         *vm;                 /* 复用 VM 类型注册表 + vtable + shadow value */
     diag_buf_t   *diag;               /* 诊断收集器 */
     sema_scope_t *global_scope;       /* 全局作用域树根 */
+    vec_t        *funcs;              /* sema_func_t* 函数队列（sema 拥有，可增长） */
 
     /* 函数上下文（Pass 3b 时设置） */
     const type_t *func_return_type;   /* NULL = void */
@@ -641,6 +648,8 @@ typedef struct sema_t {
     int           loop_depth;         /* 0 = 不在循环中 */
 } sema_t;
 ```
+
+符号表只负责名字解析：函数符号 `sym->ast` 指向定义节点、`sym->type` 存签名类型；函数自身状态（作用域树）由 `sema_func_t` 承担，统一登记在 `sema->funcs` 队列——为局部函数提升与泛型单态化预留（解析中发现的新函数追加到队尾，Pass 3 队列驱动按序处理）。
 
 作用域树示例（`{ if(cond) {} else{} }`）：
 
@@ -652,16 +661,19 @@ block_scope
 
 #### 2.9.3 Pass 1/2：Name / Type Collection
 
-- **Pass 1**：遍历 `AST_PROGRAM` 顶层 `AST_FUNC_DEF` 兄弟链，函数名注册到 global scope，检测重复定义
-- **Pass 2**：解析参数类型与返回类型（经 `resolve_type`），创建 `func_t` 并填入 `sema_symbol_t.func`。参数类型未知 → 诊断
+- **Pass 1**：遍历 `AST_PROGRAM` 顶层 `AST_FUNC_DEF` 兄弟链，函数名注册到 global scope（检测重复定义），定义成功后创建 `sema_func_t` 追加到 `sema->funcs` 队列
+- **Pass 2**：遍历 `sema->funcs` 队列，解析参数类型与返回类型（经 `resolve_type`），注册签名类型 `type_func_sig` 填入 `sema_symbol_t.type`，`sema_symbol_t.ast` 指向定义节点。参数类型未知 → 诊断
 
 #### 2.9.4 Pass 3a：作用域树构建
 
-遍历函数体，按词法块结构建树。只注册符号（名字 + 声明类型 + TDZ 标志），**不做类型检查**。推断类型的变量 `type=NULL`，留给 Pass 3b 填充。
+遍历 `sema->funcs` 队列，对每个函数按词法块结构建树（作用域树存入 `sema_func_t.scope`）。只注册符号（名字 + 声明类型 + TDZ 标志），**不做类型检查**。推断类型的变量 `type=NULL`，留给 Pass 3b 填充。
 
 ```c
-static sema_scope_t *build_func_scope(sema_t *sema, ast_func_def_t *fn) {
+static void build_func(sema_t *sema, sema_func_t *sf) {
+    ast_func_def_t *fn = (ast_func_def_t *)sf->def;
     sema_scope_t *fscope = sema_scope_new(SEMA_SCOPE_FUNCTION, sema->global_scope);
+    sema_scope_add_child(sema->global_scope, fscope);
+    sf->scope = fscope;
 
     /* 注册参数（已初始化，待激活） */
     for (ast_node_t *p = fn->params; p; p = p->next) {
@@ -674,7 +686,6 @@ static sema_scope_t *build_func_scope(sema_t *sema, ast_func_def_t *fn) {
 
     /* 函数体 block 直接用 fscope（不再嵌套一层） */
     build_block(sema, (ast_block_t*)fn->body, fscope);
-    return fscope;
 }
 ```
 
@@ -691,7 +702,9 @@ static sema_scope_t *build_func_scope(sema_t *sema, ast_func_def_t *fn) {
 
 #### 2.9.5 Pass 3b：Shadow VM 运行
 
-按预建作用域树，严格对应地遍历 AST。核心机制：
+遍历 `sema->funcs` 队列，对每个函数按预建作用域树（`sema_func_t.scope`）严格对应地遍历 AST。**队列驱动**：`len` 每次重取，解析过程中队列增长（局部函数提升 / 泛型单态化追加到队尾）自动被后续迭代覆盖；增长函数的 `scope==NULL` 时先补建树再 walk。
+
+核心机制：
 
 **子作用域迭代器（child_idx）**：两个阶段遍历同一棵 AST，子作用域出现顺序一致。Shadow VM 用 `size_t child_idx` 按序取子作用域（`vec_get(scope->children, child_idx++)`），保证作用域严格对应。
 
@@ -737,7 +750,7 @@ static value_t *sema_expr(sema_t *sema, ast_node_t *node, sema_scope_t *scope);
 | `AST_IDENT` | `sema_lookup` 查符号 → shadow(类型)；未定义 / TDZ → 诊断 |
 | `AST_BINARY` | lhs/rhs shadow 求值 → vtable 分派；短路 `&&`/`||` 特殊处理（操作数必须 bool，结果 bool） |
 | `AST_UNARY` | 操作数 shadow → vtable 一元分派 |
-| `AST_CALL` | `shadow_call`：校验签名 → 返回 return_type shadow |
+| `AST_CALL` | 构造 shadow callee（`value_make_shadow(vm, sym->type)`）→ `value_call` 分派 func_vcall shadow 分支校验签名 → 返回 return_type shadow |
 | `AST_CAST` | `resolve_type` 目标 → `value_explicit_cast` 校验转换合法性 |
 
 二元运算（非短路）走 vtable，类型不兼容时返回 error value，sema 转为诊断：
@@ -766,40 +779,36 @@ static value_t *shadow_binary(sema_t *sema, ast_binary_t *node, sema_scope_t *sc
 
 #### 2.9.7 函数调用（shadow 版本）
 
-**value_call / func_vcall 完全不动**——保持运行时语义（cfunc 执行、作用域切换、返回值 clone）。sema 阶段用户函数 cfunc 为 NULL，`func_vcall` 会返回 "invalid function"，所以 shadow 版本走独立的参数校验路径，但**校验逻辑与 func_vcall 对齐**（数量检查 + 逐参数 `value_implicit_cast` 验证兼容性）。差异仅在调用之后：运行时走 cfunc 执行，shadow 版本校验完参数直接构造 `return_type` 的 shadow value。
+**签名在 func value 的 type 上**：sema 符号表统一记录定义 AST 节点（`sym->ast`，函数符号 = `AST_FUNC_DEF`，借用不拥有，arena 管理），签名类型存于 `sym->type`（`func_type_t`，按签名去重 intern 到 vm 类型池）。调用点用 `value_make_shadow(vm, sym->type)` 构造 shadow callee——value 严格存活于 shadow 态（data=NULL，只带签名类型），auto-track 到 vm scope，由 scope 统一管理生命周期，sema 不手动释放。
+
+**校验单一来源在 func_vcall**：shadow callee 经 `value_call` 分派到 `func_vcall` 的 shadow 分支（`func_shadow_call`），数量检查 + 逐参数 `value_implicit_cast` 验证兼容性与真实调用完全一致，不执行 cfunc。校验失败返回的 error value 由 sema 翻译为带位置的诊断。
 
 ```c
-static value_t *shadow_call(sema_t *sema, ast_call_t *node, sema_scope_t *scope) {
-    sema_symbol_t *sym = sema_lookup(sema->global_scope, node->name);
-    if (!sym || !sym->func) {
-        diag_error(sema->diag, loc(node), "undefined function '%.*s'", ...);
+case AST_CALL: {
+    /* 符号查找：global scope 只含函数符号，sym->ast 为 AST_FUNC_DEF（借用） */
+    if (!sym || !sym->ast) { /* undefined function 诊断 */ }
+
+    /* 逐个实参 shadow 求值（错误恢复产物保留为 void shadow，由
+       func_shadow_call 跳过，避免级联二次诊断） */
+    size_t argc = sema_count_siblings(call->args);
+    value_t *arg_shadows[argc > 0 ? argc : 1];
+    ast_node_t *arg = call->args;
+    for (size_t i = 0; arg; arg = arg->next, i++)
+        arg_shadows[i] = sema_expr(sema, arg, scope);
+
+    /* shadow callee：data=NULL 只带签名类型（sym->type），受 vm scope 管理 */
+    value_t *callee_shadow = value_make_shadow(sema->vm, sym->type);
+    value_t *result = value_call(sema->vm, callee_shadow, arg_shadows, argc);
+
+    /* error → 翻译为诊断（消息由 func_shadow_call 生成） */
+    if (value_is_error(sema->vm, result)) {
+        error_data_t *ed = (error_data_t *)value_data(result);
+        const char *msg = ed && ed->message ? string_cstr(ed->message)
+                                            : "function call failed";
+        diag_error(sema->diag, sema_loc(sema, &call->base), "%s", msg);
         return value_make_shadow(sema->vm, sema->vm->type_void);
     }
-    func_t *fn = sym->func;
-
-    /* 参数数量校验（与 func_vcall 一致：variadic 允许 argc > param_count） */
-    size_t argc = count_siblings(node->args);
-    if (!fn->is_variadic && argc != fn->param_count)
-        diag_error(..., "expects %zu arguments, got %zu", fn->param_count, argc);
-    else if (fn->is_variadic && argc < fn->param_count)
-        diag_error(..., "variadic function expects at least %zu arguments", ...);
-
-    /* 逐个参数：shadow 求值 + implicit_cast 校验（与 func_vcall 对齐） */
-    ast_node_t *arg = node->args;
-    for (size_t i = 0; arg; i++, arg = arg->next) {
-        value_t *av = sema_expr(sema, arg, scope);
-        if (i < fn->param_count && fn->params[i]
-            && !type_eq(value_type(av), fn->params[i])) {
-            value_t *casted = value_implicit_cast(sema->vm, av, fn->params[i]);
-            if (value_is_error(sema->vm, casted))
-                diag_error(..., "argument %zu: cannot convert %s to %s", ...);
-        }
-        /* variadic 额外参数：求值但类型不限（printf 的 ...） */
-    }
-
-    /* shadow 版本：不执行 cfunc、不做作用域切换，直接构造 return_type 的 shadow value */
-    return value_make_shadow(sema->vm,
-        fn->return_type ? fn->return_type : sema->vm->type_void);
+    return result; /* shadow in → shadow out（return_type shadow） */
 }
 ```
 
@@ -852,9 +861,10 @@ M1 无 const/volatile（不在 M1 阶段实现），符号表与类型检查不�
 | `value_implicit_cast` | 赋值/函数参数兼容性检查 |
 | `value_explicit_cast` | as 转换合法性检查 |
 | `vm_push/pop_scope` | 每函数一个，shadow value 生命周期容器 |
-| `func_t`（Pass 2 创建） | 函数签名来源（shadow_call 校验用） |
+| `type_func_sig` | Pass 2 注册签名类型到 vm 池（存 `sema_symbol_t.type`） |
+| `value_call` → `func_vcall` | 函数调用签名校验（shadow 分支 `func_shadow_call`，单一校验来源） |
 
-**不使用的 VM 设施**：`value_call` / `func_vcall`（sema 不执行函数调用，shadow_call 独立校验签名）。
+**不使用的 VM 设施**：`func_new` / `func_t` 引擎字段（sema 不构造 func value，只经签名类型做静态校验）。
 
 #### 2.9.11 公共 API 与 driver 集成
 

@@ -590,15 +590,12 @@ static value_t *sum_variadic(vm_t *vm, func_t *self, size_t argc, value_t **args
 }
 
 TEST_F(ValueCore, VariadicFuncAcceptsExtraArgs) {
-    func_t *fn = func_new(vm->alloc, sum_variadic, vm->global_scope, vm->root_scope,
-                          STRSLICE_LIT("sum_variadic"));
-    fn->is_variadic = true;
-    fn->param_count = 0;
-    fn->params = NULL;
-
-    /* untracked value，手动释放 */
-    void *data = value_alloc_data_copy(vm->alloc, vm->type_func, &fn);
-    value_t *fv = value_make_untracked(vm->alloc, vm->type_func, data);
+    const type_t *sig = type_func_sig(vm, NULL, 0, vm->type_i64, true);
+    /* func value：data 存 func_t*，type 即签名类型；untracked，手动释放 */
+    value_t *fv = func_new(vm->alloc, sum_variadic, vm->global_scope,
+                           vm->root_scope, sig, STRSLICE_LIT("sum_variadic"));
+    ASSERT_NE(fv, nullptr);
+    EXPECT_EQ(value_type(fv), sig);
 
     value_t *a = make_i32_raw(vm, 1);
     value_t *b = make_i32_raw(vm, 2);
@@ -618,15 +615,13 @@ TEST_F(ValueCore, VariadicFuncAcceptsExtraArgs) {
 
 TEST_F(ValueCore, NonVariadicFuncRejectsExtraArgs) {
     /* 固定参数函数：1 个 i32 参数 */
-    func_t *fn = func_new(vm->alloc, sum_variadic, vm->global_scope, vm->root_scope,
-                          STRSLICE_LIT("fixed"));
-    fn->is_variadic = false;
-    fn->param_count = 1;
-    fn->params = NULL;  /* 无类型约束，但 param_count=1 */
-
-    /* untracked value，手动释放 */
-    void *data = value_alloc_data_copy(vm->alloc, vm->type_func, &fn);
-    value_t *fv = value_make_untracked(vm->alloc, vm->type_func, data);
+    const type_t *params[1] = { NULL };  /* 无类型约束，但 param_count=1 */
+    const type_t *sig = type_func_sig(vm, params, 1, vm->type_void, false);
+    /* func value：data 存 func_t*，type 即签名类型；untracked，手动释放 */
+    value_t *fv = func_new(vm->alloc, sum_variadic, vm->global_scope,
+                           vm->root_scope, sig, STRSLICE_LIT("fixed"));
+    ASSERT_NE(fv, nullptr);
+    EXPECT_EQ(value_type(fv), sig);
 
     value_t *a = make_i32_raw(vm, 1);
     value_t *b = make_i32_raw(vm, 2);

@@ -1,5 +1,7 @@
 #include "vm/vm.h"
+#include "vm/type.h"
 #include "core/panic.h"
+#include "core/vec.h"
 
 extern void vm_init_builtins(vm_t *vm);
 
@@ -43,6 +45,22 @@ void vm_destroy(vm_t **pvm) {
     scope_destroy(vm, &vm->global_scope);
 
     vm->current_scope = NULL;
+
+    /* 函数签名类型池：单遍释放（M1 签名只引用内置静态类型，无相互依赖） */
+    if (vm->sig_types) {
+        size_t n = vec_len(vm->sig_types);
+        for (size_t i = 0; i < n; i++) {
+            func_type_t *ft = (func_type_t *)vec_get(vm->sig_types, i);
+            if (!ft) continue;
+            if (ft->sig.params) allocator_free(vm->alloc, (void **)&ft->sig.params);
+            if (ft->base.name.ptr) {
+                char *np = (char *)ft->base.name.ptr;
+                allocator_free(vm->alloc, (void **)&np);
+            }
+            allocator_free(vm->alloc, (void **)&ft);
+        }
+        vec_free(vm->alloc, &vm->sig_types);
+    }
 
     allocator_free(vm->alloc, (void **)pvm);
 }
