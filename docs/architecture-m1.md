@@ -517,7 +517,7 @@ struct value_t {
 - 全部通过后才编译为字节码执行
 - 运行时不再做类型检查，字节码执行器更精简
 
-### 2.7 字节码 IR —— 尚未实现
+### 2.7 字节码 IR —— 设计完成（待实现）
 
 放弃 AST 直走解释，改为编译 AST 到线性字节码后执行。
 
@@ -525,12 +525,6 @@ struct value_t {
 - AST 直走解释无法做到暂停/恢复（如 generator、async/await、debugger 断点）
 - 线性字节码是状态机，可以保存 PC 指针随时暂停恢复
 - 编译期计算需要复用同一套执行引擎
-
-**指令集（设计阶段）：**
-- 算术运算、比较运算、跳转、调用、返回
-- load/store（变量加载/存储）
-- 类型转换（implicit_cast / explicit_cast 的编译期静态分派或运行时 vtable 分派）
-- 常量加载（编译期计算结果直接嵌入）
 
 **编译流程三粒度分级：**
 
@@ -547,10 +541,244 @@ struct value_t {
 - shadow value 解决类型层面编译期计算，字节码解决值层面执行和运行时
 - 两者互补：shadow value 先做（语义分析基础设施），字节码 IR 后做（大工程）
 
-**执行器设计：**
-- 栈式或寄存器式 VM，PC 指针驱动
-- 支持保存/恢复 PC 指针（暂停/恢复的基础）
-- 运行时不再做类型检查（已由 sema shadow value 完成）
+#### 2.7.1 指令编码：扁平字节流 + 回调驱动 PC
+
+字节码是**字节流**，非定长结构体数组：
+
+```
+[opcode: u32][变长操作数...]
+```
+
+- **执行器只移动 opcode 部分**：读 u32 opcode → `pc += 4` → 按 opcode 分派回调。
+- **操作数由指令回调自己消费、自己推进 pc**（只有指令自己清楚自己有几个操作数），执行器不感知任何指令语义。
+- 指令天然变长；新增指令只需注册回调，执行器零改动。
+
+**操作数读取（read 函数族）**：指令回调按操作数类型从字节流读对应宽度的**立即数**，读多少由指令自己决定：
+
+| read 函数 | 宽度 | 用途 |
+|-----------|------|------|
+| `read_u8` / `read_i8` | 1 字节 | 小整数、类型索引等 |
+| `read_u16` / `read_i16` | 2 字节 | 中整数 |
+| `read_u32` / `read_i32` | 4 字节 | 大整数、strtable 索引、目标 pc |
+| `read_u64` / `read_i64` | 8 字节 | 64 位整数立即数 |
+| `read_f32` / `read_f64` | 4 / 8 字节 | 浮点立即数 |
+| `read_bool` | 1 字节 | 布尔立即数 |
+
+基本类型字面量全部**直接内嵌为立即数**（数字、布尔按宽度读），**常量池只存放字符串**（变长，无法直接内嵌）。
+
+示例 `0[push]4[0]8`（push 变量指令，操作数为 strtable 索引）：
+
+```
+pc=0: exec 读 u32 → opcode=push        pc += 4 → pc=4
+      dispatch → op_push 回调
+op_push: read_u32(bc, 4) → 0           *pc += 4 → pc=8
+      压入 scope_lookup(strtable[0]) 的借用引用
+返回 exec：pc=8，继续读下一条 opcode
+```
+
+#### 2.7.2 操作数栈 = 借用引用
+
+- **value 本体归 scope 管理**（现有 scope 模型不动：`scope_define` 存入、`scope_destroy` 释放）。
+- 操作数栈只放 **`value_t*` 借用引用**：`PUSH` 压入 scope 里那个 value 的指针，**不 clone、不转移所有权**。
+- 运算结果由 vm API 新建并自动 track 到当前 scope，栈再压入它的借用引用。
+- **执行器不释放任何 value**：它只是栈指针 + PC 驱动器，所有 value 生命周期由 scope 统一管理。
+
+#### 2.7.3 产物结构：字符串表 + 字节码流
+
+字节码编译结束的产物是**两块**：
+
+1. **字符串表（strtable）**：编译期收集的字符串，运行时只读。包含两类字符串：
+   - **变量名**：`PUSH`/`STORE` 指令参数 = 变量名字符串表索引（运行时 `scope_lookup` 按名查找）
+   - **字符串字面量**：`PUSH_STR` 指令参数 = 字符串字面量索引（压入借用引用）
+2. **字节码流（code）**：`[opcode: u32][变长操作数...]` 线性序列。操作数全部是平凡类型——**基本类型字面量直接内嵌为立即数**（见 2.7.1 read 函数族），索引类操作数（strtable 索引、目标 pc、argc）也是平凡整数。
+
+产物**只有这两块**，无独立的"常量池 value 数组"：整数字面量、浮点字面量、布尔字面量全部内嵌在字节码流中由 read 函数读取；唯一的例外是字符串（变长，无法内嵌），收进字符串表。
+
+**字节码自包含、可落盘重载**：strtable + code 流构成**完整可执行单元**，不含任何指向 AST / sema 符号表 / 函数表等中间产物的引用——`bcode_function_t` 由 `PUSH_FUNCTION` 在**执行时**用内嵌入口 pc 构造，函数值随 scope 走，无编译期预建表。编译完成后前面所有流程的中间产物（AST、符号表等）**可以移除**；字节码可序列化落盘（strtable 字符串数组 + code 字节数组 + 指令表），之后**重新加载直接执行**。
+
+#### 2.7.4 执行器核心循环
+
+```c
+void exec_run(exec_t *e) {
+    while (!e->halted) {
+        uint32_t op = read_u32(e->bc, e->pc);
+        e->pc += 4;                        /* exec 只移 opcode */
+        value_t *r = e->bc->handlers[op](e, e->bc, &e->pc); /* 回调移操作数 */
+        if (r) stack_push(e, r);           /* 结果压栈（借用引用） */
+        if (value_is_interrupt(r)) {       /* 引擎级控制流信号（RET 等） */
+            exec_handle_interrupt(e, r);   /* 消费点：bcode_call_cfunc 子循环捕获 */
+        }
+        if (value_is_error(e->vm, r)) {    /* 引擎级硬错误 → 停止 */
+            e->halted = true;
+            e->result = r;                 /* 错误传播到调用方 */
+        }
+    }
+}
+```
+
+错误检查在执行器统一出口（error 是引擎级硬错误，所有 value 操作后必须检查向外传播）；interrupt 哨兵（引擎级控制流信号，目前仅 RETURN）也在统一出口识别处理；指令语义（add/store/call 各自干什么）完全在回调内。
+
+#### 2.7.5 指令集
+
+| 指令 | 参数 | 回调语义 | 使用 vm API |
+|------|------|----------|-------------|
+| `PUSH` | strtable 索引 | `scope_lookup` 按名查，借用引用压栈 | `scope_lookup` |
+| `STORE` | strtable 索引 | `dst = lookup(name); src = stack.pop(); return value_assign(dst, src)` —— `=` 是普通操作符号，执行器不感知赋值 | `scope_lookup` + `value_assign` |
+| `PUSH_STR` | 字符串表索引 | 压入字符串字面量借用引用 | — |
+| `PUSH_I8 I16 I32 I64` | 对应宽度立即数 | `read_iN` 读立即数 → 构造 int value 压栈 | `value_make_int` |
+| `PUSH_U8 U16 U32 U64` | 对应宽度立即数 | `read_uN` 读立即数 → 构造 uint value 压栈 | `value_make_uint` |
+| `PUSH_F32 F64` | 对应宽度立即数 | `read_fN` 读立即数 → 构造 float value 压栈 | `value_make_float` |
+| `PUSH_BOOL` | 1 字节立即数 | `read_bool` → 构造 bool value 压栈 | `value_make_bool` |
+| `PUSH_VALUE` | offset | 压入 `stack[sp-1-offset]` 的借用引用（offset=0 即 dup 栈顶一份） | — |
+| `LOAD` | strtable 索引 | 从 global scope 按名查 **type value** 压栈（类型注册见 2.7.5 下注） | `scope_lookup` |
+| `PUSH_UNDEFINED` | — | 压入 void 类型 value，标记"类型待推导" | `value_make_void` |
+| `DEFINE` | strtable 索引 | 弹栈定义变量：**栈顶为 type value（`LOAD` 压入）或 void/undefined（`PUSH_UNDEFINED` 压入）时作为类型说明符再弹一个值；否则栈顶即值本身（函数参数定义场景）**；无初始值（值为 void）标记 TDZ | `scope_define` + `value_set_tdz` |
+| `CREATE_FUNC_TYPE` | 参数个数 argc | 弹栈 `[return_type, param_1..param_argc, is_variadic]`（压栈序）→ `type_func_sig` intern 签名类型 → 构造 type value 压栈（见 2.7.6） | `type_func_sig` |
+| `PUSH_FUNCTION` | 入口 pc | 读入口 pc 立即数 → **构造 `bcode_function_t{entry_pc}`** → 弹栈顶签名类型（`CREATE_FUNC_TYPE` 产物）→ 组装 **func value** 压栈（函数定义模板见 2.7.6） | `value_make` |
+| `DEFINE_FUNCTION` | strtable 索引 | 弹栈顶 **func value** 直接定义：value 自带签名类型（无类型说明符），函数名固定不可重命名（区别于 `DEFINE` 的 value,type 双弹） | `scope_define` |
+| `ADD SUB MUL DIV MOD` | — | 弹两引用 → 运算 → 压结果引用 | `value_add` 等 |
+| `EQ NE LT LE GT GE` | — | 同上 | `value_eq` 等 |
+| `AND OR` | — | 同上 | `value_band` 等 |
+| `NEG NOT` | — | 弹一引用 → 一元运算 → 压结果 | `value_neg`/`value_lnot` |
+| `CAST` | 类型表索引 | 显式转换 | `value_explicit_cast` |
+| `CALL` | argc | callee 在 `stack[sp-1-argc]`、实参 `args=&stack[sp-argc]`（调用点先 `PUSH "name"`）→ 清理 callee+实参 → **`value_call(vm, callee, args, argc)`**（scope/frame 由 `bcode_function_t` 基类回调完成，见 2.7.6）→ 结果压栈 | `value_call` |
+| `RET` | — | 返回值保留栈顶 → 恢复 caller_scope + return_pc | `scope_destroy` |
+| `JMP` | 目标 pc | `*pc = read_u32(...)`（绝对字节偏移） | — |
+| `JZ JNZ` | 目标 pc | 弹引用，false/0 则跳 | `value_truthy` |
+| `PUSH_SCOPE` | — | `scope_new(alloc, current)` 压入 | `scope_new` |
+| `POP_SCOPE` | — | 弹出并销毁当前 scope（回收本块全部临时值） | `scope_destroy` |
+| `POP` | — | 丢弃栈顶引用（不释放，归 scope） | — |
+| `HALT` | — | 停止执行 | — |
+
+运算中间结果由 current_scope **匿名绑定**（`value_make`/vtable 自动 track），块退出 `POP_SCOPE` 一次性回收。
+
+**变量定义编译模板**（`DEFINE` 弹栈约定：栈顶为类型说明符（type value / void value）则再弹一个作为值；否则栈顶即值）：
+
+```
+var a:i32 = 1;      =>  PUSH_I32 1;  LOAD "i32";  DEFINE "a";
+var b = 1;          =>  PUSH_I32 1;  PUSH_UNDEFINED;  DEFINE "b";
+var c:i32;          =>  PUSH_UNDEFINED;  LOAD "i32";  DEFINE "c";   /* 无初始值 = undefined */
+```
+
+- **undefined 视为 void 类型的变量**：不引入新类型，`PUSH_UNDEFINED` 构造 type_void 的 value，作为"类型待推导 / 未初始化"标记。`DEFINE` 遇 void 类型说明符时从初始值推断实际类型；值也为 void（无初始值）则变量以 TDZ 状态定义（读前必须赋值）。
+- **TDZ**：VM 层已有 `value_t.is_tdz` + `value_is_tdz`/`value_set_tdz`，无需新增。
+- **基本类型注册 global scope**：VM 初始化时把 i8..i64/u8..u64/f32/f64/bool/str/void 等基本类型以 **type value** 注册进 global scope（复用现有 `g_type_type`，VTABLE_TYPE，data 存 `const type_t*`），`LOAD "i32"` 即按名查出的 type value。注意 `vm_init_builtins` 目前只挂 `vm->type_*` 字段，需调整为先建 global_scope 再注册（见 2.6.6 待办）。
+
+#### 2.7.6 函数调用与 interrupt 哨兵
+
+```
+CALL argc 执行（回调内）：
+  callee = stack[sp-1-argc];  args = &stack[sp-argc]   -- 调用点先 PUSH "name" 再压实参
+  清理栈上 callee+实参（截断到 sp-argc-1）
+  r = value_call(vm, callee, args, argc)               -- 唯一调用入口，scope/frame 全在回调内
+  if (r) 压栈
+
+RET 执行（回调内）：
+  返回值引用保留在栈顶（return 指令前已就位）
+  返回 interrupt 哨兵（类型 INTERRUPT_RETURN），由 bcode_call_cfunc 的执行循环捕获
+```
+
+**scope/frame 处理交由基类回调，CALL 指令只调 `value_call`**。`bcode_function_t` 继承 `func_t`（基类）：
+
+```c
+typedef struct bcode_function_t {
+    func_t   base;      /* 基类：cfunc（= bcode_call_cfunc）、closure_scope、root_scope、name */
+    uint32_t entry_pc;  /* 字节码入口偏移 */
+} bcode_function_t;
+```
+
+`value_call` → vtable 分派 `func_vcall`（现有 vm API，src/vm/type_func.c），**通用调用流程全部复用**：
+
+1. 保存现场（caller_root / caller_scope）
+2. 切函数 root_scope / closure_scope
+3. push 函数体匿名局部作用域
+4. 参数 safe_cast + clone 到 local_args（类型兜底，sema 已静态校验）
+5. 调 `base.cfunc`（= `bcode_call_cfunc`）
+6. 返回值 safe_cast + clone 到调用方作用域
+7. 平衡作用域栈（正常 pop / error 砍子树）
+8. 恢复现场
+
+**`bcode_call_cfunc`（bcode_function_t 的执行回调）**：
+
+```
+bcode_call_cfunc(vm, fn, argc, local_args):
+  local_args 按序压操作数栈（压栈顺序 a, b → 栈顶是 b）
+  保存 exec->pc；exec->pc = entry_pc
+  驱动指令循环执行函数体：
+    函数体头部倒序 DEFINE "b"; DEFINE "a" 弹栈绑定参数（**不按名绑定**）
+    ...函数体...
+    RET 返回 interrupt 哨兵 → 循环捕获（栈顶即返回值）
+  恢复 exec->pc
+  返回栈顶值（由 func_vcall 继续 clone 回 caller）
+```
+
+**interrupt 哨兵消费点移到 bcode_call_cfunc 子循环**：函数调用被 `func_vcall` 包裹成同步调用，`RET` 只返回哨兵，由执行回调的循环捕获取返回值；弹帧/恢复现场由 `func_vcall` 的保存/恢复逻辑完成，不再需要独立 frame 栈。执行器主循环的统一出口只处理 error（引擎级硬错误）。未来 BREAK/CONTINUE 哨兵同理由执行回调捕获。
+
+**调用模型统一（FFI / vm 预注册 / 手工注册 / 字节码函数）**：`CALL` 指令永远走 `value_call` → `func_vcall`，通用流程（作用域切换、参数 clone、返回 clone、错误平衡）对**所有**函数实现共享：
+
+- **FFI 函数**（C 函数指针，可变参数如 printf）：`func_t.cfunc` 直调，is_variadic 签名
+- **vm 预注册 / clux 手工注册的函数**：注册时构造 `func_t`（cfunc = 用户回调）挂到 global scope，调用点 `PUSH "name"` 取函数值 → `CALL` 走同一 `value_call`
+- **字节码函数**：`bcode_function_t`（继承 func_t）的 `base.cfunc = bcode_call_cfunc`，驱动字节码体
+
+调用点无需区分函数来源——只要函数值是 `func_t` 体系（data 指向 func_t 或其子类），`value_call` 即正确分派。这也是 `CALL` 只保留 `value_call` 一个入口的根本原因。
+
+**函数定义编译模板**（函数体在模块顶层顺序执行时被 `JMP` 守卫跳过，只经 `CALL` 进入；`L_FUNC_START`/`L_FUNC_END` 为地址标签，编译期回填绝对 pc）：
+
+```
+func add(a:i32, b:i32):i32 { return a + b; }
+func main():void { }
+
+  JMP L_FUNC_END                  ; 顺序执行跳过函数体
+L_FUNC_START:                     ; = bcode_function_t.entry_pc
+  DEFINE "b"                      ; 弹栈顶实参定义参数（倒序：后压先弹）
+  DEFINE "a"
+  ...函数体...
+  RET
+L_FUNC_END:                       ; 构造签名类型 + 函数值，DEFINE_FUNCTION 注册
+  LOAD "i32"                      ; 返回值类型
+  LOAD "i32"                      ; 参数 a 类型
+  LOAD "i32"                      ; 参数 b 类型
+  PUSH_BOOL false                 ; 是否可变（clux 非变参 → 恒 false）
+  CREATE_FUNC_TYPE 2              ; 弹 4 个 → func(i32, i32): i32 签名类型压栈
+  PUSH_FUNCTION L_FUNC_START      ; 构造 bcode_function_t{entry_pc} + 弹栈顶签名类型 → func value
+  DEFINE_FUNCTION "add"
+  ...main 同理...
+```
+
+- **参数不按名绑定，由函数体内弹栈 DEFINE**：`bcode_call_cfunc` 把 local_args 按序压操作数栈（压栈顺序 `a, b` → 栈顶是 `b`），函数体头部编译期生成倒序 `DEFINE "b"; DEFINE "a"` 依次弹栈定义。参数名只在编译期用于生成 DEFINE 指令，运行时函数值不含参数名。
+- **CREATE_FUNC_TYPE 构造签名类型**：弹栈格式 `[返回值, 参数1..argc, 是否可变]`（压栈序），回调调 `type_func_sig` intern 签名类型（按签名去重，同签名共享一个 type_t）并构造 type value 压栈。`is_variadic` 由编译器恒压 `PUSH_BOOL false`（clux 函数不支持可变参数，可变是 FFI 的）。
+- **void 函数返回 undefined**：为统一性，void 类型函数实际 `return undefined`——函数体末尾（或显式 `return;`）编译为 `PUSH_UNDEFINED; RET;`。`RET` 语义统一为"栈顶即返回值"：非 void 函数返回表达式求值结果，void 函数返回 void 类型的 undefined value。`return expr;` => `...expr...; RET`。
+- **clux 函数不支持可变参数**（可变是 FFI 的）：`argc` 固定等于签名参数个数，sema 已静态校验，运行时无需变参处理。
+- **PUSH_FUNCTION 构造 bcode_function_t**：操作数为**入口 pc 立即数**（编译期把 `L_FUNC_START` 标签回填为绝对字节偏移），回调读 pc 构造 `bcode_function_t{ .base = func_new(alloc), .entry_pc = pc }`（分配，随函数值由 scope 管理；base.cfunc = `bcode_call_cfunc`），再**弹栈顶签名类型**（CREATE_FUNC_TYPE 产物）组装 func value（type = 签名类型，data = bcode_function_t）压栈，随后 `DEFINE_FUNCTION "add"` 把函数注册进当前 scope——函数是一等值。**不查任何函数表**。
+- **DEFINE_FUNCTION 与 DEFINE 的区别**：函数值本身携带签名类型（value.type），且函数名固定不可重命名（定义语句非变量赋值），所以用单值弹栈（value, define），无类型说明符；普通 `DEFINE` 是 value, type 双弹。
+
+`bcode_function_t` **不是编译期预建的表**，由 `PUSH_FUNCTION` 执行时构造——除基类 `func_t` 外只多一个入口字节偏移 `entry_pc`，不含参数名、不含 AST 节点指针；区别于运行时 `func_t`（C 函数值）与 AST 层 `ast_func_def_t`（AST 节点）。`CALL` 只需 `value_call`，scope/frame 处理在 `func_vcall` 通用流程 + `bcode_call_cfunc` 执行回调内。
+
+#### 2.7.7 控制流编译模板
+
+```
+if (c) A else B:          while (c) B:            a && b:
+  ...cond...                L_cond:                  PUSH a
+  JZ L_else                 ...cond...               JZ L_false
+  ...A...                   JZ L_end                 PUSH b
+  JMP L_end                 ...B...                  JZ L_false
+  L_else:                   JMP L_cond               PUSH_BOOL true
+  ...B...                   L_end:                   JMP L_end
+  L_end:                                          L_false:
+                                                  PUSH_BOOL false
+                                                  L_end:
+```
+
+`for` desugar 成 init + while。短路运算符在编译期展开成跳转（不做运行时惰性求值）。跳转目标 pc 为绝对字节偏移，编译期 emit 时记录当前位置、回填目标值。
+
+#### 2.7.8 生命周期闭环
+
+| 值的来源 | 谁拥有 | 何时释放 |
+|---|---|---|
+| 变量值 | scope（`scope_define`） | `scope_destroy` |
+| 表达式中间结果 | 当前 scope（匿名 track） | `POP_SCOPE` |
+| 字符串表字符串 | 字符串表（编译期收集，只读） | `bytecode_destroy` |
+| 栈元素 | **借用，无人拥有** | 随 scope 销毁自然失效 |
 
 ### 2.8 诊断 (include/diag/diagnostic.h, src/diag/diagnostic.c) —— 尚未实现（diag/ 目录为空）
 
