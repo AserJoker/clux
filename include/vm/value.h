@@ -126,9 +126,6 @@ value_t *value_shr(vm_t *vm, value_t *a, value_t *b);
 
 value_t *value_lnot(vm_t *vm, value_t *a);
 
-/** 真值判断（JZ/JNZ 控制流用）：false/0/空字符串 → false，其余 true */
-bool value_truthy(vm_t *vm, const value_t *v);
-
 value_t *value_call(vm_t *vm, value_t *callee, value_t **args, size_t argc);
 
 /* ---- 生命周期 ---- */

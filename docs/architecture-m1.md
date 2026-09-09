@@ -644,7 +644,7 @@ void exec_run(exec_t *e) {
 | `CALL` | argc | callee 在 `stack[sp-1-argc]`、实参 `args=&stack[sp-argc]`（调用点先 `PUSH "name"`）→ 清理 callee+实参 → **`value_call(vm, callee, args, argc)`**（scope/frame 由 `bcode_function_t` 基类回调完成，见 2.7.6）→ 结果压栈 | `value_call` |
 | `RET` | — | 返回值保留栈顶 → 恢复 caller_scope + return_pc | `scope_destroy` |
 | `JMP` | 目标 pc | `*pc = read_u32(...)`（绝对字节偏移） | — |
-| `JZ JNZ` | 目标 pc | 弹引用，false/0 则跳 | `value_truthy` |
+| `JZ JNZ` | 目标 pc | 弹引用 → **`value_explicit_cast(v, bool)`**（失败/TDZ 返回 error）→ 读 `*(bool*)data` 判断跳转（clux 严格 bool，无 truthy 概念） | `value_explicit_cast` |
 | `PUSH_SCOPE` | — | `scope_new(alloc, current)` 压入 | `scope_new` |
 | `POP_SCOPE` | — | 弹出并销毁当前 scope（回收本块全部临时值） | `scope_destroy` |
 | `POP` | — | 丢弃栈顶引用（不释放，归 scope） | — |
@@ -770,6 +770,14 @@ if (c) A else B:          while (c) B:            a && b:
 ```
 
 `for` desugar 成 init + while。短路运算符在编译期展开成跳转（不做运行时惰性求值）。跳转目标 pc 为绝对字节偏移，编译期 emit 时记录当前位置、回填目标值。
+
+**跳转跨作用域必须显式平衡（关键规则）**：跳转指令（`JMP`/`JZ`/`JNZ`）会破坏 scope 状态——块内若有 `PUSH_SCOPE` 压入的子作用域，跳转离开该块时不会经过对应 `POP_SCOPE`，导致 scope 链泄漏（子作用域的 owned 值永不回收）。因此**编译器在 emit 任何跳出 N 层嵌套块的跳转指令前，必须先发 N 个 `POP_SCOPE`** 平衡掉这些块作用域，再 emit 跳转。典型场景：
+
+- `if` 分支体开块作用域后 `return`/`break`/`continue` 提前离开 → 跳转前弹掉分支块
+- `while` 循环体开块作用域后 `continue` 跳回 `L_cond` → 跳转前弹掉循环体块
+- 短路 `&&`/`||` 的 `JZ L_false` 若跨越表达式内联块 → 同样先弹
+
+编译器需跟踪**当前已压栈的块作用域计数**（scope_depth），emit 跳转时按 `depth` 生成 `POP_SCOPE` 序列；标签目标侧（`L_end` 等）的栈深度与源侧一致，保证执行器 `POP_SCOPE` 与 `PUSH_SCOPE` 严格配对。该平衡只发生在编译期生成字节码时，执行器本身对 scope 不感知跳转（执行器只按指令流机械 push/pop）。
 
 #### 2.7.8 生命周期闭环
 

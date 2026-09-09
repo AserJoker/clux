@@ -215,22 +215,6 @@ value_t *value_shr(vm_t *vm, value_t *a, value_t *b)  { DISPATCH(vm, a, b, shr, 
 
 value_t *value_lnot(vm_t *vm, value_t *a)             { DISPATCH_UNARY(vm, a, lnot, "!"); }
 
-bool value_truthy(vm_t *vm, const value_t *v) {
-    if (value_is_error(vm, v)) return false;
-    if (!v || !v->type) return false;
-    if (v->is_shadow) return false;              /* shadow 无 data，按 false 处理 */
-    if (!v->data) return false;                  /* void 值：data=NULL */
-    if (v->type == vm->type_str) {
-        const string_t *s = *(const string_t *const *)v->data;
-        return s && string_len(s) > 0;
-    }
-    /* 数值/bool：data 全零即 false（内置类型 size ≤ 8，16 字节零模板足够） */
-    static const unsigned char zeros[16];
-    size_t n = v->type->size <= sizeof(zeros) ? v->type->size : sizeof(zeros);
-    if (n == 0) return false;
-    return memcmp(v->data, zeros, n) != 0;
-}
-
 value_t *value_call(vm_t *vm, value_t *callee, value_t **args, size_t argc) {
     if (value_is_error(vm, callee)) return callee;
     /* 检查参数中是否有 error / TDZ（shadow 分派前） */

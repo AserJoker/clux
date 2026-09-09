@@ -228,8 +228,10 @@ static value_t *op_jz(vm_t *vm, bytecode_t *bc, size_t *pc) {
     uint32_t target = bcode_read_u32(bc, pc);
     value_t *v = exec_stack_pop(vm);
     if (value_is_error(vm, v)) return v;
-    if (value_is_tdz(v)) return value_make_error(vm, "cannot use variable before initialization");
-    if (!value_truthy(vm, v)) *pc = target;
+    /* 严格 bool：safe_cast 到 bool（TDZ/不可转换 → error 传播） */
+    value_t *cond = value_explicit_cast(vm, v, vm->type_bool);
+    if (value_is_error(vm, cond)) return cond;
+    if (!*(const bool *)value_data(cond)) *pc = target;
     return NULL;
 }
 
@@ -237,8 +239,10 @@ static value_t *op_jnz(vm_t *vm, bytecode_t *bc, size_t *pc) {
     uint32_t target = bcode_read_u32(bc, pc);
     value_t *v = exec_stack_pop(vm);
     if (value_is_error(vm, v)) return v;
-    if (value_is_tdz(v)) return value_make_error(vm, "cannot use variable before initialization");
-    if (value_truthy(vm, v)) *pc = target;
+    /* 严格 bool：safe_cast 到 bool（TDZ/不可转换 → error 传播） */
+    value_t *cond = value_explicit_cast(vm, v, vm->type_bool);
+    if (value_is_error(vm, cond)) return cond;
+    if (*(const bool *)value_data(cond)) *pc = target;
     return NULL;
 }
 

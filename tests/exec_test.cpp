@@ -386,6 +386,22 @@ TEST_F(ExecTest, JzOnTdzValueReturnsError) {
     EXPECT_TRUE(value_is_error(vm, r));
 }
 
+/* 非 bool 值作为跳转条件（str → bool 不可转换）→ 报 error（严格 bool） */
+TEST_F(ExecTest, JzOnNonBoolReturnsError) {
+    bcode_write_op(bc, BCODE_PUSH_STR); bcode_write_str(bc, STRSLICE_LIT("x"));
+
+    size_t placeholder = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_JZ);
+    bcode_write_u32(bc, 0);
+    size_t dest = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_HALT);
+    bcode_patch_u32(bc, placeholder + 4, (uint32_t)dest);
+
+    value_t *r = run();
+    ASSERT_NE(r, nullptr);
+    EXPECT_TRUE(value_is_error(vm, r));
+}
+
 /* ================================================================ */
 /* 5. 块作用域（PUSH_SCOPE / POP_SCOPE）                             */
 /* ================================================================ */
