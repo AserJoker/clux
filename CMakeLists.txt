@@ -94,6 +94,22 @@ if(CLUX_DIAG_SOURCES)
 endif()
 
 # ---------------------------------------------------------------------------
+# Compiler library (AST -> bytecode)
+#
+# Materializes as soon as the first *.c file lands in src/compiler/, so the
+# target only exists once the compile stage is actually implemented.
+# ---------------------------------------------------------------------------
+file(GLOB CLUX_COMPILER_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/compiler/*.c")
+if(CLUX_COMPILER_SOURCES)
+  add_library(clux_compiler STATIC ${CLUX_COMPILER_SOURCES})
+  target_include_directories(clux_compiler PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  target_link_libraries(clux_compiler PUBLIC clux_core clux_parser clux_vm clux_sema clux_diag ICU::uc ICU::i18n)
+  clux_target_warnings(clux_compiler)
+  list(APPEND CLUX_STAGE_LIBS clux_compiler)
+endif()
+
+# ---------------------------------------------------------------------------
 # Driver library (pipeline orchestration: load -> lex -> ...)
 #
 # Only src/driver/driver.c exists so far; later stages (parser/sema/interp)
@@ -103,7 +119,7 @@ file(GLOB CLUX_DRIVER_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/driver/*.c")
 add_library(clux_driver STATIC ${CLUX_DRIVER_SOURCES})
 target_include_directories(clux_driver PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(clux_driver PUBLIC clux_core clux_parser clux_vm ICU::uc ICU::i18n)
+target_link_libraries(clux_driver PUBLIC clux_core clux_parser clux_vm clux_sema clux_diag clux_compiler ICU::uc ICU::i18n)
 clux_target_warnings(clux_driver)
 
 # ---------------------------------------------------------------------------

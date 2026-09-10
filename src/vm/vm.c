@@ -6,6 +6,7 @@
 #include "core/vec.h"
 
 extern void vm_init_builtins(vm_t *vm);
+extern void vm_register_printf(vm_t *vm);
 
 static class_t g_vm_class = {
     .name       = "clux.vm",
@@ -63,14 +64,18 @@ vm_t *vm_new(allocator_t *alloc) {
     vm->root_scope    = scope_new(alloc, vm->global_scope);
     vm->current_scope = vm->root_scope;
 
-    /* 基本类型注册进 global scope（LOAD 指令按名查 type value） */
-    vm_register_builtin_types(vm);
-
     /* 执行器操作数栈：借用引用，不拥有 value */
     vm->stack = vec_new(alloc, /*owns_element=*/false);
 
-    /* 函数对象池：func_t*，不 owns 元素，vm_destroy 手动释放 */
+    /* 函数对象池：func_t*，不 owns 元素，vm_destroy 手动释放
+       （必须先于 func_new 使用——内置函数注册依赖池存在） */
     vm->functions = vec_new(alloc, /*owns_element=*/false);
+
+    /* 基本类型注册进 global scope（LOAD 指令按名查 type value） */
+    vm_register_builtin_types(vm);
+
+    /* printf 内置函数（临时注册，M1 硬编码绑定 C printf） */
+    vm_register_printf(vm);
 
     return vm;
 }

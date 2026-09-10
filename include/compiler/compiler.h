@@ -1,0 +1,107 @@
+#ifndef _H_CLUX_COMPILER_COMPILER_
+#define _H_CLUX_COMPILER_COMPILER_
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include "core/allocator.h"
+#include "core/strslice.h"
+#include "core/vec.h"
+#include "diag/diagnostic.h"
+#include "parser/ast_node.h"
+#include "sema/symbol.h"
+#include "vm/bcode.h"
+#include "vm/vm.h"
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+/* ===========================================================================
+ * 字节码编译器（AST → bcode）
+ *
+ * 输入：AST（parser 产物，arena 持有）+ sema 作用域树（仅用于查找
+ * 函数签名类型 / 变量符号元数据）。
+ * 输出：bytecode_t 模块（strtable + code 流），与执行器约定完全对齐
+ * （见 docs/architecture-m1.md 2.7 与 tests/exec_test.cpp 函数测试）。
+ *
+ * 编译错误策略：diag 收集 + fail-fast。任一节点编译出错即置
+ * compiler->failed，停止继续编译；driver 出口统一 diag_print_all。
+ *
+ * 平衡规则（编译期静态追踪）：
+ *   - scope_depth：跳转跨出 N 层块作用域时，先发 N 个 POP_SCOPE 再跳
+ *   - stack_depth：条件分支汇合点（if 的 end / for 的 update 入口）要求
+ *     两侧栈深一致（表达式语句压栈的值由调用方 POP 平衡）
+ * =========================================================================== */
+
+/* ---- 标签（前向占位 + 回填） ---- */
+
+typedef struct compile_patch_t {
+    size_t pos;                 /* JMP/JZ/JNZ 的操作数字段偏移（opcode+4） */
+    struct compile_patch_t *next;
+} compile_patch_t;
+
+typedef struct compile_label_t {
+    bool           defined;     /* 已定义：pos 为实际目标 pc */
+    size_t         pos;
+    compile_patch_t *patches;   /* 未定义时的前向跳转 patch 列表 */
+} compile_label_t;
+
+/* ---- 循环上下文（break/continue 目标标签 + 跳出深度） ---- */
+
+typedef struct compile_loop_t {
+    compile_label_t *break_label;    /* 循环出口（break 目标） */
+    compile_label_t *continue_label; /* 循环体底部（continue 目标） */
+    size_t           scope_depth;    /* 循环进入时的 scope 深度（break/continue 跳出基准） */
+    struct compile_loop_t *next;
+} compile_loop_t;
+
+/* ---- 编译器上下文 ---- */
+
+typedef struct compiler_t {
+    allocator_t    *alloc;
+    vm_t           *vm;
+    diag_buf_t     *diag;
+    bytecode_t     *bc;
+    vec_t          *tokens;        /* token pool（借 driver，诊断用位置） */
+
+    /* sema 作用域树（借用，不拥有；编译完成后由 driver 释放） */
+    sema_scope_t   *global_scope;
+    sema_scope_t   *current_scope; /* 编译期当前词法作用域（符号元数据查找） */
+
+    /* 静态平衡追踪 */
+    size_t          scope_depth;    /* 当前已 PUSH_SCOPE 未 POP 的层数 */
+    int             stack_depth;    /* 静态操作数栈深度（压栈 +1 / 弹栈 -1） */
+
+    compile_loop_t *loop_stack;     /* 循环上下文栈（break/continue） */
+
+    bool            failed;         /* 已发生编译错误（fail-fast） */
+} compiler_t;
+
+/* ---- 生命周期 ---- */
+
+/**
+ * 创建编译器上下文。
+ * - vm: 运行 VM（类型查询 / LOAD 校验用；不执行）
+ * - diag: 诊断收集器（driver 出口打印）
+ * - tokens: token pool（借 driver，节点位置 → location 转换用）
+ * - global_scope: sema 作用域树根（借用，符号元数据查找）
+ * 返回 NULL 表示参数无效或 OOM。
+ */
+compiler_t *compiler_new(allocator_t *alloc, vm_t *vm, diag_buf_t *diag,
+                         vec_t *tokens, sema_scope_t *global_scope);
+
+/** 销毁编译器上下文（不释放 vm/diag/tokens/scope 树，均为借用） */
+void compiler_destroy(compiler_t **pc);
+
+/**
+ * 编译 AST 程序为字节码模块（产物归调用方，bcode_destroy 释放）。
+ * 编译错误时返回 NULL（诊断已记入 diag，driver 出口打印）。
+ * 成功后 bc 即编译产物（含函数注册段 + 各函数体），调用方
+ * exec_run 后 scope_lookup("main") + value_call 触发执行。
+ */
+bytecode_t *compiler_compile(compiler_t *c, ast_node_t *program);
+
+#ifdef __cplusplus
+}
+#endif
+#endif /* _H_CLUX_COMPILER_COMPILER_ */

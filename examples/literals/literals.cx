@@ -31,8 +31,9 @@ func main():i32 {
     // 字符串字面量（类型 str）
     var text:str = "clux language\n";
 
-    // 逻辑运算符与显式丢弃
-    _ = dec + hex + oct + bin + v8 + vU8 + pi + exp + frac + ch;
+    // 逻辑运算符与显式丢弃（M1 无隐式提升：混合运算须手工 as 到公共类型）
+    _ = dec + hex + oct + bin + (v8 as i32) + (vU8 as i32);
+    _ = (pi as f64) + (exp as f64) + (frac as f64);
     _ = yes && no || yes;
 
     printf(text);

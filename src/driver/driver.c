@@ -3,43 +3,28 @@
 #include "core/stream.h"
 #include "core/vec.h"
 #include "core/arena.h"
+#include "core/string.h"
 #include "parser/lexer.h"
 #include "parser/location.h"
 #include "parser/parser.h"
 #include "parser/ast_node.h"
 #include "parser/ast_kind.h"
 #include "parser/ast_program.h"
-#include "parser/ast_func_def.h"
-#include "parser/ast_var_def.h"
-#include "parser/ast_block.h"
-#include "parser/ast_if.h"
-#include "parser/ast_while.h"
-#include "parser/ast_for.h"
-#include "parser/ast_return.h"
-#include "parser/ast_assign.h"
-#include "parser/ast_expr_stmt.h"
-#include "parser/ast_ident.h"
-#include "parser/ast_int_lit.h"
-#include "parser/ast_float_lit.h"
-#include "parser/ast_bool_lit.h"
-#include "parser/ast_string_lit.h"
-#include "parser/ast_char_lit.h"
-#include "parser/ast_binary.h"
-#include "parser/ast_unary.h"
-#include "parser/ast_call.h"
-#include "parser/ast_member.h"
-#include "parser/ast_index.h"
-#include "parser/ast_cast.h"
 #include "parser/ast_error.h"
 #include "diag/diagnostic.h"
 #include "sema/sema.h"
 #include "sema/symbol.h"
+#include "compiler/compiler.h"
 #include "vm/vm.h"
+#include "vm/value.h"
+#include "vm/scope.h"
+#include "vm/exec.h"
+#include "vm/bcode.h"
+#include "vm/type_error.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <inttypes.h>
 
 /* ---- Internal: byte buffer class (for file-backed source buffers) ---- */
 
@@ -158,255 +143,7 @@ static int driver_lex_into(allocator_t *alloc,
   return 0;
 }
 
-/* ---- Stage ② + ③ + ④: lex → parse → output AST (JSON) ---- */
-
-/** 输出 JSON 字符串（转义控制字符和双引号） */
-static void print_json_string(const char *s, size_t len) {
-  putchar('"');
-  for (size_t i = 0; i < len; i++) {
-    unsigned char c = (unsigned char)s[i];
-    switch (c) {
-    case '"':  fputs("\\\"", stdout); break;
-    case '\\': fputs("\\\\", stdout); break;
-    case '\b': fputs("\\b", stdout);  break;
-    case '\f': fputs("\\f", stdout);  break;
-    case '\n': fputs("\\n", stdout);  break;
-    case '\r': fputs("\\r", stdout);  break;
-    case '\t': fputs("\\t", stdout);  break;
-    default:
-      if (c < 0x20) printf("\\u%04X", c);
-      else fputc(c, stdout);
-    }
-  }
-  putchar('"');
-}
-
-/** 兄弟链节点数组的逗号分隔 */
-static void print_json_siblings(const ast_node_t *head, int indent);
-
-/** 将 AST 节点递归输出为 JSON，indent 控制缩进层级 */
-static void print_ast_json(const ast_node_t *node, int indent) {
-  if (!node) { fputs("null", stdout); return; }
-
-  printf("{\"kind\":\"%s\"", ast_kind_name(node->kind));
-
-  /* 类型特定字段 */
-  switch (node->kind) {
-  case AST_PROGRAM: {
-    const ast_program_t *prog = (const ast_program_t *)node;
-    printf(",\"funcs\":");
-    print_json_siblings(prog->funcs, indent + 1);
-    break;
-  }
-  case AST_FUNC_DEF: {
-    const ast_func_def_t *fn = (const ast_func_def_t *)node;
-    printf(",\"name\":");
-    print_json_string(fn->name.ptr, fn->name.len);
-    printf(",\"params\":");
-    print_json_siblings(fn->params, indent + 1);
-    if (fn->return_type.len > 0) {
-      printf(",\"return_type\":");
-      print_json_string(fn->return_type.ptr, fn->return_type.len);
-    }
-    printf(",\"body\":");
-    print_ast_json(fn->body, indent + 1);
-    break;
-  }
-  case AST_VAR_DEF: {
-    const ast_var_def_t *vd = (const ast_var_def_t *)node;
-    printf(",\"name\":");
-    print_json_string(vd->name.ptr, vd->name.len);
-    if (vd->type_name.len > 0) {
-      printf(",\"type\":");
-      print_json_string(vd->type_name.ptr, vd->type_name.len);
-    }
-    if (vd->init) {
-      printf(",\"init\":");
-      print_ast_json(vd->init, indent + 1);
-    }
-    break;
-  }
-  case AST_BLOCK: {
-    const ast_block_t *blk = (const ast_block_t *)node;
-    printf(",\"stmts\":");
-    print_json_siblings(blk->stmts, indent + 1);
-    break;
-  }
-  case AST_IF: {
-    const ast_if_t *it = (const ast_if_t *)node;
-    printf(",\"cond\":");
-    print_ast_json(it->cond, indent + 1);
-    printf(",\"then\":");
-    print_ast_json(it->then_body, indent + 1);
-    if (it->else_body) {
-      printf(",\"else\":");
-      print_ast_json(it->else_body, indent + 1);
-    }
-    break;
-  }
-  case AST_WHILE: {
-    const ast_while_t *w = (const ast_while_t *)node;
-    printf(",\"cond\":");
-    print_ast_json(w->cond, indent + 1);
-    printf(",\"body\":");
-    print_ast_json(w->body, indent + 1);
-    break;
-  }
-  case AST_FOR: {
-    const ast_for_t *f = (const ast_for_t *)node;
-    if (f->init) { printf(",\"init\":"); print_ast_json(f->init, indent + 1); }
-    if (f->cond) { printf(",\"cond\":"); print_ast_json(f->cond, indent + 1); }
-    if (f->update) { printf(",\"update\":"); print_ast_json(f->update, indent + 1); }
-    printf(",\"body\":");
-    print_ast_json(f->body, indent + 1);
-    break;
-  }
-  case AST_RETURN: {
-    const ast_return_t *ret = (const ast_return_t *)node;
-    if (ret->value) { printf(",\"value\":"); print_ast_json(ret->value, indent + 1); }
-    break;
-  }
-  case AST_ASSIGN: {
-    const ast_assign_t *asgn = (const ast_assign_t *)node;
-    printf(",\"name\":");
-    print_json_string(asgn->name.ptr, asgn->name.len);
-    if (asgn->op) {
-      size_t tlen = 0;
-      const char *ttext = token_get_text(asgn->op, &tlen);
-      printf(",\"op\":");
-      print_json_string(ttext, tlen);
-    }
-    printf(",\"value\":");
-    print_ast_json(asgn->value, indent + 1);
-    break;
-  }
-  case AST_EXPR_STMT: {
-    const ast_expr_stmt_t *es = (const ast_expr_stmt_t *)node;
-    printf(",\"expr\":");
-    print_ast_json(es->expr, indent + 1);
-    break;
-  }
-  case AST_BINARY: {
-    const ast_binary_t *bin = (const ast_binary_t *)node;
-    if (bin->op) {
-      size_t tlen = 0;
-      const char *ttext = token_get_text(bin->op, &tlen);
-      printf(",\"op\":");
-      print_json_string(ttext, tlen);
-    }
-    printf(",\"lhs\":");
-    print_ast_json(bin->lhs, indent + 1);
-    printf(",\"rhs\":");
-    print_ast_json(bin->rhs, indent + 1);
-    break;
-  }
-  case AST_UNARY: {
-    const ast_unary_t *un = (const ast_unary_t *)node;
-    if (un->op) {
-      size_t tlen = 0;
-      const char *ttext = token_get_text(un->op, &tlen);
-      printf(",\"op\":");
-      print_json_string(ttext, tlen);
-    }
-    printf(",\"operand\":");
-    print_ast_json(un->operand, indent + 1);
-    break;
-  }
-  case AST_CALL: {
-    const ast_call_t *call = (const ast_call_t *)node;
-    printf(",\"callee\":");
-    print_ast_json(call->callee, indent + 1);
-    printf(",\"args\":");
-    print_json_siblings(call->args, indent + 1);
-    break;
-  }
-  case AST_MEMBER: {
-    const ast_member_t *m = (const ast_member_t *)node;
-    printf(",\"object\":");
-    print_ast_json(m->object, indent + 1);
-    printf(",\"field\":");
-    print_json_string(m->field.ptr, m->field.len);
-    break;
-  }
-  case AST_INDEX: {
-    const ast_index_t *idx = (const ast_index_t *)node;
-    printf(",\"object\":");
-    print_ast_json(idx->object, indent + 1);
-    printf(",\"indices\":");
-    print_json_siblings(idx->indices, indent + 1);
-    break;
-  }
-  case AST_CAST: {
-    const ast_cast_t *cast = (const ast_cast_t *)node;
-    printf(",\"expr\":");
-    print_ast_json(cast->expr, indent + 1);
-    if (cast->target_type.len > 0) {
-      printf(",\"type\":");
-      print_json_string(cast->target_type.ptr, cast->target_type.len);
-    }
-    break;
-  }
-  case AST_IDENT: {
-    const ast_ident_t *id = (const ast_ident_t *)node;
-    printf(",\"name\":");
-    print_json_string(id->name.ptr, id->name.len);
-    break;
-  }
-  case AST_INT_LIT: {
-    const ast_int_lit_t *lit = (const ast_int_lit_t *)node;
-    printf(",\"value\":\"%" PRId64 "\"", lit->value);
-    break;
-  }
-  case AST_FLOAT_LIT: {
-    const ast_float_lit_t *lit = (const ast_float_lit_t *)node;
-    printf(",\"value\":\"%.17g\"", lit->value);
-    break;
-  }
-  case AST_BOOL_LIT: {
-    const ast_bool_lit_t *lit = (const ast_bool_lit_t *)node;
-    printf(",\"value\":%s", lit->value ? "true" : "false");
-    break;
-  }
-  case AST_STRING_LIT: {
-    const ast_string_lit_t *lit = (const ast_string_lit_t *)node;
-    printf(",\"value\":");
-    print_json_string(lit->text.ptr, lit->text.len);
-    break;
-  }
-  case AST_CHAR_LIT: {
-    const ast_char_lit_t *lit = (const ast_char_lit_t *)node;
-    printf(",\"value\":%u", (unsigned)lit->value);
-    break;
-  }
-  case AST_ERROR: {
-    const ast_error_t *err = (const ast_error_t *)node;
-    printf(",\"message\":");
-    print_json_string(err->message.ptr, err->message.len);
-    break;
-  }
-  case AST_BREAK:
-  case AST_CONTINUE:
-    /* 无额外字段 */
-    break;
-  default:
-    break;
-  }
-
-  putchar('}');
-}
-
-/** 兄弟链输出为 JSON 数组 */
-static void print_json_siblings(const ast_node_t *head, int indent) {
-  putchar('[');
-  if (head) {
-    print_ast_json(head, indent);
-    for (const ast_node_t *s = head->next; s; s = s->next) {
-      putchar(',');
-      print_ast_json(s, indent);
-    }
-  }
-  putchar(']');
-}
+/* ---- Stage ② + ③ + ④: lex → parse → sema ---- */
 
 int driver_run_file(const char *path) {
   if (!path) {
@@ -501,15 +238,16 @@ int driver_run_file(const char *path) {
   }
 
   bool sema_ok = sema_analyze(sema, ast);
-  /* 作用域树是持久化数据，本阶段尚无字节码编译器下游消费，随 sema 上下文
-     释放；顺序参照 sema 生命周期约定：先取树、再销毁 sema、再销毁树 */
+  /* 作用域树是持久化数据，编译器（AST → bcode）按名查找符号元数据，
+     必须存活到编译完成；顺序参照生命周期约定：先取树、再销毁 sema、
+     编译结束后再销毁树 */
   sema_scope_t *scope_tree = sema->global_scope;
   sema_destroy(&sema);
-  if (scope_tree) sema_scope_destroy(&scope_tree);
 
   if (!sema_ok) {
     /* 语义诊断已由 sema 记入 diag，统一在出口打印（diag 销毁前） */
     diag_print_all(diag);
+    if (scope_tree) sema_scope_destroy(&scope_tree);
     diag_buf_destroy(&diag);
     vm_destroy(&vm);
     lexer_close(&lexer);
@@ -519,12 +257,85 @@ int driver_run_file(const char *path) {
     return 1;
   }
 
+  /* Stage ⑤: 编译（AST + sema 作用域树 → 字节码模块） */
+  compiler_t *comp = compiler_new(alloc, vm, diag, pool, scope_tree);
+  if (!comp) {
+    if (scope_tree) sema_scope_destroy(&scope_tree);
+    diag_buf_destroy(&diag);
+    vm_destroy(&vm);
+    lexer_close(&lexer);
+    vec_free(alloc, &pool);
+    arena_destroy(alloc, &arena);
+    delete_allocator(&alloc);
+    return 1;
+  }
+  bytecode_t *bc = compiler_compile(comp, ast);
+  compiler_destroy(&comp);
+
+  if (!bc) {
+    /* 编译诊断已记入 diag，统一在出口打印 */
+    diag_print_all(diag);
+    if (scope_tree) sema_scope_destroy(&scope_tree);
+    diag_buf_destroy(&diag);
+    vm_destroy(&vm);
+    lexer_close(&lexer);
+    vec_free(alloc, &pool);
+    arena_destroy(alloc, &arena);
+    delete_allocator(&alloc);
+    return 1;
+  }
+
+  /* Stage ⑥: 执行（注册函数 → 调用 main） */
+  value_t *er = exec_run(vm, bc);
+  if (value_is_error(vm, er)) {
+    error_data_t *ed = (error_data_t *)value_data(er);
+    fprintf(stderr, "run: %s\n",
+            ed && ed->message ? string_cstr(ed->message) : "execution error");
+    bcode_destroy(&bc);
+    if (scope_tree) sema_scope_destroy(&scope_tree);
+    diag_buf_destroy(&diag);
+    vm_destroy(&vm);
+    lexer_close(&lexer);
+    vec_free(alloc, &pool);
+    arena_destroy(alloc, &arena);
+    delete_allocator(&alloc);
+    return 1;
+  }
+
+  value_t *main_fn = scope_lookup(vm->current_scope, STRSLICE_LIT("main"));
+  if (!main_fn) {
+    fprintf(stderr, "run: no entry function 'main'\n");
+    bcode_destroy(&bc);
+    if (scope_tree) sema_scope_destroy(&scope_tree);
+    diag_buf_destroy(&diag);
+    vm_destroy(&vm);
+    lexer_close(&lexer);
+    vec_free(alloc, &pool);
+    arena_destroy(alloc, &arena);
+    delete_allocator(&alloc);
+    return 1;
+  }
+
+  value_t *mr = value_call(vm, main_fn, NULL, 0);
+  if (value_is_error(vm, mr)) {
+    error_data_t *ed = (error_data_t *)value_data(mr);
+    fprintf(stderr, "run: %s\n",
+            ed && ed->message ? string_cstr(ed->message) : "runtime error");
+    bcode_destroy(&bc);
+    if (scope_tree) sema_scope_destroy(&scope_tree);
+    diag_buf_destroy(&diag);
+    vm_destroy(&vm);
+    lexer_close(&lexer);
+    vec_free(alloc, &pool);
+    arena_destroy(alloc, &arena);
+    delete_allocator(&alloc);
+    return 1;
+  }
+
+  bcode_destroy(&bc);
+  if (scope_tree) sema_scope_destroy(&scope_tree);
   diag_buf_destroy(&diag);
   vm_destroy(&vm);
-
-  /* Stage ⑤: 输出 AST JSON（lexer 仍存活，strslice 可安全访问） */
-  print_ast_json(ast, 0);
-  putchar('\n');
 
   lexer_close(&lexer);
   vec_free(alloc, &pool);

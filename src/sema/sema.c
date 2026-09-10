@@ -246,7 +246,9 @@ value_t *sema_expr(sema_t *sema, ast_node_t *node, sema_scope_t *scope) {
       }
       ast_ident_t *name = (ast_ident_t *)call->callee;
       sema_symbol_t *sym = sema_lookup(sema->global_scope, name->name);
-      if (!sym || !sym->ast) {
+      /* 函数符号：用户函数 sym->ast=AST_FUNC_DEF；内置函数（printf）ast=NULL
+         但 type 携带 variadic 签名。两者都经 func_shadow_call 校验。 */
+      if (!sym || !sym->type) {
         diag_error(sema->diag, sema_loc(sema, &call->base),
                    "undefined function '%.*s'", (int)name->name.len,
                    name->name.ptr);
@@ -435,6 +437,16 @@ bool sema_analyze(sema_t *sema, ast_node_t *program) {
   sema->global_scope =
       sema_scope_new(sema->vm->alloc, SEMA_SCOPE_GLOBAL, NULL);
   if (!sema->global_scope) return false;
+
+  /* 预注册内置函数符号（printf：variadic 签名，ast=NULL 表示无 AST 定义）。
+     与 VM 侧 vm_register_printf 对应；签名类型经 type_func_sig intern。 */
+  {
+    const type_t *pparams[1] = { sema->vm->type_str };
+    const type_t *psig = type_func_sig(sema->vm, pparams, 1, NULL,
+                                       /*is_variadic=*/true);
+    sema_symbol_t init = {.type = psig, .ast = NULL};
+    sema_scope_define(sema->global_scope, STRSLICE_LIT("printf"), &init);
+  }
 
   pass1_names(sema, prog);
   pass2_types(sema);
