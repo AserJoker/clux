@@ -831,7 +831,7 @@ bool diag_has_error(const diag_buf_t *db);
 
 输出格式：`<file>:<line>:<col>: error: <message>`。
 
-### 2.9 语义分析 (include/sema/sema.h, symbol.h + src/sema/sema.c, stmt.c, symbol.c) —— 尚未实现
+### 2.9 语义分析 (include/sema/sema.h, symbol.h + src/sema/*.c)
 
 语义分析分两个阶段：**先构建 sema 作用域树**（scope 节点带完整符号表），**再按作用域树用 shadow value 遍历 AST** 做类型检查与推导。作用域结构与类型检查彻底分离。
 
@@ -844,11 +844,14 @@ bool diag_has_error(const diag_buf_t *db);
 ```
 include/sema/
   sema.h       — sema_t 上下文 + 公共 API (sema_create / sema_analyze / sema_destroy)
+                 + internal 段（resolve_type / sema_loc / sema_expr 等跨文件声明）
   symbol.h     — sema_symbol_t, sema_scope_t（sema 侧符号表）
 
-src/sema/
-  sema.c       — 上下文管理 + 三遍编排 + 表达式 walker（shadow value 求值）
-  stmt.c       — 语句 walker
+src/sema/（按语法节点类别拆分）
+  sema.c       — 上下文管理 + 三遍编排 + Pass 1/2（函数名收集 + 类型解析）
+  stmt_build.c — Pass 3a 作用域树构建 + 控制流分析（返回路径完整性 / unreachable）
+  stmt.c       — Pass 3b 语句 walker（shadow value 运行 + 确定性赋值分析）
+  expr.c       — 表达式 walker（shadow value 求值）
   symbol.c     — sema 侧符号表实现
 ```
 
@@ -980,7 +983,7 @@ x = x + 3;               // 块级 VM scope 已 pop → outer x
 ```
 
 ```c
-/* 变量读取（sema.c AST_IDENT）：从 VM scope 链 lookup shadow value，
+/* 变量读取（expr.c AST_IDENT）：从 VM scope 链 lookup shadow value，
    未初始化检查走符号表 flow_init（确定性赋值分析，VM 值层不感知） */
 value_t *v = scope_lookup(sema->vm->current_scope, n->name);
 if (!v)        { /* undefined variable 诊断 */ }

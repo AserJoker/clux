@@ -1,0 +1,249 @@
+#include "compiler/compiler.h"
+#include "parser/ast_assign.h"
+#include "parser/ast_block.h"
+#include "parser/ast_expr_stmt.h"
+#include "parser/ast_for.h"
+#include "parser/ast_if.h"
+#include "parser/ast_return.h"
+#include "parser/ast_var_def.h"
+#include "parser/ast_while.h"
+#include "parser/lexer.h"
+
+/* ===========================================================================
+ * 语句节点
+ *
+ * 语句编译：语句产生的栈上值由语句自身平衡（压栈 → 使用 → 清理）。
+ * 块作用域经 PUSH_SCOPE/POP_SCOPE 成对平衡（scope_depth 静态追踪）；
+ * 跳转跨出 N 层块时先发 N 个 POP_SCOPE（balance_scopes_out）。
+ * =========================================================================== */
+
+void compile_stmt(compiler_t *c, ast_node_t *node) {
+  if (!node || c->failed) return;
+  switch (node->kind) {
+  case AST_VAR_DEF: {
+    ast_var_def_t *n = (ast_var_def_t *)node;
+    if (n->init) {
+      compile_expr(c, n->init);              /* 栈: [value] */
+    } else {
+      bcode_write_op(c->bc, BCODE_PUSH_UNDEFINED); /* 无初始值 → 零值占位（sema 已保证未初始化不可读） */
+      st_push(c, 1);
+    }
+    if (!strslice_is_empty(n->type_name)) {
+      compile_type_expr(c, n->type_name);    /* 栈: [value, type] */
+    }
+    bcode_write_op(c->bc, BCODE_DEFINE);
+    bcode_write_str(c->bc, n->name);
+    /* DEFINE 弹掉全部（双弹或单弹），栈深归零 */
+    st_push(c, -2);
+    break;
+  }
+  case AST_ASSIGN: {
+    ast_assign_t *n = (ast_assign_t *)node;
+    if (token_is(n->op, "=") && strslice_eq(n->name, STRSLICE_LIT("_"))) {
+      /* 显式丢弃：_ = expr → 只求值右值并 POP（不 STORE，_ 不是变量）。
+         sema 已校验 op 必须是 '='。 */
+      compile_expr(c, n->value);               /* 栈: [value] */
+      bcode_write_op(c->bc, BCODE_POP);        /* 丢弃结果 */
+      st_push(c, -1);
+      break;
+    }
+    if (token_is(n->op, "=")) {
+      /* 直接赋值：value → STORE name */
+      compile_expr(c, n->value);               /* 栈: [value] */
+      bcode_write_op(c->bc, BCODE_STORE);
+      bcode_write_str(c->bc, n->name);         /* STORE 压回结果，栈: [result] */
+      bcode_write_op(c->bc, BCODE_POP);        /* 赋值是语句：丢弃结果 */
+      st_push(c, -1);
+    } else {
+      /* 复合赋值 name op= v → PUSH name; v; op; STORE name（C 语义：
+         x += v 等价于 x = x + v；栈序 [old, v] 保证 BINARY_OP
+         弹 b=v、弹 a=old → value_fn(old, v)） */
+      bcode_write_op(c->bc, BCODE_PUSH);
+      bcode_write_str(c->bc, n->name);       /* 栈: [old] */
+      compile_expr(c, n->value);             /* 栈: [old, v] */
+      if (token_is(n->op, "+="))      bcode_write_op(c->bc, BCODE_ADD);
+      else if (token_is(n->op, "-=")) bcode_write_op(c->bc, BCODE_SUB);
+      else if (token_is(n->op, "*=")) bcode_write_op(c->bc, BCODE_MUL);
+      else if (token_is(n->op, "/=")) bcode_write_op(c->bc, BCODE_DIV);
+      else if (token_is(n->op, "%=")) bcode_write_op(c->bc, BCODE_MOD);
+      else { c_error(c, node, "unsupported compound assignment"); return; }
+      /* 栈: [result] */
+      bcode_write_op(c->bc, BCODE_STORE);
+      bcode_write_str(c->bc, n->name);       /* 压回结果，栈: [result] */
+      bcode_write_op(c->bc, BCODE_POP);      /* 赋值是语句：丢弃结果 */
+      st_push(c, -2);
+    }
+    break;
+  }
+  case AST_EXPR_STMT: {
+    ast_expr_stmt_t *n = (ast_expr_stmt_t *)node;
+    compile_expr(c, n->expr);                /* 栈: [value] */
+    bcode_write_op(c->bc, BCODE_POP);        /* 丢弃结果 */
+    st_push(c, -1);
+    break;
+  }
+  case AST_RETURN: {
+    ast_return_t *n = (ast_return_t *)node;
+    if (n->value) {
+      compile_expr(c, n->value);             /* 栈: [retval] */
+    } else {
+      bcode_write_op(c->bc, BCODE_PUSH_UNDEFINED); /* void return */
+      st_push(c, 1);
+    }
+    bcode_write_op(c->bc, BCODE_RET);        /* 栈顶即返回值 */
+    st_push(c, -1);                          /* 返回值被 RET 消费 */
+    break;
+  }
+  case AST_BLOCK: {
+    ast_block_t *n = (ast_block_t *)node;
+    balance_push(c);
+    for (ast_node_t *s = n->stmts; s; s = s->next) compile_stmt(c, s);
+    balance_pop(c);
+    break;
+  }
+  case AST_IF: {
+    ast_if_t *n = (ast_if_t *)node;
+    compile_expr(c, n->cond);                /* 栈: [cond] */
+    compile_label_t else_l, end_l;
+    label_init(&else_l);
+    label_init(&end_l);
+    bcode_write_op(c->bc, BCODE_JZ);
+    emit_jump(c, &else_l);                   /* 栈: [] */
+
+    /* then */
+    if (n->then_body->kind == AST_BLOCK) {
+      balance_push(c);
+      ast_block_t *b = (ast_block_t *)n->then_body;
+      for (ast_node_t *s = b->stmts; s; s = s->next) compile_stmt(c, s);
+      balance_pop(c);
+    } else {
+      compile_stmt(c, n->then_body);
+    }
+    if (n->else_body) {
+      bcode_write_op(c->bc, BCODE_JMP);
+      emit_jump(c, &end_l);
+    }
+    label_here(c, &else_l);
+
+    /* else */
+    if (n->else_body) {
+      if (n->else_body->kind == AST_BLOCK) {
+        balance_push(c);
+        ast_block_t *b = (ast_block_t *)n->else_body;
+        for (ast_node_t *s = b->stmts; s; s = s->next) compile_stmt(c, s);
+        balance_pop(c);
+      } else {
+        compile_stmt(c, n->else_body);
+      }
+      label_here(c, &end_l);
+    }
+    break;
+  }
+  case AST_WHILE: {
+    ast_while_t *n = (ast_while_t *)node;
+
+    compile_label_t loop_top, loop_end;
+    label_init(&loop_top);
+    label_init(&loop_end);
+
+    /* 循环上下文（break→end，continue→top）。label 存指针：
+       循环体编译期间 emit_jump 直接读写同一 label（后向跳转已 defined
+       时直接写目标，前向跳转共享 patches 列表统一回填） */
+    compile_loop_t lc;
+    lc.break_label = &loop_end;
+    lc.continue_label = &loop_top;
+    lc.scope_depth = c->scope_depth;
+    lc.next = c->loop_stack;
+    c->loop_stack = &lc;
+
+    label_here(c, &loop_top);                /* 循环顶：条件 */
+    compile_expr(c, n->cond);                /* 栈: [cond] */
+    bcode_write_op(c->bc, BCODE_JZ);
+    emit_jump(c, &loop_end);                 /* 栈: [] */
+
+    balance_push(c);                         /* 循环体块作用域 */
+    ast_block_t *b = (ast_block_t *)n->body;
+    for (ast_node_t *s = b->stmts; s; s = s->next) compile_stmt(c, s);
+    balance_pop(c);
+
+    bcode_write_op(c->bc, BCODE_JMP);
+    emit_jump(c, &loop_top);
+    label_here(c, &loop_end);
+
+    c->loop_stack = lc.next;
+    break;
+  }
+  case AST_FOR: {
+    ast_for_t *n = (ast_for_t *)node;
+
+    balance_push(c);                         /* for 作用域（init 变量） */
+    if (n->init) compile_stmt(c, n->init);
+
+    compile_label_t loop_top, loop_end, loop_cont;
+    label_init(&loop_top);
+    label_init(&loop_end);
+    label_init(&loop_cont);
+
+    compile_loop_t lc;
+    lc.break_label = &loop_end;
+    lc.continue_label = &loop_cont;          /* for 的 continue → update 段 */
+    lc.scope_depth = c->scope_depth;
+    lc.next = c->loop_stack;
+    c->loop_stack = &lc;
+
+    label_here(c, &loop_top);                /* 循环顶：条件 */
+    if (n->cond) {
+      compile_expr(c, n->cond);              /* 栈: [cond] */
+      bcode_write_op(c->bc, BCODE_JZ);
+      emit_jump(c, &loop_end);               /* 栈: [] */
+    }
+
+    /* 循环体块作用域 */
+    balance_push(c);
+    ast_block_t *b = (ast_block_t *)n->body;
+    for (ast_node_t *s = b->stmts; s; s = s->next) compile_stmt(c, s);
+    balance_pop(c);
+
+    label_here(c, &loop_cont);               /* continue 目标：update 段 */
+    if (n->update) {
+      if (n->update->kind == AST_ASSIGN || n->update->kind == AST_EXPR_STMT) {
+        compile_stmt(c, n->update);
+      } else {
+        compile_expr(c, n->update);
+        bcode_write_op(c->bc, BCODE_POP);
+        st_push(c, -1);
+      }
+    }
+    bcode_write_op(c->bc, BCODE_JMP);
+    emit_jump(c, &loop_top);
+    label_here(c, &loop_end);
+
+    c->loop_stack = lc.next;
+    balance_pop(c);                          /* 退出 for 作用域 */
+    break;
+  }
+  case AST_BREAK: {
+    if (!c->loop_stack) { c_error(c, node, "break outside loop"); return; }
+    /* 跳出到循环出口：先平衡当前块作用域到循环基准深度 */
+    size_t out = c->scope_depth - c->loop_stack->scope_depth;
+    balance_scopes_out(c, out);
+    bcode_write_op(c->bc, BCODE_JMP);
+    emit_jump(c, c->loop_stack->break_label);
+    break;
+  }
+  case AST_CONTINUE: {
+    if (!c->loop_stack) { c_error(c, node, "continue outside loop"); return; }
+    size_t out = c->scope_depth - c->loop_stack->scope_depth;
+    balance_scopes_out(c, out);
+    bcode_write_op(c->bc, BCODE_JMP);
+    emit_jump(c, c->loop_stack->continue_label);
+    break;
+  }
+  case AST_ERROR:
+    c_error(c, node, "compile aborted on parse error node");
+    return;
+  default:
+    c_error(c, node, "unsupported statement node '%s'", ast_kind_name(node->kind));
+    return;
+  }
+}

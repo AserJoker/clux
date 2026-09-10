@@ -8,6 +8,7 @@ extern "C" {
 #include "core/strslice.h"
 #include "core/vec.h"
 #include "diag/diagnostic.h"
+#include "parser/ast_func_def.h"
 #include "parser/ast_node.h"
 #include "sema/symbol.h"
 #include "vm/bcode.h"
@@ -100,6 +101,40 @@ void compiler_destroy(compiler_t **pc);
  * exec_run 后 scope_lookup("main") + value_call 触发执行。
  */
 bytecode_t *compiler_compile(compiler_t *c, ast_node_t *program);
+
+/* ===========================================================================
+ * internal（compile.c / compile_type.c / compile_expr.c / compile_stmt.c /
+ *          compile_func.c 共享，不对外）
+ * =========================================================================== */
+
+/* ---- 内部工具（compile.c 实现） ---- */
+
+/** AST 节点 → 源码位置（经 token pool）。 */
+location_t c_loc(compiler_t *c, const ast_node_t *node);
+
+/** 编译错误：记入 diag + 置 failed（fail-fast）。 */
+void c_error(compiler_t *c, const ast_node_t *node, const char *fmt, ...);
+
+/* ---- 标签工具（前向占位 + 回填） ---- */
+
+void label_init(compile_label_t *l);
+void label_here(compiler_t *c, compile_label_t *l);
+void emit_jump(compiler_t *c, compile_label_t *l);
+
+/* ---- 静态平衡工具（scope/操作数栈深度静态追踪） ---- */
+
+void balance_push(compiler_t *c);
+void balance_pop(compiler_t *c);
+void balance_scopes_out(compiler_t *c, size_t n);
+void st_push(compiler_t *c, int delta);
+
+/* ---- 节点编译入口（各文件实现） ---- */
+
+void   compile_type_expr(compiler_t *c, strslice_t type_name); /* compile_type.c */
+void   compile_expr(compiler_t *c, ast_node_t *node);          /* compile_expr.c */
+void   compile_stmt(compiler_t *c, ast_node_t *node);          /* compile_stmt.c */
+size_t compile_func_body(compiler_t *c, ast_func_def_t *fn);   /* compile_func.c */
+void   compile_func_reg(compiler_t *c, ast_func_def_t *fn, size_t body);
 
 #ifdef __cplusplus
 }

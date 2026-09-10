@@ -102,7 +102,7 @@ location_t sema_loc(sema_t *sema, ast_node_t *node);
 void sema_type_name(const type_t *t, char *buf, size_t cap);
 
 /**
- * Pass 3a 作用域树构建（stmt.c 实现）：遍历 sema->funcs 队列，对每个函数
+ * Pass 3a 作用域树构建（stmt_build.c 实现）：遍历 sema->funcs 队列，对每个函数
  * 按词法块结构建树，只注册符号（名字 + 声明类型 + TDZ 标志），不做类型检查。
  * 作用域树存入 sema_func_t::scope。
  */
