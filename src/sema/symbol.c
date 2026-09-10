@@ -87,15 +87,21 @@ sema_symbol_t *sema_scope_define(sema_scope_t *scope, strslice_t name,
   return sym;
 }
 
+/**
+ * 沿 parent 链查找符号，返回第一个**已激活**的命中（跳过未激活符号：
+ * Pass 3a 已注册但 Pass 3b 尚未走到定义点的变量——与 VM scope_lookup
+ * 对齐，自引用 `var x = x + 1` 解析到外层而非自身）。遮罩过滤由
+ * VM scope 链承担，本函数只需激活过滤。
+ * 未找到返回 NULL。
+ */
 sema_symbol_t *sema_lookup(const sema_scope_t *scope, strslice_t name) {
   if (!scope || !name.ptr) return NULL;
   allocator_t *alloc = scope->alloc;
   char *key = slice_to_cstr(alloc, name);
   sema_symbol_t *found = NULL;
-  /* 沿 parent 链取第一个命中（遮罩由 VM scope 链承担，此处不过滤） */
   for (const sema_scope_t *s = scope; s && !found; s = s->parent) {
     sema_symbol_t *sym = (sema_symbol_t *)strmap_get(s->symbols, key);
-    if (sym) found = sym;
+    if (sym && sym->is_active) found = sym;
   }
   allocator_free(alloc, (void **)&key);
   return found;

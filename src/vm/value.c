@@ -13,7 +13,6 @@ struct value_t {
     const type_t *type;
     void        *data;
     bool         is_shadow;
-    bool         is_tdz;     /* TDZ：未初始化，只可赋值不可读取 */
 };
 
 /* ---- 内部分配 class_t（value_t 堆分配用） ---- */
@@ -102,14 +101,6 @@ bool value_is_shadow(const value_t *v) {
     return v && v->is_shadow;
 }
 
-bool value_is_tdz(const value_t *v) {
-    return v && v->is_tdz;
-}
-
-void value_set_tdz(value_t *v, bool tdz) {
-    if (v) v->is_tdz = tdz;
-}
-
 /* ---- error 工具 ---- */
 
 bool value_is_error(vm_t *vm, const value_t *v) {
@@ -158,23 +149,16 @@ interrupt_kind_t value_interrupt_kind(vm_t *vm, const value_t *v) {
 
 /* ---- 运算分派 ---- */
 
-/* TDZ 消费检查：右值被消费时，TDZ 变量返回 error（shadow 判断之前） */
-#define TDZ_CHECK(vm, v)                                                         \
-    do {                                                                         \
-        if (value_is_tdz(v))                                                     \
-            return value_make_error(vm, "cannot use variable before initialization"); \
-    } while (0)
-
 /*
- * value_xxx 薄封装：error 短路 + TDZ 检查 + NULL vtable 检查 → 分派到 vtable
+ * value_xxx 薄封装：error 短路 + NULL vtable 检查 → 分派到 vtable
  * 类型协商、safe_cast 由各 vtable 函数通过 VTABLE_BINARY 自行处理
+ *
+ * 未初始化（TDZ）检查由 sema 确定性赋值分析在编译期完成，VM 值层不感知。
  */
 #define DISPATCH(vm, a, b, op_name, op_sym)                                    \
     do {                                                                       \
         if (value_is_error((vm), (a))) return (a);                            \
         if (value_is_error((vm), (b))) return (b);                            \
-        TDZ_CHECK((vm), (a));                                                  \
-        TDZ_CHECK((vm), (b));                                                  \
         if (!(a)->type || !(a)->type->vtable || !(a)->type->vtable->op_name)  \
             return value_make_error(vm,                                        \
                 "type does not support operator " op_sym);                     \
@@ -184,7 +168,6 @@ interrupt_kind_t value_interrupt_kind(vm_t *vm, const value_t *v) {
 #define DISPATCH_UNARY(vm, a, op_name, op_sym)                                 \
     do {                                                                       \
         if (value_is_error((vm), (a))) return (a);                             \
-        TDZ_CHECK((vm), (a));                                                  \
         if (!(a)->type || !(a)->type->vtable || !(a)->type->vtable->op_name) { \
             return value_make_error(vm,                                        \
                 "type does not support operator " op_sym);                     \
@@ -217,12 +200,10 @@ value_t *value_lnot(vm_t *vm, value_t *a)             { DISPATCH_UNARY(vm, a, ln
 
 value_t *value_call(vm_t *vm, value_t *callee, value_t **args, size_t argc) {
     if (value_is_error(vm, callee)) return callee;
-    /* 检查参数中是否有 error / TDZ（shadow 分派前） */
+    /* 检查参数中是否有 error（shadow 分派前） */
     for (size_t i = 0; i < argc; i++) {
         if (value_is_error(vm, args[i])) return args[i];
-        TDZ_CHECK(vm, args[i]);
     }
-    TDZ_CHECK(vm, callee);
     if (!callee->type || !callee->type->vtable || !callee->type->vtable->call) {
         return value_make_error(vm, "value is not callable");
     }
@@ -251,11 +232,9 @@ void value_dispose(vm_t *vm, value_t *v) {
 value_t *value_clone(vm_t *vm, value_t *v) {
     if (!v || !v->type) return v;
 
-    /* shadow 值 clone 返回新的 shadow（不分配 data），TDZ 状态随之传播 */
+    /* shadow 值 clone 返回新的 shadow（不分配 data） */
     if (v->is_shadow) {
-        value_t *c = value_make_shadow(vm, v->type);
-        c->is_tdz = v->is_tdz;
-        return c;
+        return value_make_shadow(vm, v->type);
     }
 
     /* 通过 vtable clone，NULL clone 槽 = 不支持 */
@@ -267,23 +246,18 @@ value_t *value_clone(vm_t *vm, value_t *v) {
 
 value_t *value_assign(vm_t *vm, value_t *dst, value_t *src) {
     if (value_is_error(vm, src)) return src;
-    TDZ_CHECK(vm, src); /* src 是右值：TDZ 不可读取（dst 不查，左值合法） */
     if (!dst || !dst->type) return value_make_error(vm, "assign: cannot assign to void");
     if (value_is_error(vm, dst)) return value_make_error(vm, "assign: cannot assign to error");
     if (!dst->type->vtable || !dst->type->vtable->assign) {
         return value_make_error(vm, "assign: type does not support assignment");
     }
-    value_t *r = dst->type->vtable->assign(vm, dst, src);
-    /* vm 侧消费 TDZ：赋值成功（非 error）即退出 TDZ（TDZ 只可赋值不可读取） */
-    if (r && !value_is_error(vm, r)) value_set_tdz(dst, false);
-    return r;
+    return dst->type->vtable->assign(vm, dst, src);
 }
 
 /* ---- 类型转换 ---- */
 
 value_t *value_implicit_cast(vm_t *vm, value_t *v, const type_t *target) {
     if (value_is_error(vm, v)) return v;
-    TDZ_CHECK(vm, v);
     if (!v || !v->type) {
         return value_make_error(vm, "cannot implicitly cast void");
     }
@@ -299,7 +273,6 @@ value_t *value_implicit_cast(vm_t *vm, value_t *v, const type_t *target) {
 
 value_t *value_explicit_cast(vm_t *vm, value_t *v, const type_t *target) {
     if (value_is_error(vm, v)) return v;
-    TDZ_CHECK(vm, v);
     if (!v || !v->type) {
         return value_make_error(vm, "cannot explicitly cast void");
     }

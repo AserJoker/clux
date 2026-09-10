@@ -1956,51 +1956,6 @@ TEST_F(ValueCore, ShadowMixedIntPromotion) {
     raw_free(vm, b);
 }
 
-/* ---- TDZ 状态（shadow value） ---- */
-
-TEST_F(ValueCore, TdzDefaultFalse) {
-    value_t *s = value_make_shadow(vm, vm->type_i32);
-    EXPECT_FALSE(value_is_tdz(s));
-    value_set_tdz(s, true);
-    EXPECT_TRUE(value_is_tdz(s));
-    value_set_tdz(s, false);
-    EXPECT_FALSE(value_is_tdz(s));
-}
-
-TEST_F(ValueCore, TdzClonePropagates) {
-    /* scope_define 对 TDZ value clone：TDZ 状态必须随 clone 传播 */
-    value_t *s = value_make_shadow(vm, vm->type_i32);
-    value_set_tdz(s, true);
-    value_t *c = value_clone(vm, s);
-    EXPECT_TRUE(value_is_shadow(c));
-    EXPECT_TRUE(value_is_tdz(c));
-    EXPECT_EQ(value_type(c), vm->type_i32);
-}
-
-TEST_F(ValueCore, TdzValueStillAssignable) {
-    /* TDZ 变量只可赋值：value_assign 成功返回 dst，之后清除 TDZ */
-    value_t *lhs = value_make_shadow(vm, vm->type_i32);
-    value_set_tdz(lhs, true);
-    value_t *b = make_i32_raw(vm, 7);
-    value_t *r = value_assign(vm, lhs, b);
-    EXPECT_EQ(r, lhs);
-    EXPECT_FALSE(value_is_error(vm, r));
-    value_set_tdz(lhs, false);
-    EXPECT_FALSE(value_is_tdz(lhs));
-    raw_free(vm, b);
-}
-
-TEST_F(ValueCore, TdzAssignTypeMismatchReturnsError) {
-    /* TDZ 变量类型错误赋值：value_assign 返回 error，TDZ 保持 */
-    value_t *lhs = value_make_shadow(vm, vm->type_i32);
-    value_set_tdz(lhs, true);
-    value_t *b = make_str_raw(vm, "s");
-    value_t *r = value_assign(vm, lhs, b);
-    EXPECT_TRUE(value_is_error(vm, r));
-    EXPECT_TRUE(value_is_tdz(lhs)); /* 赋值失败不退出 TDZ */
-    raw_free(vm, b);
-}
-
 /* ---- interrupt 机制（引擎级控制流哨兵） ---- */
 
 TEST_F(ValueCore, MakeInterruptIsTracked) {

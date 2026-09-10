@@ -244,8 +244,7 @@ typedef struct {
     ast_node_t  base;
     strslice_t  name;        // 变量名
     strslice_t  type_name;   // 类型标注（空切片 = 推断）
-    ast_node_t *init;        // 初始化表达式（NULL = undefined/TDZ）
-    bool        is_tdz;      // var x:i32 = undefined;
+    ast_node_t *init;        // 初始化表达式（AST_UNDEF = 未初始化声明）
 } ast_var_def_t;
 
 typedef struct {
@@ -632,7 +631,7 @@ void exec_run(exec_t *e) {
 | `PUSH_VALUE` | offset | 压入 `stack[sp-1-offset]` 的借用引用（offset=0 即 dup 栈顶一份） | — |
 | `LOAD` | strtable 索引 | 从 global scope 按名查 **type value** 压栈（类型注册见 2.7.5 下注） | `scope_lookup` |
 | `PUSH_UNDEFINED` | — | 压入 void 类型 value，标记"类型待推导" | `value_make_void` |
-| `DEFINE` | strtable 索引 | 弹栈定义变量：**栈顶为 type value（`LOAD` 压入）或 void/undefined（`PUSH_UNDEFINED` 压入）时作为类型说明符再弹一个值；否则栈顶即值本身（函数参数定义场景）**；无初始值（值为 void）标记 TDZ | `scope_define` + `value_set_tdz` |
+| `DEFINE` | strtable 索引 | 弹栈定义变量：**栈顶为 type value（`LOAD` 压入）或 void/undefined（`PUSH_UNDEFINED` 压入）时作为类型说明符再弹一个值；否则栈顶即值本身（函数参数定义场景）**；无初始值（值为 void）以声明类型**零值占位**定义（TDZ 检查由 sema 编译期完成） | `scope_define` |
 | `CREATE_FUNC_TYPE` | 参数个数 argc | 弹栈 `[return_type, param_1..param_argc, is_variadic]`（压栈序）→ `type_func_sig` intern 签名类型（按签名去重，同签名共享一个 type_t）→ 构造 type value 压栈（见 2.7.6） | `type_func_sig` |
 | `PUSH_FUNCTION` | 入口 pc | 读入口 pc 立即数 → **`bcode_function_new` 构造 `bcode_function_t{entry_pc}`**（自封装：建孤立 closure_scope + 注册 vm->functions 池）→ 弹栈顶签名类型（`CREATE_FUNC_TYPE` 产物）→ 组装 **func value** 压栈（函数定义模板见 2.7.6） | `bcode_function_new` |
 | `DEFINE_FUNCTION` | strtable 索引 | 弹栈顶 **func value** 直接定义：value 自带签名类型（无类型说明符），函数名固定不可重命名（区别于 `DEFINE` 的 value,type 双弹）；函数值 auto-track 归 scope 统一回收（与 `DEFINE` 一致），func_t 本体归 vm->functions 池 | `scope_define` |
@@ -661,8 +660,8 @@ var b = 1;          =>  PUSH_I32 1;  PUSH_UNDEFINED;  DEFINE "b";
 var c:i32;          =>  PUSH_UNDEFINED;  LOAD "i32";  DEFINE "c";   /* 无初始值 = undefined */
 ```
 
-- **undefined 视为 void 类型的变量**：不引入新类型，`PUSH_UNDEFINED` 构造 type_void 的 value，作为"类型待推导 / 未初始化"标记。`DEFINE` 遇 void 类型说明符时从初始值推断实际类型；值也为 void（无初始值）则变量以 TDZ 状态定义（读前必须赋值）。
-- **TDZ**：VM 层已有 `value_t.is_tdz` + `value_is_tdz`/`value_set_tdz`，无需新增。
+- **undefined 视为 void 类型的变量**：不引入新类型，`PUSH_UNDEFINED` 构造 type_void 的 value，作为"类型待推导 / 未初始化声明"标记。`DEFINE` 遇 void 类型说明符时从初始值推断实际类型；值为 void（`undefined` 初始化）则变量以**声明类型零值**占位定义（运行时无未初始化状态，读取/参与运算均合法——是否可读由 sema 确定性赋值分析在编译期裁决）。
+- **TDZ（确定性赋值分析）**：未初始化检查是 **sema 编译期数据流分析**（符号表 `flow_init` 字段 + if 合并点 meet 语义），VM 值层完全不感知。`var x:i32 = undefined` 定义时 VM 存零值占位，读取报"used before initialization"是编译错误而非运行时错误。
 - **基本类型注册 global scope**：VM 初始化（`vm_new`）时把 i8..i64/u8..u64/f32/f64/bool/str/void/type/func 等基本类型以 **type value** 注册进 global scope（复用 `g_type_type`，VTABLE_TYPE，data 存 `const type_t*`，见 vm.c `vm_register_builtin_types`），`LOAD "i32"` 即按名查出的 type value。
 
 #### 2.7.6 函数调用与 interrupt 哨兵
@@ -855,9 +854,9 @@ src/sema/
 
 sema 侧符号表是**纯编译期元数据**（名字 → 类型 + 定义节点）：符号真正重要的是"名字"，名字是符号表映射的 key。**运行态（shadow value）的 lookup/define 不经过符号表**——通过与 sema 作用域树**同构的 VM scope 树**（`scope_t::vars`）完成，名字从定义节点 ast 提取（`ast_var_def_t::name` / `ast_func_def_t::name`），保证两棵作用域树严格对齐。
 
-TDZ 状态与遮罩机制均属于**运行态语义，由 VM 侧承担**：
-- **TDZ** → `value_t::is_tdz`（shadow value 状态，定义时 `value_set_tdz` 置位，赋值成功清除）
-- **遮罩** → VM scope 链（`scope_lookup` 沿 parent 取第一个命中）
+TDZ（确定性赋值分析）与遮罩机制的归属分工：
+- **TDZ（flow_init）** → sema 符号表编译期数据流状态：`var x = expr` 定义即初始化（`flow_init=true`）；`var x:T = undefined` 未初始化（`flow_init=false`）；简单/复合赋值成功退出未初始化；if 合并点两分支都初始化（meet AND 语义）才视为确定初始化，循环体内赋值不提升（保守）。读取时 `flow_init=false` → "used before initialization" 编译错误。**VM 值层不感知未初始化状态**。
+- **遮罩** → VM scope 链（`scope_lookup` 沿 parent 取第一个命中）；sema 侧 `is_active` 与 VM 定义点同步激活，保证 `var x = x + 1` 自引用解析到外层
 
 VM scope 树与 sema 作用域树**逐节点同构**：函数级 scope、块 scope、if/while body scope、for scope 全部成对 push/pop（`vm_push_scope` / `vm_pop_scope`），变量定义 `scope_define` 到当前 VM scope、变量读取 `scope_lookup` 沿链查找。
 
@@ -875,6 +874,11 @@ typedef struct sema_symbol_t {
     const type_t *type;       /* 已解析类型；NULL = 待推断（shadow VM 阶段填充）。
                                  函数符号 = 签名类型（func_type_t，vm 池 intern） */
     ast_node_t   *ast;        /* 定义节点（借用，arena 管理）：函数 = AST_FUNC_DEF */
+    bool flow_init;           /* 确定性赋值分析（Pass 3b）：变量是否确定已初始化。
+                                 false = 未初始化（TDZ），读取时编译错误
+                                 "used before initialization"。仅变量符号有意义 */
+    bool is_active;           /* 符号是否已定义到 VM scope（运行时可见）。函数/内置
+                                 符号注册即激活；变量在 shadow_var_def 定义时激活 */
 } sema_symbol_t;
 
 typedef struct sema_scope_t {
@@ -976,14 +980,16 @@ x = x + 3;               // 块级 VM scope 已 pop → outer x
 ```
 
 ```c
-/* 变量读取（sema.c AST_IDENT）：从 VM scope 链 lookup shadow value */
+/* 变量读取（sema.c AST_IDENT）：从 VM scope 链 lookup shadow value，
+   未初始化检查走符号表 flow_init（确定性赋值分析，VM 值层不感知） */
 value_t *v = scope_lookup(sema->vm->current_scope, n->name);
 if (!v)        { /* undefined variable 诊断 */ }
-if (value_is_tdz(v)) { /* used before initialization 诊断 */ }
+sema_symbol_t *sym = sema_lookup(scope, n->name);
+if (sym && !sym->flow_init) { /* used before initialization 诊断 */ }
 return value_make_shadow(sema->vm, value_type(v));
 ```
 
-**TDZ 变量处理**（状态在 shadow value 上）：`var x:i32 = undefined;`（M1 语法入口待定）定义时构造声明类型 shadow value 并 `value_set_tdz(v, true)` 存入 VM scope（立即可见），读取时 `value_is_tdz` 报告"未初始化读取"；简单赋值经 `value_assign` 成功退出 TDZ（`value_set_tdz(lhs, false)`），类型错误则保持 TDZ。
+**未初始化变量处理**（状态在 sema 符号表 flow_init 上，**VM 值层零感知**）：`var x:i32 = undefined;` 是唯一未初始化声明语法（要求显式类型标注，undefined 无类型可推断），定义时 `flow_init=false` 并构造声明类型 shadow value 存入 VM scope；运行时 op_define 以**声明类型零值**占位。读取时 `flow_init=false` → 编译期报"used before initialization"；简单/复合赋值成功 → `flow_init=true`（退出未初始化）；if 合并点 meet（AND）两分支都初始化才视为确定初始化（`if(c){a=1;}else{}` 保守报错），循环体内赋值不提升确定性。
 
 #### 2.9.6 表达式 walker（shadow value 求值）
 
@@ -1000,7 +1006,7 @@ static value_t *sema_expr(sema_t *sema, ast_node_t *node, sema_scope_t *scope);
 | `AST_BOOL_LIT` | shadow bool |
 | `AST_STRING_LIT` | shadow str |
 | `AST_CHAR_LIT` | shadow u8 |
-| `AST_IDENT` | `scope_lookup`（VM scope 链）取 shadow value → shadow(类型)；未定义 / TDZ（`value_is_tdz`）→ 诊断 |
+| `AST_IDENT` | `scope_lookup`（VM scope 链）取 shadow value → shadow(类型)；未定义 → 诊断；符号 `flow_init=false` → "used before initialization" 诊断 |
 | `AST_BINARY` | lhs/rhs shadow 求值 → vtable 分派；短路 `&&`/`||` 特殊处理（操作数必须 bool，结果 bool） |
 | `AST_UNARY` | 操作数 shadow → vtable 一元分派 |
 | `AST_CALL` | 构造 shadow callee（`value_make_shadow(vm, sym->type)`）→ `value_call` 分派 func_vcall shadow 分支校验签名 → 返回 return_type shadow |
@@ -1076,8 +1082,8 @@ static block_result_t sema_stmt(sema_t *sema, ast_node_t *stmt,
 
 | 语句 | 处理要点 |
 |------|---------|
-| `AST_VAR_DEF` | 构造 shadow value：TDZ 时 `value_set_tdz`；非 TDZ 先求值 init（未 define → 自引用解析到外层），显式类型经 `value_assign` 校验 init / 推断类型写回 `sym->type`。最后 `scope_define` 到当前 VM scope |
-| `AST_ASSIGN` | `_ = expr` 为显式丢弃；`scope_lookup` 取左值 shadow → `value_assign` 单一校验点（error → 诊断，成功清除 TDZ）；复合赋值 `x op= rhs` 展开为 `x = x op rhs`（shadow 走 vtable 协商）后再 `value_assign` 赋回 |
+| `AST_VAR_DEF` | 构造 shadow value：`AST_UNDEF` init（`var x:T = undefined`，要求显式类型）→ `flow_init=false` + 声明类型 shadow；普通 init → 先求值（未 define → 自引用解析到外层），`flow_init = !init_bad`，显式类型经 `value_assign` 校验 init / 推断类型写回 `sym->type`。最后 `scope_define` 到当前 VM scope 并激活符号（`is_active=true`） |
+| `AST_ASSIGN` | `_ = expr` 为显式丢弃；`scope_lookup` 取左值 shadow → `value_assign` 单一校验点（error → 诊断，成功 → 符号 `flow_init=true` 退出未初始化）；复合赋值 `x op= rhs` 展开为 `x = x op rhs`（shadow 走 vtable 协商）后再 `value_assign` 赋回，成功同样置 `flow_init=true` |
 | `AST_BLOCK` | 取子 scope（`child_idx++`），递归遍历 |
 | `AST_IF` | 条件必须 bool；then/else 各取子 scope；`definitely_returns = then && else` |
 | `AST_WHILE` | 条件必须 bool；`loop_depth++` 后遍历 body；不贡献 definitely_returns（循环体可能不执行） |
@@ -1108,7 +1114,7 @@ M1 无 const/volatile（不在 M1 阶段实现），符号表与类型检查不�
 | `value_implicit_cast` | 函数参数兼容性检查（func_shadow_call 内）；int_assign 内部向左值类型转换 |
 | `value_explicit_cast` | as 转换合法性检查 |
 | `value_assign` | 赋值兼容性单一校验点（变量初始化 / 简单赋值 / 复合赋值赋回 / return 校验） |
-| `value_is_tdz` / `value_set_tdz` | TDZ 状态（shadow value）：读取检查 / 定义置位 / 赋值退出 |
+| `sema_symbol_t.flow_init` | 确定性赋值分析（编译期数据流）：变量读取检查 / 定义置位 / 赋值退出 / if 合并点 meet（AND） |
 | `scope_define` / `scope_lookup` | 变量 shadow value 定义/查找（VM scope 链与 sema 作用域树同构，天然遮罩） |
 | `vm_push/pop_scope` | 与 sema 作用域树同构的 VM scope 树（函数级 / 块 / if / while / for 成对 push/pop） |
 | `type_func_sig` | Pass 2 注册签名类型到 vm 池（存 `sema_symbol_t.type`） |

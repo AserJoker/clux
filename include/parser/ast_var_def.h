@@ -13,8 +13,7 @@ typedef struct {
     ast_node_t  base;
     strslice_t  name;        /* 变量名 */
     strslice_t  type_name;   /* 类型标注（空切片 = 推断） */
-    ast_node_t *init;        /* 初始化表达式（必须存在） */
-    bool        is_tdz;      /* var x:i32 = undefined; */
+    ast_node_t *init;        /* 初始化表达式（必须存在；AST_UNDEF = 未初始化声明） */
 } ast_var_def_t;
 
 static inline ast_node_t *ast_var_def_new(arena_t *arena,

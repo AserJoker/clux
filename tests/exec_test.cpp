@@ -163,27 +163,27 @@ TEST_F(ExecTest, DefineInferredVar) {
     EXPECT_EQ(read_sint(a), 7);
 }
 
-/* var a:i32; 无初始值 → TDZ 变量：作为右值参与运算时报 error */
-TEST_F(ExecTest, DefineTdzVarThenReadFails) {
+/* var a:i32; 无初始值 → 零值占位（TDZ 检查由 sema 编译期完成，VM 值层不感知） */
+TEST_F(ExecTest, DefineUninitVarReadsZero) {
     bcode_write_op(bc, BCODE_PUSH_UNDEFINED);
     bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
     bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("a"));
-    /* a 参与加法（右值消费）→ TDZ 检查报 error */
+    /* 读取 a → 零值占位，不报 error */
     bcode_write_op(bc, BCODE_PUSH); bcode_write_str(bc, STRSLICE_LIT("a"));
-    bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 1);
-    bcode_write_op(bc, BCODE_ADD);
     bcode_write_op(bc, BCODE_HALT);
 
-    value_t *r = run();
-    ASSERT_NE(r, nullptr);
-    EXPECT_TRUE(value_is_error(vm, r));
+    EXPECT_EQ(run(), nullptr);
     value_t *a = lookup("a");
     ASSERT_NE(a, nullptr);
-    EXPECT_TRUE(value_is_tdz(a));
+    EXPECT_EQ(value_type(a), vm->type_i32);
+    EXPECT_EQ(read_sint(a), 0);
+    value_t *top = stack_top();
+    ASSERT_NE(top, nullptr);
+    EXPECT_EQ(read_sint(top), 0);
 }
 
-/* var a:i32; a = 5; 赋值成功退出 TDZ，可正常读取 */
-TEST_F(ExecTest, DefineTdzVarThenAssignExitsTdz) {
+/* var a:i32; a = 5; 赋值后正常读取 */
+TEST_F(ExecTest, DefineUninitVarThenAssignReadsValue) {
     bcode_write_op(bc, BCODE_PUSH_UNDEFINED);
     bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
     bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("a"));
@@ -199,7 +199,6 @@ TEST_F(ExecTest, DefineTdzVarThenAssignExitsTdz) {
     EXPECT_EQ(run(), nullptr);
     value_t *a = lookup("a");
     ASSERT_NE(a, nullptr);
-    EXPECT_FALSE(value_is_tdz(a));
     EXPECT_EQ(read_sint(a), 5);
     value_t *top = stack_top();
     ASSERT_NE(top, nullptr);
@@ -368,7 +367,8 @@ TEST_F(ExecTest, JnzDoesNotJumpWhenFalse) {
 }
 
 /* TDZ 值作为跳转条件 → 报 error */
-TEST_F(ExecTest, JzOnTdzValueReturnsError) {
+/* var a:i32; 读取零值占位，JZ 正常跳转（TDZ 检查已下沉 sema，无运行时 error） */
+TEST_F(ExecTest, JzOnUninitVarReadsZeroAndJumps) {
     bcode_write_op(bc, BCODE_PUSH_UNDEFINED);
     bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
     bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("a"));
@@ -379,11 +379,9 @@ TEST_F(ExecTest, JzOnTdzValueReturnsError) {
     bcode_write_u32(bc, 0);
     size_t dest = bcode_tell(bc);
     bcode_write_op(bc, BCODE_HALT);
-    bcode_patch_u32(bc, placeholder + 4, (uint32_t)dest); /* JZ 对 TDZ 先报 error，不会真跳 */
+    bcode_patch_u32(bc, placeholder + 4, (uint32_t)dest); /* 零值 cast false → 跳转 */
 
-    value_t *r = run();
-    ASSERT_NE(r, nullptr);
-    EXPECT_TRUE(value_is_error(vm, r));
+    EXPECT_EQ(run(), nullptr); /* 无 error */
 }
 
 /* 非 bool 值作为跳转条件（str → bool 不可转换）→ 报 error（严格 bool） */

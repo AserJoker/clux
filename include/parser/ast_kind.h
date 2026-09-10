@@ -32,6 +32,7 @@ typedef enum {
     AST_CHAR_LIT,        /* 'a'（u8 码点值） */
     AST_IDENT,           /* 标识符引用 */
     AST_CAST,            /* expr as type */
+    AST_UNDEF,           /* undefined（未初始化声明标记，sema 数据流分析消费） */
 
     AST_ERROR,           /* 解析错误恢复节点（记录错误位置，占位） */
 

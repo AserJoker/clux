@@ -14,6 +14,7 @@
 #include "parser/ast_program.h"
 #include "parser/ast_string_lit.h"
 #include "parser/ast_unary.h"
+#include "parser/ast_undef.h"
 #include "parser/ast_var_def.h"
 #include "parser/lexer.h"
 #include "vm/type_error.h"
@@ -184,7 +185,8 @@ value_t *sema_expr(sema_t *sema, ast_node_t *node, sema_scope_t *scope) {
       return value_make_shadow(sema->vm, sema->vm->type_str);
     case AST_IDENT: {
       /* 变量读取：从 VM scope 链 lookup shadow value（与 sema 作用域树同构，
-         天然遮罩）。TDZ 状态在 value 上：未初始化读取报错。 */
+         天然遮罩）。未初始化检查走符号表 flow_init（确定性赋值分析，
+         VM 值层不感知 TDZ）。 */
       ast_ident_t *n = (ast_ident_t *)node;
       value_t *v = scope_lookup(sema->vm->current_scope, n->name);
       if (!v) {
@@ -192,7 +194,8 @@ value_t *sema_expr(sema_t *sema, ast_node_t *node, sema_scope_t *scope) {
                    "undefined variable '%.*s'", (int)n->name.len, n->name.ptr);
         return value_make_shadow(sema->vm, sema->vm->type_void);
       }
-      if (value_is_tdz(v)) {
+      sema_symbol_t *sym = sema_lookup(scope, n->name);
+      if (sym && !sym->flow_init) {
         diag_error(sema->diag, sema_loc(sema, node),
                    "variable '%.*s' used before initialization",
                    (int)n->name.len, n->name.ptr);
@@ -200,6 +203,12 @@ value_t *sema_expr(sema_t *sema, ast_node_t *node, sema_scope_t *scope) {
       }
       return value_make_shadow(sema->vm, value_type(v));
     }
+    case AST_UNDEF:
+      /* undefined 只允许作为 var 初始化的"未初始化声明"（shadow_var_def
+         消费）；普通表达式位置引用是非法用法。 */
+      diag_error(sema->diag, sema_loc(sema, node),
+                 "'undefined' can only be used as a variable initializer");
+      return value_make_shadow(sema->vm, sema->vm->type_void);
     case AST_BINARY:
       return shadow_binary(sema, (ast_binary_t *)node, scope);
     case AST_UNARY: {
@@ -359,11 +368,14 @@ static void pass1_names(sema_t *sema, ast_program_t *prog) {
   for (ast_node_t *f = prog->funcs; f; f = f->next) {
     ast_func_def_t *fn = (ast_func_def_t *)f;
     sema_symbol_t init = {0}; /* 函数定义顺序自由：Pass 1 全部注册，无遮罩问题 */
-    if (!sema_scope_define(sema->global_scope, fn->name, &init)) {
+    sema_symbol_t *sym = sema_scope_define(sema->global_scope, fn->name, &init);
+    if (!sym) {
       diag_error(sema->diag, sema_loc(sema, f), "duplicate function '%.*s'",
                  (int)fn->name.len, fn->name.ptr);
       continue; /* 重复定义不入队 */
     }
+    /* 函数名全局可见（无 TDZ）→ 注册即激活 */
+    sym->is_active = true;
     /* 登记 sema 层函数对象（Pass 3 队列驱动；局部函数/泛型实例将来追加） */
     sema_func_t *sf = allocator_new_ex(sema->vm->alloc, "sema_func_t",
                                        sizeof(sema_func_t), NULL, NULL, NULL,
@@ -444,7 +456,7 @@ bool sema_analyze(sema_t *sema, ast_node_t *program) {
     const type_t *pparams[1] = { sema->vm->type_str };
     const type_t *psig = type_func_sig(sema->vm, pparams, 1, NULL,
                                        /*is_variadic=*/true);
-    sema_symbol_t init = {.type = psig, .ast = NULL};
+    sema_symbol_t init = {.type = psig, .ast = NULL, .is_active = true};
     sema_scope_define(sema->global_scope, STRSLICE_LIT("printf"), &init);
   }
 

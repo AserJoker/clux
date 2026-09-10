@@ -21,8 +21,8 @@ extern "C" {
  * 统一出口只处理 error（引擎级硬错误 → 停止）；interrupt 哨兵（RET）
  * 由 bcode_call_cfunc 函数执行子循环捕获，主循环不消费。
  *
- * TDZ 由 vm 侧消费：value_assign 成功后自动清除 dst 的 TDZ；PUSH 压栈
- * （右值读取）时检查 TDZ。
+ * 未初始化（TDZ）检查由 sema 确定性赋值分析在编译期完成；运行时
+ * var x:T = undefined 只存零值占位，VM 值层不感知未初始化状态。
  */
 
 /** 指令回调签名：消费操作数推进 *pc，返回结果 value（或 NULL 不压栈）。

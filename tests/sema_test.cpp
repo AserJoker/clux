@@ -277,6 +277,157 @@ TEST_F(SemaTest, ShadowingSelfReferenceResolvesOuter) {
 }
 
 /* ================================================================ */
+/* 确定性赋值分析（flow_init 数据流）：TDZ 编译期检查                */
+/* ================================================================ */
+
+TEST_F(SemaTest, UninitDeclThenAssignThenRead) {
+    /* var a = undefined; a = 1; 赋值后读取 OK */
+    EXPECT_TRUE(analyze(
+        "func main() {"
+        "  var a:i32 = undefined;"
+        "  a = 1;"
+        "  var b = a;"
+        "}"));
+    EXPECT_FALSE(diag_has_error(diag_));
+}
+
+TEST_F(SemaTest, UninitDeclReadBeforeAssign) {
+    /* var a = undefined; 直接读取 → used before initialization */
+    EXPECT_FALSE(analyze(
+        "func main() {"
+        "  var a:i32 = undefined;"
+        "  var b = a;"
+        "}"));
+    expect_message(0, "used before initialization");
+}
+
+TEST_F(SemaTest, UninitDeclInExpr) {
+    /* 未初始化变量参与运算 → used before initialization */
+    EXPECT_FALSE(analyze(
+        "func main() {"
+        "  var a:i32 = undefined;"
+        "  var b = a + 1;"
+        "}"));
+    expect_message(0, "used before initialization");
+}
+
+TEST_F(SemaTest, UninitDeclNoExplicitType) {
+    /* var a = undefined 无显式类型 → 无法推断类型 */
+    EXPECT_FALSE(analyze(
+        "func main() { var a = undefined; }"));
+    expect_message(0, "cannot infer type of uninitialized variable 'a'");
+}
+
+TEST_F(SemaTest, UndefinedOutsideVarInit) {
+    /* undefined 只允许作为变量初始化的未初始化声明 */
+    EXPECT_FALSE(analyze(
+        "func main() {"
+        "  var a:i32 = undefined;"
+        "  a = undefined;"
+        "}"));
+    expect_message(0, "'undefined' can only be used as a variable initializer");
+}
+
+TEST_F(SemaTest, IfBothBranchesAssignThenRead) {
+    /* if 两分支都赋值 → 合并点确定已初始化 → 后读取 OK（用户正确场景） */
+    EXPECT_TRUE(analyze(
+        "func main() {"
+        "  var a:i32 = undefined;"
+        "  if (true) { a = 1; } else { a = 2; }"
+        "  var b = a;"
+        "}"));
+    EXPECT_FALSE(diag_has_error(diag_));
+}
+
+TEST_F(SemaTest, IfSingleBranchAssignThenReadFails) {
+    /* if 单分支赋值 → 合并点仍 UNKNOWN → 后读取报错（用户错误场景，保守） */
+    EXPECT_FALSE(analyze(
+        "func main() {"
+        "  var a:i32 = undefined;"
+        "  if (true) { a = 1; } else { }"
+        "  var b = a;"
+        "}"));
+    expect_message(0, "used before initialization");
+}
+
+TEST_F(SemaTest, IfNoElseAssignThenReadFails) {
+    /* if 无 else 单分支赋值 → 保守策略：else 视为未赋值 → 报错 */
+    EXPECT_FALSE(analyze(
+        "func main() {"
+        "  var a:i32 = undefined;"
+        "  if (true) { a = 1; }"
+        "  var b = a;"
+        "}"));
+    expect_message(0, "used before initialization");
+}
+
+TEST_F(SemaTest, NestedIfBothBranchesAssignThenRead) {
+    /* 嵌套 if：外层两分支各自内层都赋值 → 合并后确定已初始化 */
+    EXPECT_TRUE(analyze(
+        "func main() {"
+        "  var a:i32 = undefined;"
+        "  if (true) { if (true) { a = 1; } else { a = 2; } }"
+        "  else { if (true) { a = 3; } else { a = 4; } }"
+        "  var b = a;"
+        "}"));
+    EXPECT_FALSE(diag_has_error(diag_));
+}
+
+TEST_F(SemaTest, NestedIfOneBranchMissesThenReadFails) {
+    /* 嵌套 if 内层缺分支 → 外层合并点仍 UNKNOWN */
+    EXPECT_FALSE(analyze(
+        "func main() {"
+        "  var a:i32 = undefined;"
+        "  if (true) { if (true) { a = 1; } else { } }"
+        "  else { a = 3; }"
+        "  var b = a;"
+        "}"));
+    expect_message(0, "used before initialization");
+}
+
+TEST_F(SemaTest, WhileBodyAssignDoesNotInitOuter) {
+    /* while 体可能执行 0 次：体内赋值不提升确定性 → 循环后读取报错（保守） */
+    EXPECT_FALSE(analyze(
+        "func main() {"
+        "  var a:i32 = undefined;"
+        "  while (true) { a = 1; }"
+        "  var b = a;"
+        "}"));
+    expect_message(0, "used before initialization");
+}
+
+TEST_F(SemaTest, ForBodyAssignDoesNotInitOuter) {
+    /* for 体可能执行 0 次：体内赋值不提升确定性 → 循环后读取报错（保守） */
+    EXPECT_FALSE(analyze(
+        "func main() {"
+        "  var a:i32 = undefined;"
+        "  for (var i:i32 = 0; i < 3; i = i + 1) { a = 1; }"
+        "  var b = a;"
+        "}"));
+    expect_message(0, "used before initialization");
+}
+
+TEST_F(SemaTest, AssignBeforeIfThenReadInBranches) {
+    /* if 前已初始化：分支内重新赋值不影响（读取在分支内） */
+    EXPECT_TRUE(analyze(
+        "func main() {"
+        "  var a:i32 = 1;"
+        "  if (true) { var b = a; } else { var c = a; }"
+        "}"));
+    EXPECT_FALSE(diag_has_error(diag_));
+}
+
+TEST_F(SemaTest, IfBranchAssignExitsUninitInBranch) {
+    /* 未初始化变量在分支内赋值后可立即读取（分支内数据流） */
+    EXPECT_TRUE(analyze(
+        "func main() {"
+        "  var a:i32 = undefined;"
+        "  if (true) { a = 1; var b = a; } else { }"
+        "}"));
+    EXPECT_FALSE(diag_has_error(diag_));
+}
+
+/* ================================================================ */
 /* 类型错误：诊断产出                                                 */
 /* ================================================================ */
 

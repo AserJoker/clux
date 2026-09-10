@@ -235,6 +235,12 @@ static void compile_expr(compiler_t *c, ast_node_t *node) {
     st_push(c, 1);
     break;
   }
+  case AST_UNDEF:
+    /* undefined：无初始值占位（var x:T = undefined 的 DEFINE 前置）。
+       运行时存声明类型零值；sema 已保证未初始化变量不可读。 */
+    bcode_write_op(c->bc, BCODE_PUSH_UNDEFINED);
+    st_push(c, 1);
+    break;
   case AST_BINARY: {
     ast_binary_t *n = (ast_binary_t *)node;
     if (token_is(n->op, "&&") || token_is(n->op, "||")) {
@@ -344,7 +350,7 @@ static void compile_stmt(compiler_t *c, ast_node_t *node) {
     if (n->init) {
       compile_expr(c, n->init);              /* 栈: [value] */
     } else {
-      bcode_write_op(c->bc, BCODE_PUSH_UNDEFINED); /* 无初始值 → TDZ */
+      bcode_write_op(c->bc, BCODE_PUSH_UNDEFINED); /* 无初始值 → 零值占位（sema 已保证未初始化不可读） */
       st_push(c, 1);
     }
     if (!strslice_is_empty(n->type_name)) {

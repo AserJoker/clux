@@ -41,10 +41,13 @@ typedef struct _sema_scope_t sema_scope_t;
  * （scope_t::vars）完成，名字从定义节点 ast 提取（ast_var_def_t::name /
  * ast_func_def_t::name），保证两棵作用域树严格对齐。
  *
- * TDZ 状态、遮罩机制均属于运行态语义，由 VM 侧承担：
- *   - TDZ  → value_t::is_tdz（shadow value 状态）
- *   - 遮罩 → VM scope 链（scope_lookup 沿 parent 取第一个命中）
- * 符号表不持有这些状态。
+ * 遮罩机制由 VM scope 链承担（scope_lookup 沿 parent 取第一个命中）。
+ * TDZ（确定性赋值分析）是编译期数据流状态，由本表 flow_init 字段承载：
+ * 符号表不持有运行时状态。
+ *
+ * 激活语义（is_active）：Pass 3a 注册的变量符号在 Pass 3b 走到定义点
+ * （shadow_var_def 完成 VM scope_define）之前不可见——与 VM scope_lookup
+ * 对齐，保证 `var x = x + 1` 自引用的 x 解析到外层而非自身。
  */
 struct _sema_symbol_t {
   const type_t *type; /* 已解析类型；NULL = 待推断（shadow VM 阶段填充）。
@@ -52,6 +55,11 @@ struct _sema_symbol_t {
   ast_node_t   *ast;  /* 定义节点（借用，arena 管理，不拥有）：
                          函数符号 = AST_FUNC_DEF（Pass 2 填充）；
                          变量符号 = AST_VAR_DEF */
+  bool flow_init;     /* 确定性赋值分析（Pass 3b）：变量是否确定已初始化。
+                         false = 未初始化（TDZ），读取时编译错误
+                         "used before initialization"。仅变量符号有意义。 */
+  bool is_active;     /* 符号是否已定义到 VM scope（运行时可见）。函数/内置
+                         符号注册即激活；变量在 shadow_var_def 定义时激活。 */
 };
 typedef struct _sema_symbol_t sema_symbol_t;
 

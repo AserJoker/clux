@@ -39,7 +39,6 @@ static value_t *op_push(vm_t *vm, bytecode_t *bc, size_t *pc) {
     strslice_t name = bcode_read_str(bc, pc);
     value_t *v = scope_lookup(vm->current_scope, name);
     if (!v) return value_make_error(vm, "exec: undefined variable");
-    /* TDZ 检查由 value_xxx 消费层统一处理（右值被消费时返回 error） */
     return v; /* 借用引用 */
 }
 
@@ -48,7 +47,6 @@ static value_t *op_store(vm_t *vm, bytecode_t *bc, size_t *pc) {
     value_t *src = exec_stack_pop(vm);
     value_t *dst = scope_lookup(vm->current_scope, name);
     if (!dst) return value_make_error(vm, "exec: undefined variable in assignment");
-    /* TDZ 退出由 value_assign 统一处理（赋值成功清 dst TDZ） */
     return value_assign(vm, dst, src);
 }
 
@@ -165,15 +163,14 @@ static value_t *op_define(vm_t *vm, bytecode_t *bc, size_t *pc) {
     }
     if (!decl_type) decl_type = value_type(init);
 
-    /* 无初始值（init 为 void/undefined）：以声明类型构造 TDZ 变量 */
+    /* 无初始值（init 为 void/undefined，来自 var x:T = undefined）：
+       以声明类型分配零值占位（sema 确定性赋值分析已保证编译期拦截读取，
+       VM 值层不感知未初始化状态） */
     if (value_is_undefined(vm, init)) {
         void *data = value_alloc_data(vm->alloc, decl_type);
-        value_t *tdz = value_make(vm, decl_type, data);
-        value_set_tdz(tdz, true);
-        value_t *stored = scope_define(vm, vm->current_scope, name.ptr, tdz);
+        value_t *placeholder = value_make(vm, decl_type, data);
+        value_t *stored = scope_define(vm, vm->current_scope, name.ptr, placeholder);
         if (value_is_error(vm, stored)) return stored;
-        /* scope_define clone 不传播 is_tdz（vtable clone 走 value_make），直接设置存储值 */
-        value_set_tdz(stored, true);
         return NULL;
     }
 
@@ -216,7 +213,7 @@ static value_t *op_bnot(vm_t *vm, bytecode_t *bc, size_t *pc) {
 
 static value_t *op_cast(vm_t *vm, bytecode_t *bc, size_t *pc) {
     /* 类型经栈顶 type value 传递（LOAD 压入），无立即数操作数：
-       弹 type value → 弹被转换值 → value_explicit_cast（error/TDZ 内部短路） */
+       弹 type value → 弹被转换值 → value_explicit_cast（error 内部短路） */
     (void)bc; (void)pc;
     value_t *vtype = exec_stack_pop(vm);
     value_t *value = exec_stack_pop(vm);
@@ -297,7 +294,7 @@ static value_t *op_jz(vm_t *vm, bytecode_t *bc, size_t *pc) {
     uint32_t target = bcode_read_u32(bc, pc);
     value_t *v = exec_stack_pop(vm);
     if (value_is_error(vm, v)) return v;
-    /* 严格 bool：safe_cast 到 bool（TDZ/不可转换 → error 传播） */
+    /* 严格 bool：safe_cast 到 bool（不可转换 → error 传播） */
     value_t *cond = value_explicit_cast(vm, v, vm->type_bool);
     if (value_is_error(vm, cond)) return cond;
     if (!*(const bool *)value_data(cond)) *pc = target;
@@ -308,7 +305,7 @@ static value_t *op_jnz(vm_t *vm, bytecode_t *bc, size_t *pc) {
     uint32_t target = bcode_read_u32(bc, pc);
     value_t *v = exec_stack_pop(vm);
     if (value_is_error(vm, v)) return v;
-    /* 严格 bool：safe_cast 到 bool（TDZ/不可转换 → error 传播） */
+    /* 严格 bool：safe_cast 到 bool（不可转换 → error 传播） */
     value_t *cond = value_explicit_cast(vm, v, vm->type_bool);
     if (value_is_error(vm, cond)) return cond;
     if (*(const bool *)value_data(cond)) *pc = target;

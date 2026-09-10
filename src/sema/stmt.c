@@ -236,6 +236,76 @@ static block_result_t walk_stmt(sema_t *sema, ast_node_t *stmt,
 static block_result_t walk_if(sema_t *sema, ast_if_t *it, sema_scope_t *scope,
                               size_t *idx);
 
+/* ---- 确定性赋值分析（definite assignment analysis） ---- */
+
+/*
+ * 变量初始化状态（flow_init）挂在 sema_symbol_t 上，随 Pass 3b walk 更新：
+ *   - var x = expr         → flow_init = true（定义即初始化）
+ *   - var x:T = undefined  → flow_init = false（未初始化声明，TDZ）
+ *   - x = expr             → flow_init = true（赋值退出未初始化）
+ *   - if 合并点            → meet（AND）：两分支都 flow_init 才 true
+ *   - while/for            → 循环体可能执行 0 次，体内赋值不提升确定性
+ *
+ * 分支模拟通过"快照 → 执行 → 恢复"实现：快照收集分支前可见符号的
+ * flow_init，分支执行后取 then/else 交集写回（保守策略：非全部分支
+ * 赋值 → 仍视为未初始化，读取报编译错误）。
+ */
+
+typedef struct flow_snap {
+  allocator_t     *alloc;   /* 快照数组分配器（scope 链 alloc，共享 vm alloc） */
+  sema_symbol_t  **syms;    /* 分支前可见的变量符号 */
+  bool            *before;  /* 分支前 flow_init */
+  bool            *after;   /* then 分支后 flow_init（meet 用） */
+  size_t           n;
+} flow_snap_t;
+
+static flow_snap_t flow_capture(sema_t *sema, sema_scope_t *scope) {
+  flow_snap_t snap = {0};
+  allocator_t *alloc = scope ? scope->alloc : sema->vm->alloc;
+  snap.alloc = alloc;
+
+  /* 计数：沿 scope 链所有符号（含函数符号——函数 flow_init 恒 false，无害） */
+  size_t cap = 0;
+  for (const sema_scope_t *s = scope; s; s = s->parent)
+    cap += strmap_size(s->symbols);
+  if (cap == 0) return snap;
+
+  snap.syms = allocator_new_ex(alloc, "flow_snap_syms", sizeof(sema_symbol_t *),
+                               NULL, NULL, NULL, cap);
+  snap.before = allocator_new_ex(alloc, "flow_snap_before", sizeof(bool), NULL,
+                                 NULL, NULL, cap);
+  snap.after = allocator_new_ex(alloc, "flow_snap_after", sizeof(bool), NULL,
+                                NULL, NULL, cap);
+
+  size_t i = 0;
+  for (const sema_scope_t *s = scope; s; s = s->parent) {
+    const vec_t *keys = strmap_keys(s->symbols);
+    size_t nk = vec_len(keys);
+    for (size_t k = 0; k < nk; k++) {
+      const char *key = (const char *)vec_get(keys, k);
+      sema_symbol_t *sym = (sema_symbol_t *)strmap_get(s->symbols, key);
+      snap.syms[i] = sym;
+      snap.before[i] = sym->flow_init;
+      i++;
+    }
+  }
+  snap.n = cap;
+  return snap;
+}
+
+static void flow_restore(const flow_snap_t *snap) {
+  for (size_t i = 0; i < snap->n; i++)
+    snap->syms[i]->flow_init = snap->before[i];
+}
+
+static void flow_release(flow_snap_t *snap) {
+  if (!snap || !snap->syms) return;
+  allocator_free(snap->alloc, (void **)&snap->syms);
+  allocator_free(snap->alloc, (void **)&snap->before);
+  allocator_free(snap->alloc, (void **)&snap->after);
+  snap->n = 0;
+}
+
 /* ---- 语句：变量定义 ---- */
 
 /* strslice → NUL 终止临时缓冲（scope_define 内部复制 key，栈缓冲安全） */
@@ -251,17 +321,26 @@ static void shadow_var_def(sema_t *sema, ast_var_def_t *vd,
   if (!sym) return; /* 3a 重复定义已诊断，符号未注册 */
 
   value_t *var_value;
-  if (vd->is_tdz) {
-    /* TDZ：构造声明类型 shadow value 并标记 TDZ，定义到 VM scope。
-       立即可见但不可读（只可赋值），由赋值退出 TDZ。 */
+  if (vd->init && vd->init->kind == AST_UNDEF) {
+    /* 未初始化声明：var x:T = undefined。要求显式类型（undefined 无类型
+       可推断）。flow_init=false（确定性赋值分析 UNKNOWN，TDZ），读取
+       编译错误，只可赋值退出。 */
+    if (!vd->type_name.len) {
+      diag_error(sema->diag, sema_loc(sema, vd->init),
+                 "cannot infer type of uninitialized variable '%.*s'; "
+                 "add an explicit type annotation",
+                 (int)vd->name.len, vd->name.ptr);
+    }
+    sym->flow_init = false;
     var_value =
         value_make_shadow(sema->vm, sym->type ? sym->type : sema->vm->type_void);
-    value_set_tdz(var_value, true);
   } else {
-    /* 非 TDZ：先求值 init（定义尚未入 VM scope → 自引用解析到外层同名变量） */
+    /* 已初始化：先求值 init（定义尚未入 VM scope → 自引用解析到外层同名变量） */
     value_t *init = sema_expr(sema, vd->init, scope);
     bool init_bad = value_is_error(sema->vm, init) ||
                     type_eq(value_type(init), sema->vm->type_void);
+    /* 错误恢复产物（init 已诊断）不提升确定性 */
+    sym->flow_init = !init_bad;
 
     if (vd->type_name.len) {
       /* 显式类型：value_assign 校验 init 可赋给声明类型（单一校验点） */
@@ -286,10 +365,12 @@ static void shadow_var_def(sema_t *sema, ast_var_def_t *vd,
     }
   }
 
-  /* 定义 shadow value 到当前 VM scope（与 sema scope 树同构；名字取自 ast） */
+  /* 定义 shadow value 到当前 VM scope（与 sema scope 树同构；名字取自 ast）。
+     定义完成 → 符号激活（sema_lookup 跳过未激活符号，自引用解析到外层） */
   char nb[256];
   name_to_cstr(vd->name, nb, sizeof nb);
   scope_define(sema->vm, sema->vm->current_scope, nb, var_value);
+  sym->is_active = true;
 }
 
 /* ---- 语句：赋值 ---- */
@@ -332,7 +413,8 @@ static void shadow_assign(sema_t *sema, ast_assign_t *as,
 
   if (token_is(as->op, "=")) {
     if (rhs_bad) return; /* 错误恢复产物跳过，已有诊断 */
-    /* 简单赋值：value_assign 校验（含 TDZ 变量——类型合法即退出 TDZ） */
+    /* 简单赋值：value_assign 校验；赋值成功 → 数据流 flow_init=true
+       （TDZ 退出由确定性赋值分析承担，VM 值层不感知） */
     value_t *r = value_assign(sema->vm, lhs, rhs);
     if (value_is_error(sema->vm, r)) {
       char tn[64], rn[64];
@@ -342,8 +424,8 @@ static void shadow_assign(sema_t *sema, ast_assign_t *as,
                  "cannot assign %s to variable '%.*s' of type %s", rn,
                  (int)as->name.len, as->name.ptr, tn);
     } else {
-      /* 赋值成功退出 TDZ */
-      value_set_tdz(lhs, false);
+      sema_symbol_t *sym = sema_lookup(scope, as->name);
+      if (sym) sym->flow_init = true;
     }
     return;
   }
@@ -379,6 +461,10 @@ static void shadow_assign(sema_t *sema, ast_assign_t *as,
     diag_error(sema->diag, sema_loc(sema, &as->base),
                "cannot assign %s to variable '%.*s' of type %s", rn,
                (int)as->name.len, as->name.ptr, tn);
+  } else {
+    /* 复合赋值等价于读+写：变量确定已初始化 */
+    sema_symbol_t *sym = sema_lookup(scope, as->name);
+    if (sym) sym->flow_init = true;
   }
 }
 
@@ -424,11 +510,17 @@ static block_result_t walk_while(sema_t *sema, ast_while_t *wl,
   value_t *cond = sema_expr(sema, wl->cond, scope);
   sema_check_bool(sema, wl->cond, cond, "while condition");
 
+  /* 循环体可能执行 0 次：体内赋值不提升外层变量的确定性（保守） */
+  flow_snap_t snap = flow_capture(sema, scope);
+
   sema_scope_t *body_scope = sema_scope_child(scope, (*idx)++);
   vm_push_scope(sema->vm); /* 循环体块：VM scope 与 sema scope 树同构 */
   size_t sub = 0;
   walk_block(sema, wl->body, body_scope ? body_scope : scope, &sub);
   vm_pop_scope(sema->vm);
+
+  flow_restore(&snap);
+  flow_release(&snap);
   return (block_result_t){0}; /* 循环体可能不执行，不贡献 definitely_returns */
 }
 
@@ -436,6 +528,10 @@ static block_result_t walk_for(sema_t *sema, ast_for_t *fr,
                                sema_scope_t *scope, size_t *idx) {
   sema_scope_t *for_scope = sema_scope_child(scope, (*idx)++);
   sema_scope_t *fs = for_scope ? for_scope : scope;
+
+  /* 循环体可能执行 0 次：体内对外层变量的赋值不提升确定性（保守）。
+     先快照外层符号，循环结束后恢复（for 变量本身出作用域不可见） */
+  flow_snap_t snap = flow_capture(sema, scope);
 
   vm_push_scope(sema->vm); /* for 作用域（init 变量） */
 
@@ -471,6 +567,9 @@ static block_result_t walk_for(sema_t *sema, ast_for_t *fr,
 
   if (fr->update) sema_expr(sema, fr->update, fs);
 
+  flow_restore(&snap); /* 丢弃体内确定性提升（保守） */
+  flow_release(&snap);
+
   vm_pop_scope(sema->vm); /* 退出 for 作用域 */
   return (block_result_t){0};
 }
@@ -481,12 +580,21 @@ static block_result_t walk_if(sema_t *sema, ast_if_t *it, sema_scope_t *scope,
   value_t *cond = sema_expr(sema, it->cond, scope);
   sema_check_bool(sema, it->cond, cond, "if condition");
 
+  /* 确定性赋值合并点：快照分支前状态 → then → 记录 → 恢复 → else →
+     meet（AND）：两分支都 flow_init 才 true。保守策略：非全部分支赋值
+     （如 if(c){a=1;}else{}）→ 合并后仍 UNKNOWN，读取编译错误。 */
+  flow_snap_t snap = flow_capture(sema, scope);
+
   block_result_t tr = {0};
   sema_scope_t *then_scope = sema_scope_child(scope, (*idx)++);
   vm_push_scope(sema->vm); /* then 块 */
   size_t sub = 0;
   tr = walk_block(sema, it->then_body, then_scope ? then_scope : scope, &sub);
   vm_pop_scope(sema->vm);
+
+  /* 记录 then 后状态，恢复分支前 */
+  for (size_t i = 0; i < snap.n; i++) snap.after[i] = snap.syms[i]->flow_init;
+  flow_restore(&snap);
 
   block_result_t er = {0};
   if (it->else_body) {
@@ -503,6 +611,12 @@ static block_result_t walk_if(sema_t *sema, ast_if_t *it, sema_scope_t *scope,
       vm_pop_scope(sema->vm);
     }
   }
+
+  /* meet：两分支都 INIT 才 INIT（else 缺失视为"未赋值分支"） */
+  for (size_t i = 0; i < snap.n; i++)
+    snap.syms[i]->flow_init = snap.after[i] && snap.syms[i]->flow_init;
+  flow_release(&snap);
+
   r.definitely_returns = tr.definitely_returns && er.definitely_returns;
   return r;
 }
@@ -598,6 +712,10 @@ void sema_walk_function(sema_t *sema, sema_func_t *sf) {
   for (ast_node_t *p = fn->params; p; p = p->next) {
     ast_var_def_t *vd = (ast_var_def_t *)p;
     sema_symbol_t *ps = sema_scope_find_local(sf->scope, vd->name);
+    if (ps) {
+      ps->flow_init = true; /* 参数由调用方传入，确定已初始化 */
+      ps->is_active = true; /* 参数进入函数体立即可见 */
+    }
     value_t *pv = value_make_shadow(sema->vm,
                                     ps && ps->type ? ps->type
                                                    : sema->vm->type_void);
