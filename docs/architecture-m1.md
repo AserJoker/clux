@@ -144,7 +144,7 @@ Token 文本语义约定：
 | SYMBOL | 1-2 个字符的运算符/标点 |
 | COMMENT / MULTILINE_COMMENT | 含注释标记，如 `// x`、`/* y */` |
 
-### 2.3 Parser（include/parser/parser.h, src/parser/parser.c）—— 尚未实现（T4）
+### 2.3 Parser（include/parser/parser.h, src/parser/parser.c + src/parser/parse_*.c）—— 已实现（T4）
 
 递归下降解析器，Token 流 → AST。
 
@@ -155,7 +155,7 @@ Token 文本语义约定：
 - **词法错误处理**：Parser 遍历 token 池时遇到 `TOKEN_TYPE_ERROR` → 用 `token_get_error_message` 记入诊断 → 置 fatal 标志 → 立即终止解析（不做 panic recovery），driver 据此直接失败
 - `parser_error(parser_t*)` → 是否已发生错误（语法或词法）
 
-### 2.4 AST (include/parser/ast.h, src/parser/ast.c) —— 尚未实现
+### 2.4 AST (include/parser/ast.h, src/parser/ast_node.c) —— 已实现
 
 **结构范式：公共头 + 子类化**（chibicc / lcc 范式）。所有节点共享公共头，具体节点通过 kind 区分、按子类大小分配；AST 整体挂在一个 arena 上，随编译单元释放，不做逐节点 free。
 
@@ -516,7 +516,7 @@ struct value_t {
 - 全部通过后才编译为字节码执行
 - 运行时不再做类型检查，字节码执行器更精简
 
-### 2.7 字节码 IR —— 设计完成（待实现）
+### 2.7 字节码 IR —— 已实现（bytecode 容器 + 执行器 + 编译器全链路）
 
 放弃 AST 直走解释，改为编译 AST 到线性字节码后执行。
 
@@ -804,7 +804,7 @@ if (c) A else B:          while (c) B:            a && b:
 | 签名类型 `func_type_t` | **`vm->sig_types` 池**（按签名去重 intern） | `vm_destroy` 释放 |
 | 孤立 closure_scope | 函数对象（`owns_closure_scope`） | 随函数对象销毁（`vm_destroy`） |
 
-### 2.8 诊断 (include/diag/diagnostic.h, src/diag/diagnostic.c) —— 尚未实现（diag/ 目录为空）
+### 2.8 诊断 (include/diag/diagnostic.h, src/diag/diagnostic.c) —— 已实现
 
 **公共模块**：Lexer、Parser、Sema、Bytecode Compiler、Bytecode VM 共用同一个收集器，driver 统一在出口打印，而不是边错边打。
 
@@ -825,11 +825,15 @@ typedef struct diag_buf {
 } diag_buf_t;
 
 void diag_error(diag_buf_t *db, location_t loc, const char *fmt, ...);
-void diag_print_all(const diag_buf_t *db);   // 统一格式化输出到 stderr
+void diag_warning(diag_buf_t *db, location_t loc, const char *fmt, ...);
+void diag_note(diag_buf_t *db, location_t loc, const char *fmt, ...);
+void diag_print_all(const diag_buf_t *db);   // 统一格式化输出到 stderr（Rust 风格源码片段 + ^ 标记）
 bool diag_has_error(const diag_buf_t *db);
+size_t diag_count(const diag_buf_t *db);
+const diagnostic_t *diag_items(const diag_buf_t *db);
 ```
 
-输出格式：`<file>:<line>:<col>: error: <message>`。
+输出格式：Rust 风格——首行 `<file>:<line>:<col>: error: <message>`，随后打印源码行与 `^` 标记定位到出错列。
 
 ### 2.9 语义分析 (include/sema/sema.h, symbol.h + src/sema/*.c)
 
@@ -1146,7 +1150,7 @@ if (!sema_analyze(sema, ast)) {
 
 作用域树是持久化数据，sema 结束后不销毁，交由字节码编译器复用（变量类型静态分派、作用域结构定位 load/store、TDZ 初始化信息）。
 
-### 2.10 Driver（include/driver/driver.h, src/driver/driver.c）—— 已实现（当前阶段：加载 + 词法 → 单词表）
+### 2.10 Driver（include/driver/driver.h, src/driver/driver.c）—— 已实现（完整流水线 lex → parse → sema → bytecode compile → execute）
 
 流水线编排者，见本文档第 1 节。当前落地阶段 ①（加载源码）与 ②（词法分析），并直接完成 ③（输出单词表）：
 
@@ -1178,7 +1182,7 @@ int driver_run_file(const char *path);
 
 **内存源约束**：Lexer 要求内存直读源（`istream_data != NULL`），而 `stream_source_file` 的 `data()` 为 NULL，因此阶段 ① 先把文件读入 allocator 缓冲，再用 `stream_source_mem(allocator, buf, len, owns_data=true)` 建内存源——缓冲由 istream/lexer 生命周期自动释放。token 文本切片在 lexer 存活期间有效，故单词表在 `lexer_close` 之前打印完毕。
 
-`driver_compile_file` / `driver_run_file` 的完整签名（含 parse/sema/bytecode compile/execute）待后续阶段接入 Parser/Sema/Bytecode 后补全。Driver 持有的编译单元 arena 使所有阶段产物（AST、符号表、token 文本指向的源 buffer）在同一生命周期内有效。
+`driver_compile_file` / `driver_run_file` 已接入完整流水线（lex → parse → sema → bytecode compile → execute）。Driver 持有的编译单元 arena 使所有阶段产物（AST、符号表、token 文本指向的源 buffer）在同一生命周期内有效。
 
 ## 3. 命令行接口
 
