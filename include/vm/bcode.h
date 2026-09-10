@@ -58,7 +58,8 @@ typedef enum {
     BCODE_ADD, BCODE_SUB, BCODE_MUL, BCODE_DIV, BCODE_MOD,
     BCODE_EQ,  BCODE_NE,  BCODE_LT,  BCODE_LE,  BCODE_GT,  BCODE_GE,
     BCODE_AND, BCODE_OR,
-    BCODE_NEG, BCODE_NOT,
+    BCODE_BXOR, BCODE_SHL, BCODE_SHR,
+    BCODE_NEG, BCODE_NOT, BCODE_BNOT,
 
     BCODE_CAST,            /* 显式转换：类型经栈顶 type value（LOAD 压入），弹 type+值 */
     BCODE_CALL,            /* argc：value_call（callee 在 stack[sp-1-argc]） */

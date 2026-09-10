@@ -196,7 +196,8 @@ BINARY_OP(add, value_add)   BINARY_OP(sub, value_sub)   BINARY_OP(mul, value_mul
 BINARY_OP(div, value_div)   BINARY_OP(mod, value_mod)
 BINARY_OP(eq, value_eq)     BINARY_OP(ne, value_ne)     BINARY_OP(lt, value_lt)
 BINARY_OP(le, value_le)     BINARY_OP(gt, value_gt)     BINARY_OP(ge, value_ge)
-BINARY_OP(band, value_band) BINARY_OP(bor, value_bor)
+BINARY_OP(band, value_band) BINARY_OP(bor, value_bor)   BINARY_OP(bxor, value_bxor)
+BINARY_OP(shl, value_shl)   BINARY_OP(shr, value_shr)
 
 static value_t *op_neg(vm_t *vm, bytecode_t *bc, size_t *pc) {
     (void)bc; (void)pc;
@@ -205,6 +206,10 @@ static value_t *op_neg(vm_t *vm, bytecode_t *bc, size_t *pc) {
 static value_t *op_not(vm_t *vm, bytecode_t *bc, size_t *pc) {
     (void)bc; (void)pc;
     return value_lnot(vm, exec_stack_pop(vm));
+}
+static value_t *op_bnot(vm_t *vm, bytecode_t *bc, size_t *pc) {
+    (void)bc; (void)pc;
+    return value_bnot(vm, exec_stack_pop(vm));
 }
 
 /* ---- 显式转换 ---- */
@@ -368,8 +373,12 @@ static const bcode_handler_t HANDLERS[] = {
     [BCODE_GE]             = op_ge,
     [BCODE_AND]            = op_band,
     [BCODE_OR]             = op_bor,
+    [BCODE_BXOR]           = op_bxor,
+    [BCODE_SHL]            = op_shl,
+    [BCODE_SHR]            = op_shr,
     [BCODE_NEG]            = op_neg,
     [BCODE_NOT]            = op_not,
+    [BCODE_BNOT]           = op_bnot,
     [BCODE_CAST]           = op_cast,
     [BCODE_CREATE_FUNC_TYPE] = op_create_func_type,
     [BCODE_PUSH_FUNCTION]  = op_push_function,
