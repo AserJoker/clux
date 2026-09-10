@@ -6,12 +6,14 @@ extern "C" {
 
 /**
  * Panic handler callback. Receives the fully formatted message.
- * The default handler calls abort(); it must NOT return.
+ * The default handler must NOT return: on Windows it prints the message
+ * and calls _exit() (abort() would pop a CRT error dialog), on POSIX it
+ * calls abort() to produce a core dump.
  * A custom handler may throw (C++ exception) or longjmp instead.
  */
 typedef void (*panic_handler_t)(const char *message);
 
-/** Default handler — prints to stderr and calls abort(). */
+/** Default handler — prints to stderr and terminates the process. */
 void panic_handler_abort(const char *message);
 
 /** Set/get the global panic handler. */
