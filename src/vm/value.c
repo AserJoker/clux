@@ -71,6 +71,22 @@ bool value_is_void(const value_t *v) {
     return !v || v->type == NULL;
 }
 
+/* ---- 类型查询（type is value：kind 分类 + vtable 分派） ---- */
+
+type_kind_t value_kind(const value_t *v) {
+    return (v && v->type) ? v->type->kind : TYPE_KIND_VOID;
+}
+
+bool value_is_type(const value_t *v, type_kind_t kind) {
+    if (!v || !v->type) return kind == TYPE_KIND_VOID;
+    return v->type->kind == kind;
+}
+
+bool value_has_const(const value_t *v) {
+    if (!v || !v->type) return false;
+    return type_has_const(v->type);
+}
+
 /* ---- 构造器 ---- */
 
 value_t *value_make_untracked(allocator_t *alloc, const type_t *type, void *data) {

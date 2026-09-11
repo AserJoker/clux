@@ -198,6 +198,7 @@ const type_t *type_volatile_intern(vm_t *vm, const type_t *sub) {
     vt->base.name = (strslice_t){ name, strlen(name) };
     vt->base.size = sub->size;
     vt->base.align = sub->align;
+    vt->base.kind = TYPE_KIND_VOLATILE;
     vt->sub = sub;
 
     vec_push(vm->volatile_types, vm->alloc, vt);

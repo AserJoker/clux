@@ -141,7 +141,7 @@ bool sema_eval_comptime_var(sema_t *sema, ast_var_def_t *vd,
      错误恢复产物（error/void shadow）跳过 ctfe（避免二次诊断） */
   value_t *sh = sema_expr(sema, &vd->init, scope);
   bool bad = value_is_error(sema->vm, sh) ||
-             type_eq(value_type(sh), sema->vm->type_void);
+             value_is_type(sh, TYPE_KIND_VOID);
   if (bad) return false;
 
   /* 2. 类型校验（显式类型 / 推断，与普通 var 一致）。显式类型在 Pass 3a
@@ -233,7 +233,7 @@ value_t *sema_eval_comptime_call(sema_t *sema, ast_node_t **node,
   for (size_t i = 0; *link; link = &(*link)->next, i++) {
     value_t *av = sema_expr(sema, link, scope);
     if (value_is_error(vm, av) ||
-        type_eq(value_type(av), vm->type_void)) {
+        value_is_type(av, TYPE_KIND_VOID)) {
       /* 实参错误已诊断，返回错误恢复产物 */
       return value_make_shadow(vm, vm->type_void);
     }

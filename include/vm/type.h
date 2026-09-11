@@ -10,6 +10,33 @@ extern "C" {
 #include <stddef.h>
 
 /**
+ * type_kind_t: 类型粗粒度分类（type_t.kind）
+ *
+ * 鸭子类型判断的基础：复合/修饰类型按 kind 而非实例指针分类。
+ * 粗粒度（INT/FLOAT 覆盖全部宽度变体），细粒度差异由 name/size 承载。
+ * M2 预留 STRUCT/ARRAY/TUPLE/ENUM/CUNION。
+ */
+typedef enum type_kind_t {
+    TYPE_KIND_VOID     = 0,
+    TYPE_KIND_BOOL,
+    TYPE_KIND_INT,       /* i8/i16/i32/i64/u8/u16/u32/u64 */
+    TYPE_KIND_FLOAT,     /* f32/f64 */
+    TYPE_KIND_STR,
+    TYPE_KIND_TYPE,      /* type value 的元类型 */
+    TYPE_KIND_FUNC,
+    TYPE_KIND_ERROR,
+    TYPE_KIND_INTERRUPT, /* 引擎级控制流哨兵（interrupt 类型） */
+    TYPE_KIND_CONST,     /* const 修饰（持 sub） */
+    TYPE_KIND_VOLATILE,  /* volatile 修饰（持 sub） */
+    /* ---- M2 预留：复合类型 ---- */
+    TYPE_KIND_STRUCT,
+    TYPE_KIND_ARRAY,
+    TYPE_KIND_TUPLE,
+    TYPE_KIND_ENUM,
+    TYPE_KIND_CUNION,
+} type_kind_t;
+
+/**
  * func_sig_t: 函数签名（参数 + 返回值信息）
  *
  * 内联在 func_type_t 中。同一签名的所有函数共享同一个签名类型
@@ -37,6 +64,7 @@ typedef struct type_t {
     strslice_t      name;       /* 类型名，如 "i32", "f64", "str" */
     size_t          size;       /* 该类型数据的字节大小 */
     size_t          align;      /* 该类型数据的对齐要求 */
+    type_kind_t     kind;       /* 粗粒度分类（鸭子类型判断用） */
 } type_t;
 
 /**
@@ -91,14 +119,14 @@ bool type_equal(vm_t *vm, const type_t *a, const type_t *b);
  */
 bool type_extends(vm_t *vm, const type_t *sub, const type_t *sup);
 
-/** 判断类型是否为 const 修饰类型 */
+/** 判断类型是否为 const 修饰类型（type_kind 分类） */
 static inline bool type_is_const(const type_t *t) {
-    return t && t->vtable == &VTABLE_CONST;
+    return t && t->kind == TYPE_KIND_CONST;
 }
 
-/** 判断类型是否为 volatile 修饰类型 */
+/** 判断类型是否为 volatile 修饰类型（type_kind 分类） */
 static inline bool type_is_volatile(const type_t *t) {
-    return t && t->vtable == &VTABLE_VOLATILE;
+    return t && t->kind == TYPE_KIND_VOLATILE;
 }
 
 /** 取修饰类型的 sub（非 const/volatile 时返回 NULL） */

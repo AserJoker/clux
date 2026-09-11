@@ -265,6 +265,26 @@ protected:
     }
 };
 
+TEST_F(VmQualifiedTypes, TypeKindClassification) {
+    /* type_kind 粗粒度分类：基础类型按 kind 归类，不依赖实例指针 */
+    EXPECT_EQ(vm->type_i32->kind, TYPE_KIND_INT);
+    EXPECT_EQ(vm->type_u64->kind, TYPE_KIND_INT);
+    EXPECT_EQ(vm->type_f32->kind, TYPE_KIND_FLOAT);
+    EXPECT_EQ(vm->type_bool->kind, TYPE_KIND_BOOL);
+    EXPECT_EQ(vm->type_str->kind, TYPE_KIND_STR);
+    EXPECT_EQ(vm->type_void->kind, TYPE_KIND_VOID);
+    EXPECT_EQ(vm->type_type->kind, TYPE_KIND_TYPE);
+    EXPECT_EQ(vm->type_func->kind, TYPE_KIND_FUNC);
+    EXPECT_EQ(vm->type_error->kind, TYPE_KIND_ERROR);
+
+    const type_t *ci32 = type_const_intern(vm, vm->type_i32);
+    const type_t *vi32 = type_volatile_intern(vm, vm->type_i32);
+    EXPECT_EQ(ci32->kind, TYPE_KIND_CONST);
+    EXPECT_EQ(vi32->kind, TYPE_KIND_VOLATILE);
+    /* 鸭子类型：INT kind 覆盖全部整型宽度变体 */
+    EXPECT_EQ(type_const_intern(vm, vm->type_i64)->kind, TYPE_KIND_CONST);
+}
+
 TEST_F(VmQualifiedTypes, ConstIsRealDistinctType) {
     /* const i32 是独立类型，与 i32 指针不相等（type identity 分离） */
     const type_t *ci32 = type_const_intern(vm, vm->type_i32);
@@ -320,6 +340,50 @@ TEST_F(VmQualifiedTypes, QualifiedTypeSizeAlignMatchSub) {
     const type_t *vi64 = type_volatile_intern(vm, vm->type_i64);
     EXPECT_EQ(vi64->size, vm->type_i64->size);
     EXPECT_EQ(vi64->align, vm->type_i64->align);
+}
+
+TEST_F(VmQualifiedTypes, ValueKindAndIsType) {
+    /* value 层类型查询：kind 分类 + is_type 判定（type is value 入口） */
+    value_t *iv = make_i32_raw(vm, 42);
+    EXPECT_EQ(value_kind(iv), TYPE_KIND_INT);
+    EXPECT_TRUE(value_is_type(iv, TYPE_KIND_INT));
+    EXPECT_FALSE(value_is_type(iv, TYPE_KIND_FLOAT));
+    EXPECT_FALSE(value_is_type(iv, TYPE_KIND_CONST));
+
+    value_t *bv = make_bool_raw(vm, true);
+    EXPECT_EQ(value_kind(bv), TYPE_KIND_BOOL);
+    EXPECT_TRUE(value_is_type(bv, TYPE_KIND_BOOL));
+
+    /* NULL type value → VOID kind（value_is_void 语义：无类型） */
+    value_t *voidv = value_make_untracked(vm->alloc, NULL, NULL);
+    EXPECT_EQ(value_kind(voidv), TYPE_KIND_VOID);
+    EXPECT_TRUE(value_is_type(voidv, TYPE_KIND_VOID));
+
+    raw_free(vm, iv);
+    raw_free(vm, bv);
+    raw_free(vm, voidv);
+}
+
+TEST_F(VmQualifiedTypes, ValueHasConst) {
+    /* value 层 const 查询：沿 sub 链递归（type is value 接口） */
+    const type_t *ci32 = type_const_intern(vm, vm->type_i32);
+    const type_t *vci = type_volatile_intern(vm, ci32);
+
+    value_t *plain = value_make_untracked(vm->alloc, vm->type_i32, NULL);
+    value_t *ci = value_make_untracked(vm->alloc, ci32, NULL);
+    value_t *vci_v = value_make_untracked(vm->alloc, vci, NULL);
+    value_t *vi = value_make_untracked(
+        vm->alloc, type_volatile_intern(vm, vm->type_i32), NULL);
+
+    EXPECT_FALSE(value_has_const(plain));
+    EXPECT_TRUE(value_has_const(ci));
+    EXPECT_TRUE(value_has_const(vci_v));  /* volatile(const(i32)) → 查到 const */
+    EXPECT_FALSE(value_has_const(vi));    /* volatile(i32) → 无 const */
+
+    allocator_free(vm->alloc, (void **)&plain);
+    allocator_free(vm->alloc, (void **)&ci);
+    allocator_free(vm->alloc, (void **)&vci_v);
+    allocator_free(vm->alloc, (void **)&vi);
 }
 
 TEST_F(VmQualifiedTypes, TypeEqualDuckDispatch) {

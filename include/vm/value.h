@@ -42,6 +42,21 @@ bool value_is_error(vm_t *vm, const value_t *v);
 /** 判断 value 是否为 interrupt（引擎级控制流哨兵） */
 bool value_is_interrupt(vm_t *vm, const value_t *v);
 
+/* ---- 类型查询（type is value：kind 分类 + vtable 分派） ---- */
+
+/** 返回 value 类型的粗粒度 kind（type 为 NULL 时返回 TYPE_KIND_VOID） */
+type_kind_t value_kind(const value_t *v);
+
+/** value 的类型是否为指定 kind（NULL type → false，除非 kind 是 VOID） */
+bool value_is_type(const value_t *v, type_kind_t kind);
+
+/**
+ * value 的类型是否含 const 修饰（沿 sub 链递归）：const i32 → true；
+ * volatile(const(i32)) → true；volatile(i32) → false。
+ * sema 仅在延迟初始化（TDZ 首次赋值豁免）时使用；赋值拦截下沉 vtable。
+ */
+bool value_has_const(const value_t *v);
+
 /* ---- 构造器 ---- */
 
 /** 从已有 data 指针构造 value（堆分配 + auto-track 到 current_scope）。

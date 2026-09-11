@@ -142,7 +142,7 @@ static void shadow_var_def(sema_t *sema, ast_var_def_t *vd,
     /* 已初始化：先求值 init（定义尚未入 VM scope → 自引用解析到外层同名变量） */
     value_t *init = sema_expr(sema, &vd->init, scope);
     bool init_bad = value_is_error(sema->vm, init) ||
-                    type_eq(value_type(init), sema->vm->type_void);
+                    value_is_type(init, TYPE_KIND_VOID);
     /* 错误恢复产物（init 已诊断）不提升确定性 */
     sym->flow_init = !init_bad;
 
@@ -221,7 +221,7 @@ static void shadow_assign(sema_t *sema, ast_assign_t *as,
 
   value_t *rhs = sema_expr(sema, &as->value, scope);
   bool rhs_bad = value_is_error(sema->vm, rhs) ||
-                 type_eq(value_type(rhs), sema->vm->type_void);
+                 value_is_type(rhs, TYPE_KIND_VOID);
 
   if (token_is(as->op, "=")) {
     if (rhs_bad) return; /* 错误恢复产物跳过，已有诊断 */
@@ -229,9 +229,9 @@ static void shadow_assign(sema_t *sema, ast_assign_t *as,
     /* const 赋值检查（TDZ 豁免）：声明 const 且已初始化（flow_init=true）
        的变量不可再赋值；flow_init=false（未初始化声明 var a:const T =
        undefined）时的赋值是首次初始化，豁免（const 变量的 TDZ 赋值 =
-       初始化，仅一次）。 */
+       初始化，仅一次）。经 value 层接口查询 const（type is value）。 */
     sema_symbol_t *sym = sema_lookup(scope, as->name);
-    if (sym && sym->type && type_has_const(sym->type) && sym->flow_init) {
+    if (sym && value_has_const(lhs) && sym->flow_init) {
       diag_error(sema->diag, sema_loc(sema, &as->base),
                  "cannot assign to const variable '%.*s'",
                  (int)as->name.len, as->name.ptr);
@@ -254,10 +254,11 @@ static void shadow_assign(sema_t *sema, ast_assign_t *as,
     return;
   }
 
-  /* const 检查：复合赋值是读+写，const 变量已初始化后禁止 */
+  /* const 检查：复合赋值是读+写，const 变量已初始化后禁止
+     （经 value 层接口查询 const，type is value） */
   {
     sema_symbol_t *sym = sema_lookup(scope, as->name);
-    if (sym && sym->type && type_has_const(sym->type) && sym->flow_init) {
+    if (sym && value_has_const(lhs) && sym->flow_init) {
       diag_error(sema->diag, sema_loc(sema, &as->base),
                  "cannot assign to const variable '%.*s'",
                  (int)as->name.len, as->name.ptr);
@@ -311,7 +312,7 @@ static block_result_t walk_return(sema_t *sema, ast_return_t *rt,
   if (rt->value) {
     value_t *v = sema_expr(sema, &rt->value, scope);
     bool v_bad = value_is_error(sema->vm, v) ||
-                 type_eq(value_type(v), sema->vm->type_void);
+                 value_is_type(v, TYPE_KIND_VOID);
     if (!v_bad) {
       if (!sema->func_return_type) {
         diag_error(sema->diag, sema_loc(sema, rt->value),
@@ -501,7 +502,7 @@ static block_result_t walk_stmt(sema_t *sema, ast_node_t *stmt,
       ast_expr_stmt_t *es = (ast_expr_stmt_t *)stmt;
       value_t *v = sema_expr(sema, &es->expr, scope);
       if (!value_is_error(sema->vm, v) &&
-          !type_eq(value_type(v), sema->vm->type_void)) {
+          !value_is_type(v, TYPE_KIND_VOID)) {
         char tn[64];
         sema_type_name(value_type(v), tn, sizeof(tn));
         diag_error(sema->diag, sema_loc(sema, es->expr),

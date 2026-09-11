@@ -200,6 +200,7 @@ const type_t *type_const_intern(vm_t *vm, const type_t *sub) {
     ct->base.name = (strslice_t){ name, strlen(name) };
     ct->base.size = sub->size;
     ct->base.align = sub->align;
+    ct->base.kind = TYPE_KIND_CONST;
     ct->sub = sub;
 
     vec_push(vm->const_types, vm->alloc, ct);

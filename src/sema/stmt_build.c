@@ -55,7 +55,7 @@ static void build_func(sema_t *sema, sema_func_t *sf) {
   const type_t *rt = fn->return_type.len
                          ? resolve_type_q(sema, fn->return_type, fn->return_qual)
                          : NULL;
-  if (rt && !type_eq(rt, sema->vm->type_void) && !r.definitely_returns) {
+  if (rt && rt->kind != TYPE_KIND_VOID && !r.definitely_returns) {
     diag_error(sema->diag, sema_loc(sema, &fn->base),
                "function '%.*s' must return a value on all paths",
                (int)fn->name.len, fn->name.ptr);

@@ -47,8 +47,8 @@ static void op_type_name(value_t *v, char *buf, size_t cap) {
 void sema_check_bool(sema_t *sema, ast_node_t *node, value_t *v,
                      const char *what) {
   if (value_is_error(sema->vm, v)) return;
-  if (type_eq(value_type(v), sema->vm->type_void)) return;
-  if (!type_eq(value_type(v), sema->vm->type_bool)) {
+  if (value_is_type(v, TYPE_KIND_VOID)) return;
+  if (!value_is_type(v, TYPE_KIND_BOOL)) {
     char tn[64];
     op_type_name(v, tn, sizeof(tn));
     diag_error(sema->diag, sema_loc(sema, node), "%s operand must be bool, got %s",
@@ -167,7 +167,7 @@ value_t *sema_expr(sema_t *sema, ast_node_t **node, sema_scope_t *scope) {
       value_t *operand = sema_expr(sema, &n->operand, scope);
       /* 错误恢复产物静默通过，避免级联二次诊断 */
       if (value_is_error(sema->vm, operand) ||
-          type_eq(value_type(operand), sema->vm->type_void))
+          value_is_type(operand, TYPE_KIND_VOID))
         return value_make_shadow(sema->vm, sema->vm->type_void);
       value_t *result = NULL;
       if (token_is(n->op, "-")) {
@@ -296,8 +296,7 @@ static value_t *shadow_binary(sema_t *sema, ast_node_t **node,
   value_t *rhs = sema_expr(sema, &b->rhs, scope);
   /* 错误恢复产物（error/void shadow）静默通过，避免级联二次诊断 */
   if (value_is_error(sema->vm, lhs) || value_is_error(sema->vm, rhs) ||
-      type_eq(value_type(lhs), sema->vm->type_void) ||
-      type_eq(value_type(rhs), sema->vm->type_void))
+      value_is_type(lhs, TYPE_KIND_VOID) || value_is_type(rhs, TYPE_KIND_VOID))
     return value_make_shadow(sema->vm, sema->vm->type_void);
   value_t *(*op)(vm_t *, value_t *, value_t *) = binop_of(b->op);
   if (!op) {
