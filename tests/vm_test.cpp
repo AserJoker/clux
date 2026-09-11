@@ -166,7 +166,7 @@ TEST_F(VmLifecycle, PopGlobalPanics) {
 }
 
 /* ================================================================ */
-/* 2. 内置类型注册表 (type_find)                                     */
+/* 2. 内置类型注册表 (type_lookup：作用域链查找 type value)           */
 /* ================================================================ */
 
 class VmBuiltinTypes : public ::testing::Test {
@@ -185,33 +185,34 @@ protected:
 };
 
 TEST_F(VmBuiltinTypes, AllIntTypesRegistered) {
-    EXPECT_EQ(type_find(vm, STRSLICE_LIT("i8")),  vm->type_i8);
-    EXPECT_EQ(type_find(vm, STRSLICE_LIT("i16")), vm->type_i16);
-    EXPECT_EQ(type_find(vm, STRSLICE_LIT("i32")), vm->type_i32);
-    EXPECT_EQ(type_find(vm, STRSLICE_LIT("i64")), vm->type_i64);
-    EXPECT_EQ(type_find(vm, STRSLICE_LIT("u8")),  vm->type_u8);
-    EXPECT_EQ(type_find(vm, STRSLICE_LIT("u16")), vm->type_u16);
-    EXPECT_EQ(type_find(vm, STRSLICE_LIT("u32")), vm->type_u32);
-    EXPECT_EQ(type_find(vm, STRSLICE_LIT("u64")), vm->type_u64);
+    EXPECT_EQ(type_lookup(vm, STRSLICE_LIT("i8")),  vm->type_i8);
+    EXPECT_EQ(type_lookup(vm, STRSLICE_LIT("i16")), vm->type_i16);
+    EXPECT_EQ(type_lookup(vm, STRSLICE_LIT("i32")), vm->type_i32);
+    EXPECT_EQ(type_lookup(vm, STRSLICE_LIT("i64")), vm->type_i64);
+    EXPECT_EQ(type_lookup(vm, STRSLICE_LIT("u8")),  vm->type_u8);
+    EXPECT_EQ(type_lookup(vm, STRSLICE_LIT("u16")), vm->type_u16);
+    EXPECT_EQ(type_lookup(vm, STRSLICE_LIT("u32")), vm->type_u32);
+    EXPECT_EQ(type_lookup(vm, STRSLICE_LIT("u64")), vm->type_u64);
 }
 
 TEST_F(VmBuiltinTypes, FloatTypesRegistered) {
-    EXPECT_EQ(type_find(vm, STRSLICE_LIT("f32")), vm->type_f32);
-    EXPECT_EQ(type_find(vm, STRSLICE_LIT("f64")), vm->type_f64);
+    EXPECT_EQ(type_lookup(vm, STRSLICE_LIT("f32")), vm->type_f32);
+    EXPECT_EQ(type_lookup(vm, STRSLICE_LIT("f64")), vm->type_f64);
 }
 
 TEST_F(VmBuiltinTypes, OtherTypesRegistered) {
-    EXPECT_EQ(type_find(vm, STRSLICE_LIT("bool")), vm->type_bool);
-    EXPECT_EQ(type_find(vm, STRSLICE_LIT("str")),  vm->type_str);
-    EXPECT_EQ(type_find(vm, STRSLICE_LIT("void")), vm->type_void);
-    EXPECT_EQ(type_find(vm, STRSLICE_LIT("type")), vm->type_type);
-    EXPECT_EQ(type_find(vm, STRSLICE_LIT("func")), vm->type_func);
-    EXPECT_EQ(type_find(vm, STRSLICE_LIT("error")), vm->type_error);
+    EXPECT_EQ(type_lookup(vm, STRSLICE_LIT("bool")), vm->type_bool);
+    EXPECT_EQ(type_lookup(vm, STRSLICE_LIT("str")),  vm->type_str);
+    EXPECT_EQ(type_lookup(vm, STRSLICE_LIT("void")), vm->type_void);
+    EXPECT_EQ(type_lookup(vm, STRSLICE_LIT("type")), vm->type_type);
+    EXPECT_EQ(type_lookup(vm, STRSLICE_LIT("func")), vm->type_func);
 }
 
 TEST_F(VmBuiltinTypes, UnknownTypeReturnsNull) {
-    EXPECT_EQ(type_find(vm, STRSLICE_LIT("nonexistent")), nullptr);
-    EXPECT_EQ(type_find(vm, STRSLICE_LIT("")), nullptr);
+    /* error 类型值未注册作用域（引擎内部类型，不可作为类型表达式引用） */
+    EXPECT_EQ(type_lookup(vm, STRSLICE_LIT("error")), nullptr);
+    EXPECT_EQ(type_lookup(vm, STRSLICE_LIT("nonexistent")), nullptr);
+    EXPECT_EQ(type_lookup(vm, STRSLICE_LIT("")), nullptr);
 }
 
 TEST_F(VmBuiltinTypes, TypeSizeAndAlign) {

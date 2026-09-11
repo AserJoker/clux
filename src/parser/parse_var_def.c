@@ -19,16 +19,20 @@ ast_node_t *parse_var_def(parser_t *p) {
     advance(p);
     skip_trivia(p);
 
-    /* 可选类型标注：:type（类型即表达式） */
+    /* 可选类型标注：:type（类型即表达式，普通表达式解析）。
+       用 min_prec=1 限定：不消费赋值（ASSIGN_LEFT_PREC=0）与逗号/右括号。 */
     ast_node_t *type_expr = NULL;
     if (check_symbol(p, ":")) {
         advance(p);
         skip_trivia(p);
 
-        type_expr = parse_type_expr(p);
-        if (!type_expr) {
-            return ast_error_new(p->arena, tb, p->pos,
-                                 "expected type after ':'");
+        type_expr = parse_expr_prec(p, 1);
+        if (!type_expr || type_expr->kind == AST_ERROR) {
+            if (!type_expr) {
+                return ast_error_new(p->arena, tb, p->pos,
+                                     "expected type after ':'");
+            }
+            return type_expr;
         }
     }
 

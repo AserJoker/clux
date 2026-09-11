@@ -31,13 +31,17 @@ typedef enum {
     AST_STRING_LIT,      /* "..."（escape 展开后文本） */
     AST_CHAR_LIT,        /* 'a'（u8 码点值） */
     AST_IDENT,           /* 标识符引用 */
-    AST_CAST,            /* expr as type */
     AST_UNDEF,           /* undefined（未初始化声明标记，sema 数据流分析消费） */
 
     AST_ERROR,           /* 解析错误恢复节点（记录错误位置，占位） */
 
-    /* --- 类型表达式（类型即表达式，M2 关键架构决策 6）--- */
-    AST_TYPE_NAME,       /* 命名类型引用：name [+ const/volatile 前缀] */
+    /* --- 类型修饰（类型即表达式，M2 关键架构决策 6）---
+     * const/volatile 是真实类型 kind（有 vtable 代理），以嵌套节点表达
+     * 递归修饰：const i32 → AST_CONST(AST_IDENT("i32"))；
+     * volatile const i32 → AST_VOLATILE(AST_CONST(...))。
+     * 无顺序约束，const const i32 嵌套重复合法（语义上幂等，消费层收敛）。 */
+    AST_CONST,           /* const <type-expr> */
+    AST_VOLATILE,        /* volatile <type-expr> */
 
     AST_KIND_COUNT,      /* 哨兵值，用于数组索引 */
 } ast_kind_t;

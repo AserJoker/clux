@@ -34,7 +34,7 @@ extern "C" {
 #include "parser/ast_binary.h"
 #include "parser/ast_error.h"
 #include "parser/ast_func_def.h"
-#include "parser/ast_type_name.h"
+#include "parser/ast_ident.h"
 #include "parser/ast_program.h"
 }
 
@@ -538,7 +538,7 @@ TEST_F(ParseStmtTest, VarDef_WithInit) {
 
 /**
  * Scenario: var with type and init: var pi:f64 = 3.14;
- * Expected: AST_VAR_DEF, type_expr=AST_TYPE_NAME("f64"), init is AST_FLOAT_LIT
+ * Expected: AST_VAR_DEF, type_expr=AST_IDENT("f64"), init is AST_FLOAT_LIT
  */
 TEST_F(ParseStmtTest, VarDef_WithTypeAndInit) {
     parser_t *p = make_parser("var pi:f64 = 3.14;");
@@ -550,10 +550,9 @@ TEST_F(ParseStmtTest, VarDef_WithTypeAndInit) {
 
     auto *vd = (ast_var_def_t *)node;
     ASSERT_NE(vd->type_expr, nullptr);
-    EXPECT_EQ(vd->type_expr->kind, AST_TYPE_NAME);
-    auto *tn = (ast_type_name_t *)vd->type_expr;
+    EXPECT_EQ(vd->type_expr->kind, AST_IDENT);
+    auto *tn = (ast_ident_t *)vd->type_expr;
     EXPECT_TRUE(strslice_eq(tn->name, strslice_from_cstr("f64")));
-    EXPECT_EQ(tn->qual, TYPE_QUAL_NONE);
     ASSERT_NE(vd->init, nullptr);
     EXPECT_EQ(vd->init->kind, AST_FLOAT_LIT);
 
@@ -1115,8 +1114,8 @@ TEST_F(ParseStmtTest, FuncDefSimple) {
     auto *fn = (ast_func_def_t *)node;
     EXPECT_TRUE(strslice_eq(fn->name, strslice_from_cstr("main")));
     ASSERT_NE(fn->return_expr, nullptr);
-    EXPECT_EQ(fn->return_expr->kind, AST_TYPE_NAME);
-    EXPECT_TRUE(strslice_eq(((ast_type_name_t *)fn->return_expr)->name,
+    EXPECT_EQ(fn->return_expr->kind, AST_IDENT);
+    EXPECT_TRUE(strslice_eq(((ast_ident_t *)fn->return_expr)->name,
                             strslice_from_cstr("i32")));
     EXPECT_EQ(fn->params, nullptr);
     ASSERT_NE(fn->body, nullptr);
@@ -1136,8 +1135,8 @@ TEST_F(ParseStmtTest, FuncDefWithParams) {
     auto *fn = (ast_func_def_t *)node;
     EXPECT_TRUE(strslice_eq(fn->name, strslice_from_cstr("add")));
     ASSERT_NE(fn->return_expr, nullptr);
-    EXPECT_EQ(fn->return_expr->kind, AST_TYPE_NAME);
-    EXPECT_TRUE(strslice_eq(((ast_type_name_t *)fn->return_expr)->name,
+    EXPECT_EQ(fn->return_expr->kind, AST_IDENT);
+    EXPECT_TRUE(strslice_eq(((ast_ident_t *)fn->return_expr)->name,
                             strslice_from_cstr("i32")));
 
     /* 两个参数 */
@@ -1145,16 +1144,16 @@ TEST_F(ParseStmtTest, FuncDefWithParams) {
     auto *pa = (ast_var_def_t *)fn->params;
     EXPECT_TRUE(strslice_eq(pa->name, strslice_from_cstr("a")));
     ASSERT_NE(pa->type_expr, nullptr);
-    EXPECT_EQ(pa->type_expr->kind, AST_TYPE_NAME);
-    EXPECT_TRUE(strslice_eq(((ast_type_name_t *)pa->type_expr)->name,
+    EXPECT_EQ(pa->type_expr->kind, AST_IDENT);
+    EXPECT_TRUE(strslice_eq(((ast_ident_t *)pa->type_expr)->name,
                             strslice_from_cstr("i32")));
 
     ASSERT_NE(pa->base.next, nullptr);
     auto *pb = (ast_var_def_t *)pa->base.next;
     EXPECT_TRUE(strslice_eq(pb->name, strslice_from_cstr("b")));
     ASSERT_NE(pb->type_expr, nullptr);
-    EXPECT_EQ(pb->type_expr->kind, AST_TYPE_NAME);
-    EXPECT_TRUE(strslice_eq(((ast_type_name_t *)pb->type_expr)->name,
+    EXPECT_EQ(pb->type_expr->kind, AST_IDENT);
+    EXPECT_TRUE(strslice_eq(((ast_ident_t *)pb->type_expr)->name,
                             strslice_from_cstr("i32")));
     EXPECT_EQ(pb->base.next, nullptr);
 
@@ -1176,8 +1175,8 @@ TEST_F(ParseStmtTest, FuncDefVoidReturn) {
     auto *param = (ast_var_def_t *)fn->params;
     EXPECT_TRUE(strslice_eq(param->name, strslice_from_cstr("name")));
     ASSERT_NE(param->type_expr, nullptr);
-    EXPECT_EQ(param->type_expr->kind, AST_TYPE_NAME);
-    EXPECT_TRUE(strslice_eq(((ast_type_name_t *)param->type_expr)->name,
+    EXPECT_EQ(param->type_expr->kind, AST_IDENT);
+    EXPECT_TRUE(strslice_eq(((ast_ident_t *)param->type_expr)->name,
                             strslice_from_cstr("str")));
 
     cleanup_parser(p);
@@ -1194,8 +1193,8 @@ TEST_F(ParseStmtTest, FuncDefNoParams) {
     auto *fn = (ast_func_def_t *)node;
     EXPECT_TRUE(strslice_eq(fn->name, strslice_from_cstr("foo")));
     ASSERT_NE(fn->return_expr, nullptr);
-    EXPECT_EQ(fn->return_expr->kind, AST_TYPE_NAME);
-    EXPECT_TRUE(strslice_eq(((ast_type_name_t *)fn->return_expr)->name,
+    EXPECT_EQ(fn->return_expr->kind, AST_IDENT);
+    EXPECT_TRUE(strslice_eq(((ast_ident_t *)fn->return_expr)->name,
                             strslice_from_cstr("u64")));
     EXPECT_EQ(fn->params, nullptr);
 

@@ -1,11 +1,15 @@
 #include "compiler/compiler.h"
-#include "parser/ast_type_name.h"
+#include "parser/ast_const.h"
+#include "parser/ast_ident.h"
+#include "parser/ast_volatile.h"
 
 /* ===========================================================================
  * 类型表达式编译（类型即表达式，m2-design 关键架构决策 6）
  *
- * M1：AST_TYPE_NAME 一种形式 → LOAD "name" + 可选限定构造（const/volatile）。
- * M2 扩展：数组/元组/func 类型表达式在此按类型构造协议编译。
+ * 类型槽位 = 普通表达式节点。命名类型（AST_IDENT）→ BCODE_PUSH 从当前
+ * 作用域链查 type value 压栈（内建类型注册在 global scope，自定义类型注册
+ * 到定义点当前作用域，遮蔽语义与变量同机制）；AST_CONST/AST_VOLATILE →
+ * 递归编译 sub 后应用 BCODE_CREATE_CONST/VOLATILE。
  * 空类型（type_expr == NULL）→ PUSH_UNDEFINED（"待推导"占位，op_define 从值推断）。
  * =========================================================================== */
 
@@ -18,22 +22,28 @@ void compile_type_expr(compiler_t *c, ast_node_t *type_expr) {
     return;
   }
 
-  if (type_expr->kind == AST_TYPE_NAME) {
-    ast_type_name_t *tn = (ast_type_name_t *)type_expr;
-    /* 类型当作表达式：LOAD 从 global scope 查 type value 压栈 */
-    bcode_write_op(c->bc, BCODE_LOAD);
-    bcode_write_str(c->bc, tn->name);
+  if (type_expr->kind == AST_IDENT) {
+    /* 类型名当作表达式：PUSH 从当前作用域链查 type value 压栈
+       （内建类型在 global scope，自定义类型在当前/root scope，天然遮罩） */
+    ast_ident_t *id = (ast_ident_t *)type_expr;
+    bcode_write_op(c->bc, BCODE_PUSH);
+    bcode_write_str(c->bc, id->name);
     st_push(c, 1);
-    /* 限定位应用（固定组合顺序 volatile(const(T))：先 const 后 volatile，
-       与 resolve_type_expr 一致） */
-    if (tn->qual & TYPE_QUAL_CONST) {
-      bcode_write_op(c->bc, BCODE_CREATE_CONST);
-      st_push(c, 0); /* 弹一压一，栈深不变 */
-    }
-    if (tn->qual & TYPE_QUAL_VOLATILE) {
-      bcode_write_op(c->bc, BCODE_CREATE_VOLATILE);
-      st_push(c, 0);
-    }
+    return;
+  }
+
+  if (type_expr->kind == AST_CONST) {
+    /* const 修饰：递归编译 sub（类型表达式），再应用 const 构造。
+       固定组合顺序 volatile(const(T))：先 const 后 volatile，与
+       resolve_type_expr 一致。弹一压一，栈深不变。 */
+    compile_type_expr(c, ((ast_const_t *)type_expr)->sub);
+    bcode_write_op(c->bc, BCODE_CREATE_CONST);
+    return;
+  }
+
+  if (type_expr->kind == AST_VOLATILE) {
+    compile_type_expr(c, ((ast_volatile_t *)type_expr)->sub);
+    bcode_write_op(c->bc, BCODE_CREATE_VOLATILE);
     return;
   }
 

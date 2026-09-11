@@ -2,7 +2,6 @@
 #include "parser/ast_binary.h"
 #include "parser/ast_bool_lit.h"
 #include "parser/ast_call.h"
-#include "parser/ast_cast.h"
 #include "parser/ast_char_lit.h"
 #include "parser/ast_float_lit.h"
 #include "parser/ast_ident.h"
@@ -119,6 +118,16 @@ void compile_expr(compiler_t *c, ast_node_t *node) {
       st_push(c, 1);
       break;
     }
+    /* as：显式类型转换。lhs 普通表达式求值，rhs 是类型表达式
+       （compile_type_expr：BCODE_PUSH 查当前作用域链 type value），
+       BCODE_CAST 弹 type + value → 结果。 */
+    if (token_is(n->op, "as")) {
+      compile_expr(c, n->lhs);              /* 栈: [value] */
+      compile_type_expr(c, n->rhs);         /* 栈: [value, type] */
+      bcode_write_op(c->bc, BCODE_CAST);    /* 弹 type + value → 结果 */
+      st_push(c, -1);
+      break;
+    }
     /* 常规二元：lhs → rhs → op */
     compile_expr(c, n->lhs);
     compile_expr(c, n->rhs);
@@ -168,14 +177,6 @@ void compile_expr(compiler_t *c, ast_node_t *node) {
     bcode_write_op(c->bc, BCODE_CALL);
     bcode_write_u32(c->bc, (uint32_t)argc);
     st_push(c, -((int)argc));       /* callee+args 弹出，结果压入 */
-    break;
-  }
-  case AST_CAST: {
-    ast_cast_t *n = (ast_cast_t *)node;
-    compile_expr(c, n->expr);        /* 栈: [value] */
-    compile_type_expr(c, n->target_expr); /* 栈: [value, type] */
-    bcode_write_op(c->bc, BCODE_CAST);    /* 弹 type + value → 结果 */
-    st_push(c, -1);
     break;
   }
   case AST_MEMBER:

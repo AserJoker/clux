@@ -6,6 +6,8 @@
 #include "parser/ast_string_lit.h"
 #include "parser/ast_char_lit.h"
 #include "parser/ast_ident.h"
+#include "parser/ast_const.h"
+#include "parser/ast_volatile.h"
 #include "parser/ast_undef.h"
 #include "parser/ast_unary.h"
 #include "parser/ast_binary.h"
@@ -13,7 +15,6 @@
 #include "parser/ast_call.h"
 #include "parser/ast_member.h"
 #include "parser/ast_index.h"
-#include "parser/ast_cast.h"
 #include "parser/ast_error.h"
 
 /* ---- Pratt parser 绑定力表 ---- */
@@ -132,6 +133,21 @@ ast_node_t *parse_primary(parser_t *p) {
         return inner;
     }
 
+    /* 关键字 → 标识符引用（类型即表达式）：
+     * 类型名（i32/bool/...）与关键字在表达式位置统一解析为 AST_IDENT，
+     * 消费层感知 value 是否为类型。const/volatile 已在 parse_unary
+     * 提前消费为 AST_CONST/AST_VOLATILE，不会落到此处。 */
+    if (check_kind(p, TOKEN_TYPE_KEYWORD)) {
+        uint32_t tb = p->pos;
+        const token_t *t = cur_token(p);
+        strslice_t name = token_strslice(t);
+        advance(p);
+        ast_node_t *id = ast_ident_new(p->arena, tb, p->pos);
+        if (!id) return NULL;
+        ((ast_ident_t *)id)->name = name;
+        return id;
+    }
+
     return NULL;
 }
 
@@ -147,6 +163,8 @@ ast_node_t *parse_unary(parser_t *p) {
     if (check_symbol(p, "!"))      op_tok = cur_token(p);
     else if (check_symbol(p, "~")) op_tok = cur_token(p);
     else if (check_symbol(p, "-")) op_tok = cur_token(p);
+    else if (check_keyword(p, "const"))     op_tok = cur_token(p);
+    else if (check_keyword(p, "volatile"))  op_tok = cur_token(p);
 
     if (!op_tok) return parse_primary(p);
 
@@ -160,6 +178,19 @@ ast_node_t *parse_unary(parser_t *p) {
                                  "expected expression after unary operator");
         }
         return operand;
+    }
+
+    /* const/volatile：类型修饰节点（类型即表达式），嵌套递归表达修饰顺序，
+       重复 const（const const T）语法合法，消费层收敛。 */
+    if (token_is(op_tok, "const")) {
+        ast_node_t *node = ast_const_new(p->arena, tb, p->pos);
+        ((ast_const_t *)node)->sub = operand;
+        return node;
+    }
+    if (token_is(op_tok, "volatile")) {
+        ast_node_t *node = ast_volatile_new(p->arena, tb, p->pos);
+        ((ast_volatile_t *)node)->sub = operand;
+        return node;
     }
 
     ast_node_t *node = ast_unary_new(p->arena, tb, p->pos);
@@ -365,20 +396,11 @@ ast_node_t *parse_expr_prec(parser_t *p, int min_prec) {
         advance(p);
         skip_trivia(p);
 
-        /* as 特殊处理：右侧是类型表达式（可带 const/volatile 前缀） */
-        if (lp == 21) {
-            ast_node_t *target_expr = parse_type_expr(p);
-            if (!target_expr) {
-                return ast_error_new(p->arena, op_pos, p->pos,
-                                     "expected type after 'as'");
-            }
-
-            ast_node_t *node = ast_cast_new(p->arena, op_pos, p->pos);
-            ((ast_cast_t *)node)->expr        = left;
-            ((ast_cast_t *)node)->target_expr = target_expr;
-            left = node;
-            continue;
-        }
+        /* as 是普通中缀运算符（lp=21/rp=22，关键字运算符表）：
+           `a as i32` = <expr1> as <expr2>，rhs 是类型表达式（普通表达式，
+           const/volatile 前缀由 parse_unary 消费为 AST_CONST/AST_VOLATILE）。
+           语义在消费层感知：sema shadow 求值 lhs、解析 rhs 类型；
+           compiler 编译 lhs + rhs（类型值）→ BCODE_CAST。 */
 
         /* 递归解析右侧，传入右绑定力作为最小绑定力 */
         ast_node_t *rhs = parse_expr_prec(p, rp);

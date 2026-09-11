@@ -26,8 +26,9 @@ static const char *g_kind_names[] = {
     [AST_STRING_LIT] = "string_lit",
     [AST_CHAR_LIT]   = "char_lit",
     [AST_IDENT]      = "ident",
-    [AST_CAST]       = "cast",
     [AST_UNDEF]      = "undef",
+    [AST_CONST]      = "const",
+    [AST_VOLATILE]   = "volatile",
     [AST_ERROR]      = "error",
 };
 

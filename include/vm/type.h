@@ -97,8 +97,15 @@ typedef struct volatile_type_t {
     const type_t *sub;
 } volatile_type_t;
 
-/** 根据名称在 vm 的类型注册表中查找类型，未找到返回 NULL */
-const type_t *type_find(const vm_t *vm, strslice_t name);
+/**
+ * 按名从当前作用域链解析类型（类型即表达式）
+ *
+ * 类型名与变量同机制：内建类型值注册在 global scope（vm_register_builtin_types），
+ * 自定义类型（M2 type 定义）注册到定义点当前作用域。scope_lookup 沿
+ * current_scope → root_scope → global_scope 链查找，变量遮蔽类型天然成立
+ * （命中非 type value 时返回 NULL）。
+ */
+const type_t *type_lookup(const vm_t *vm, strslice_t name);
 
 /** 判断两个类型是否相同（指针比较，因为类型是单例） */
 static inline bool type_eq(const type_t *a, const type_t *b) {

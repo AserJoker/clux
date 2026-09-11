@@ -54,7 +54,9 @@ void compile_func_reg(compiler_t *c, ast_func_def_t *fn, size_t body) {
   /* 签名弹栈顺序：[return, param1..argc, is_variadic] */
   /* 1. return 类型 */
   if (!fn->return_expr) {
-    bcode_write_op(c->bc, BCODE_LOAD);
+    /* 无返回类型兜底：void 类型值注册在 global scope，PUSH 沿当前作用域链
+       命中（与类型名引用同机制，见 compile_type_expr） */
+    bcode_write_op(c->bc, BCODE_PUSH);
     bcode_write_str(c->bc, STRSLICE_LIT("void"));
     st_push(c, 1);
   } else {

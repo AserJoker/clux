@@ -6,9 +6,9 @@
 #include "parser/ast_binary.h"
 #include "parser/ast_bool_lit.h"
 #include "parser/ast_call.h"
-#include "parser/ast_cast.h"
-#include "parser/ast_type_name.h"
 #include "parser/ast_char_lit.h"
+#include "parser/ast_const.h"
+#include "parser/ast_volatile.h"
 #include "parser/ast_float_lit.h"
 #include "parser/ast_ident.h"
 #include "parser/ast_int_lit.h"
@@ -16,6 +16,7 @@
 #include "parser/ast_unary.h"
 #include "parser/lexer.h"
 #include "sema/symbol.h"
+#include "vm/type.h"
 #include "vm/type_error.h"
 #include "vm/value.h"
 
@@ -72,6 +73,24 @@ value_t *ctfe_eval_inner(ctfe_ctx_t *ctx, ast_node_t *node) {
             return ctfe_err(ctx, "ctfe: variable is not a compile-time constant");
         return v; /* 借用引用，归 scope */
     }
+    case AST_CONST: {
+        ast_const_t *n = (ast_const_t *)node;
+        value_t *sub = ctfe_eval(ctx, n->sub);
+        if (value_is_error(vm, sub)) return sub;
+        if (!value_is_type(sub, TYPE_KIND_TYPE))
+            return ctfe_err(ctx, "ctfe: 'const' requires a type operand");
+        const type_t *inner = value_as(sub, const type_t *);
+        return type_as_value(vm, type_const_intern(vm, inner));
+    }
+    case AST_VOLATILE: {
+        ast_volatile_t *n = (ast_volatile_t *)node;
+        value_t *sub = ctfe_eval(ctx, n->sub);
+        if (value_is_error(vm, sub)) return sub;
+        if (!value_is_type(sub, TYPE_KIND_TYPE))
+            return ctfe_err(ctx, "ctfe: 'volatile' requires a type operand");
+        const type_t *inner = value_as(sub, const type_t *);
+        return type_as_value(vm, type_volatile_intern(vm, inner));
+    }
     case AST_BINARY: {
         ast_binary_t *n = (ast_binary_t *)node;
         /* 短路 && / ||：惰性求值，不走 vtable 二元分派 */
@@ -97,6 +116,19 @@ value_t *ctfe_eval_inner(ctfe_ctx_t *ctx, ast_node_t *node) {
             if (value_type(rhs) != vm->type_bool)
                 return ctfe_err(ctx, "ctfe: '&&'/'||' requires bool operands");
             return rhs;
+        }
+        /* as：显式类型转换。lhs/rhs 都按普通表达式求值——rhs 是类型
+           表达式，求值结果应为 type value（data=type_t*）。遮蔽感知：
+           类型名走 scope_lookup 与变量同机制。 */
+        if (token_is(n->op, "as")) {
+            value_t *lhs = ctfe_eval(ctx, n->lhs);
+            if (value_is_error(vm, lhs)) return lhs;
+            value_t *ty = ctfe_eval(ctx, n->rhs);
+            if (value_is_error(vm, ty)) return ty;
+            if (!value_is_type(ty, TYPE_KIND_TYPE))
+                return ctfe_err(ctx, "ctfe: cast target must be a type");
+            const type_t *target = value_as(ty, const type_t *);
+            return value_explicit_cast(vm, lhs, target);
         }
         value_t *lhs = ctfe_eval(ctx, n->lhs);
         if (value_is_error(vm, lhs)) return lhs;
@@ -128,17 +160,6 @@ value_t *ctfe_eval_inner(ctfe_ctx_t *ctx, ast_node_t *node) {
         if (token_is(n->op, "!"))  return value_lnot(vm, v);
         if (token_is(n->op, "~"))  return value_bnot(vm, v);
         return ctfe_err(ctx, "ctfe: unsupported unary operator");
-    }
-    case AST_CAST: {
-        ast_cast_t *n = (ast_cast_t *)node;
-        value_t *v = ctfe_eval(ctx, n->expr);
-        if (value_is_error(vm, v)) return v;
-        /* AST_TYPE_NAME → type_find（M1 唯一类型表达式形式） */
-        const type_t *target = NULL;
-        if (n->target_expr && n->target_expr->kind == AST_TYPE_NAME)
-            target = type_find(vm, ((ast_type_name_t *)n->target_expr)->name);
-        if (!target) return ctfe_err(ctx, "ctfe: unknown cast target type");
-        return value_explicit_cast(vm, v, target);
     }
     case AST_CALL: {
         ast_call_t *n = (ast_call_t *)node;

@@ -2,6 +2,7 @@
 #include "vm/vm.h"
 #include "vm/value.h"
 #include "vm/function.h"
+#include "vm/scope.h"
 #include "core/panic.h"
 #include "core/string.h"
 #include "core/vec.h"
@@ -18,38 +19,16 @@
 #include <string.h>
 #include <stdalign.h>
 
-/* ---- type_find ---- */
+/* ---- type_lookup：类型名按作用域链解析（类型即表达式） ---- */
 
-const type_t *type_find(const vm_t *vm, strslice_t name) {
+/* 与变量同机制：内建类型值注册在 global scope，自定义类型（M2 type 定义）
+   注册到定义点当前作用域。scope_lookup 沿 current→root→global 链查找；
+   变量遮蔽类型时命中非 type value → NULL（遮蔽语义，见 m2-design 决策 6）。 */
+const type_t *type_lookup(const vm_t *vm, strslice_t name) {
     if (!vm) return NULL;
-
-    static const struct { const char *name; size_t offset; } entries[] = {
-        { "i8",    offsetof(vm_t, type_i8)   },
-        { "i16",   offsetof(vm_t, type_i16)  },
-        { "i32",   offsetof(vm_t, type_i32)  },
-        { "i64",   offsetof(vm_t, type_i64)  },
-        { "u8",    offsetof(vm_t, type_u8)   },
-        { "u16",   offsetof(vm_t, type_u16)  },
-        { "u32",   offsetof(vm_t, type_u32)  },
-        { "u64",   offsetof(vm_t, type_u64)  },
-        { "f32",   offsetof(vm_t, type_f32)  },
-        { "f64",   offsetof(vm_t, type_f64)  },
-        { "bool",  offsetof(vm_t, type_bool) },
-        { "str",   offsetof(vm_t, type_str)  },
-        { "void",  offsetof(vm_t, type_void) },
-        { "type",  offsetof(vm_t, type_type) },
-        { "func",  offsetof(vm_t, type_func) },
-        { "error", offsetof(vm_t, type_error) },
-    };
-
-    for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); i++) {
-        if (strlen(entries[i].name) == name.len &&
-            memcmp(entries[i].name, name.ptr, name.len) == 0) {
-            type_t *const *slot = (type_t *const *)((const char *)vm + entries[i].offset);
-            return *slot;
-        }
-    }
-    return NULL;
+    value_t *v = scope_lookup(vm->current_scope, name);
+    if (!v || value_type(v) != vm->type_type) return NULL;
+    return value_as(v, const type_t *);
 }
 
 /* ---- type_as_value ---- */

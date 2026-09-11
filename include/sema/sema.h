@@ -100,10 +100,10 @@ void sema_destroy(sema_t **sema);
  * 类型表达式求值唯一入口：ast_node_t* → const type_t*
  * (type is expression, m2-design 关键架构决策 6)
  *
- * M1 只接受 AST_TYPE_NAME（命名类型引用）：type_find 解析名字 + 应用
- * qual 限定位（const/volatile，固定组合顺序 volatile(const(T))）。
- * M2 扩展：AST_ARRAY_TYPE / AST_TUPLE_TYPE / AST_FUNC_TYPE / 类型计算
- * 等类型表达式形式在此求值。
+ * 类型槽位 = 普通表达式（type is expression）：AST_IDENT 命名类型
+ * （type_lookup 沿作用域链查 type value）、AST_CONST/AST_VOLATILE 修饰
+ * （递归 sub + intern）。M2 扩展：数组/元组/func 类型表达式与类型计算
+ * 等在此求值。
  *
  * 失败返回 NULL（已报错）。空指针入参返回 NULL 不报错（表示"无类型"）。
  */

@@ -3,8 +3,8 @@
 #include "parser/ast_binary.h"
 #include "parser/ast_bool_lit.h"
 #include "parser/ast_call.h"
-#include "parser/ast_cast.h"
 #include "parser/ast_char_lit.h"
+#include "parser/ast_const.h"
 #include "parser/ast_error.h"
 #include "parser/ast_float_lit.h"
 #include "parser/ast_ident.h"
@@ -12,7 +12,9 @@
 #include "parser/ast_string_lit.h"
 #include "parser/ast_unary.h"
 #include "parser/ast_undef.h"
+#include "parser/ast_volatile.h"
 #include "parser/lexer.h"
+#include "ctfe/ctfe.h"
 #include "sema/comptime.h"
 #include "vm/type_error.h"
 
@@ -98,7 +100,7 @@ value_t *sema_expr(sema_t *sema, ast_node_t **node, sema_scope_t *scope) {
   switch ((*node)->kind) {
     case AST_INT_LIT: {
       ast_int_lit_t *n = (ast_int_lit_t *)*node;
-      const type_t *t = n->type.len ? type_find(sema->vm, n->type)
+      const type_t *t = n->type.len ? type_lookup(sema->vm, n->type)
                                     : sema->vm->type_i32;
       if (!t) {
         diag_error(sema->diag, sema_loc(sema, *node), "unknown type '%.*s'",
@@ -109,7 +111,7 @@ value_t *sema_expr(sema_t *sema, ast_node_t **node, sema_scope_t *scope) {
     }
     case AST_FLOAT_LIT: {
       ast_float_lit_t *n = (ast_float_lit_t *)*node;
-      const type_t *t = n->type.len ? type_find(sema->vm, n->type)
+      const type_t *t = n->type.len ? type_lookup(sema->vm, n->type)
                                     : sema->vm->type_f64;
       if (!t) {
         diag_error(sema->diag, sema_loc(sema, *node), "unknown type '%.*s'",
@@ -153,7 +155,37 @@ value_t *sema_expr(sema_t *sema, ast_node_t **node, sema_scope_t *scope) {
                    "undefined variable '%.*s'", (int)n->name.len, n->name.ptr);
         return value_make_shadow(sema->vm, sema->vm->type_void);
       }
+      /* 类型即表达式：内建/自定义类型值注册在作用域链（global/root/current），
+         与变量同机制查找，命中 type value 返回 type 类型 shadow（类型引用）。 */
+      if (value_type(v) == sema->vm->type_type)
+        return value_make_shadow(sema->vm, sema->vm->type_type);
       return value_make_shadow(sema->vm, value_type(v));
+    }
+    case AST_CONST: {
+      /* const 类型修饰（类型即表达式）：操作数必须是类型值，结果仍是
+         类型值。遮蔽/类型检查在此感知（as 右值、M2 类型字面量）。 */
+      ast_const_t *n = (ast_const_t *)*node;
+      value_t *sub = sema_expr(sema, &n->sub, scope);
+      if (value_is_error(sema->vm, sub) || value_is_type(sub, TYPE_KIND_VOID))
+        return value_make_shadow(sema->vm, sema->vm->type_void);
+      if (!value_is_type(sub, TYPE_KIND_TYPE)) {
+        diag_error(sema->diag, sema_loc(sema, *node),
+                   "'const' requires a type operand");
+        return value_make_shadow(sema->vm, sema->vm->type_void);
+      }
+      return value_make_shadow(sema->vm, sema->vm->type_type);
+    }
+    case AST_VOLATILE: {
+      ast_volatile_t *n = (ast_volatile_t *)*node;
+      value_t *sub = sema_expr(sema, &n->sub, scope);
+      if (value_is_error(sema->vm, sub) || value_is_type(sub, TYPE_KIND_VOID))
+        return value_make_shadow(sema->vm, sema->vm->type_void);
+      if (!value_is_type(sub, TYPE_KIND_TYPE)) {
+        diag_error(sema->diag, sema_loc(sema, *node),
+                   "'volatile' requires a type operand");
+        return value_make_shadow(sema->vm, sema->vm->type_void);
+      }
+      return value_make_shadow(sema->vm, sema->vm->type_type);
     }
     case AST_UNDEF:
       /* undefined 只允许作为 var 初始化的"未初始化声明"（shadow_var_def
@@ -162,7 +194,8 @@ value_t *sema_expr(sema_t *sema, ast_node_t **node, sema_scope_t *scope) {
                  "'undefined' can only be used as a variable initializer");
       return value_make_shadow(sema->vm, sema->vm->type_void);
     case AST_BINARY:
-      return shadow_binary(sema, node, scope);    case AST_UNARY: {
+      return shadow_binary(sema, node, scope);
+    case AST_UNARY: {
       ast_unary_t *n = (ast_unary_t *)*node;
       value_t *operand = sema_expr(sema, &n->operand, scope);
       /* 错误恢复产物静默通过，避免级联二次诊断 */
@@ -246,25 +279,6 @@ value_t *sema_expr(sema_t *sema, ast_node_t **node, sema_scope_t *scope) {
       }
       return result; /* shadow in → shadow out（return_type shadow） */
     }
-    case AST_CAST: {
-      ast_cast_t *n = (ast_cast_t *)*node;
-      value_t *expr = sema_expr(sema, &n->expr, scope);
-      const type_t *target = resolve_type_expr(sema, n->target_expr);
-      if (!target) {
-        diag_error(sema->diag, sema_loc(sema, *node), "unknown type");
-        return value_make_shadow(sema->vm, sema->vm->type_void);
-      }
-      value_t *result = value_explicit_cast(sema->vm, expr, target);
-      if (value_is_error(sema->vm, result)) {
-        char tn[64], tt[64];
-        op_type_name(expr, tn, sizeof(tn));
-        sema_type_name(target, tt, sizeof(tt));
-        diag_error(sema->diag, sema_loc(sema, *node), "cannot cast %s to %s",
-                   tn, tt);
-        return value_make_shadow(sema->vm, sema->vm->type_void);
-      }
-      return result;
-    }
     case AST_MEMBER:
       diag_error(sema->diag, sema_loc(sema, *node),
                  "member access is not supported in M1");
@@ -282,6 +296,46 @@ value_t *sema_expr(sema_t *sema, ast_node_t **node, sema_scope_t *scope) {
 static value_t *shadow_binary(sema_t *sema, ast_node_t **node,
                               sema_scope_t *scope) {
   ast_binary_t *b = (ast_binary_t *)*node;
+  /* as：显式类型转换（普通中缀运算符）。lhs shadow 求值；rhs 是类型表达式，
+     走 ctfe 编译期真实求值（vm->comptime 模式，调用 ctfe_eval），拿真实
+     type value 的 data（type_t*）作为转换目标——遮蔽语义在此感知。 */
+  if (token_is(b->op, "as")) {
+    value_t *expr = sema_expr(sema, &b->lhs, scope);
+    if (value_is_error(sema->vm, expr) ||
+        value_is_type(expr, TYPE_KIND_VOID))
+      return value_make_shadow(sema->vm, sema->vm->type_void);
+    vm_t *vm = sema->vm;
+    bool saved = vm->comptime;
+    vm->comptime = true;
+    ctfe_ctx_t ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.vm = vm;
+    ctx.sema = sema;
+    ctx.budget = 100000;
+    ctx.max_depth = 128;
+    value_t *ty = ctfe_eval(&ctx, b->rhs);
+    vm->comptime = saved;
+    if (!ty || value_is_error(vm, ty) ||
+        !value_is_type(ty, TYPE_KIND_TYPE)) {
+      char tn[64];
+      op_type_name(expr, tn, sizeof(tn));
+      diag_error(sema->diag, sema_loc(sema, &b->base),
+                 "cast target is not a type (operand is %s)", tn);
+      return value_make_shadow(sema->vm, sema->vm->type_void);
+    }
+    const type_t *target = value_as(ty, const type_t *);
+    value_t *result = value_explicit_cast(sema->vm, expr, target);
+    if (value_is_error(sema->vm, result)) {
+      char tn[64], tt[64];
+      op_type_name(expr, tn, sizeof(tn));
+      sema_type_name(target, tt, sizeof(tt));
+      diag_error(sema->diag, sema_loc(sema, &b->base),
+                 "cannot cast %s to %s", tn, tt);
+      return value_make_shadow(sema->vm, sema->vm->type_void);
+    }
+    return result;
+  }
+
   /* 短路 && / ||：操作数必须 bool，结果 bool */
   if (token_is(b->op, "&&") || token_is(b->op, "||")) {
     value_t *lhs = sema_expr(sema, &b->lhs, scope);

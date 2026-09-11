@@ -1,10 +1,12 @@
 #include "sema/sema.h"
 #include "core/panic.h"
 #include "core/string.h"
+#include "parser/ast_const.h"
 #include "parser/ast_func_def.h"
+#include "parser/ast_ident.h"
 #include "parser/ast_program.h"
-#include "parser/ast_type_name.h"
 #include "parser/ast_var_def.h"
+#include "parser/ast_volatile.h"
 #include "parser/lexer.h"
 #include "sema/comptime.h"
 #include <string.h>
@@ -52,26 +54,30 @@ void sema_destroy(sema_t **sema) {
 const type_t *resolve_type_expr(sema_t *sema, ast_node_t *type_expr) {
   if (!sema || !type_expr) return NULL;
 
-  /* M1 唯一形式：命名类型引用（带 const/volatile 限定位） */
-  if (type_expr->kind == AST_TYPE_NAME) {
-    ast_type_name_t *tn = (ast_type_name_t *)type_expr;
-    const type_t *t = type_find(sema->vm, tn->name);
-    if (!t || tn->qual == TYPE_QUAL_NONE) return t;
-    if (tn->qual & TYPE_QUAL_CONST) {
-      t = type_const_intern(sema->vm, t);
-      if (!t) return NULL;
+  switch (type_expr->kind) {
+    case AST_IDENT: {
+      /* 类型名引用：i32/bool 等关键字类型名与用户类型名（IDENTIFIER）
+         统一为 AST_IDENT（类型即表达式），查类型表。 */
+      ast_ident_t *id = (ast_ident_t *)type_expr;
+      return type_lookup(sema->vm, id->name);
     }
-    if (tn->qual & TYPE_QUAL_VOLATILE) {
-      t = type_volatile_intern(sema->vm, t);
-      if (!t) return NULL;
+    case AST_CONST: {
+      /* const 类型修饰：嵌套递归（const const T 收敛为 const T） */
+      const type_t *sub =
+          resolve_type_expr(sema, ((ast_const_t *)type_expr)->sub);
+      return sub ? type_const_intern(sema->vm, sub) : NULL;
     }
-    return t;
+    case AST_VOLATILE: {
+      const type_t *sub =
+          resolve_type_expr(sema, ((ast_volatile_t *)type_expr)->sub);
+      return sub ? type_volatile_intern(sema->vm, sub) : NULL;
+    }
+    default:
+      /* M2 扩展点：数组/元组/func 类型表达式 + 类型计算 */
+      diag_error(sema->diag, sema_loc(sema, type_expr),
+                 "unsupported type expression");
+      return NULL;
   }
-
-  /* M2 扩展点：数组/元组/func 类型表达式 + 类型计算 */
-  diag_error(sema->diag, sema_loc(sema, type_expr),
-             "unsupported type expression");
-  return NULL;
 }
 
 location_t sema_loc(sema_t *sema, ast_node_t *node) {

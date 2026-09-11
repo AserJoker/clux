@@ -31,17 +31,21 @@ static ast_node_t *parse_param(parser_t *p) {
     advance(p);
     skip_trivia(p);
 
-    /* 类型标注：:type（必须，类型即表达式） */
+    /* 类型标注：:type（必须，类型即表达式，普通表达式解析）。
+       min_prec=1 限定：不消费逗号/右括号（调用者处理）。 */
     if (!expect_symbol(p, ":")) {
         return ast_error_new(p->arena, tb, p->pos,
                              "expected ':' and type after parameter name");
     }
     skip_trivia(p);
 
-    ast_node_t *type_expr = parse_type_expr(p);
-    if (!type_expr) {
-        return ast_error_new(p->arena, tb, p->pos,
-                             "expected type after ':'");
+    ast_node_t *type_expr = parse_expr_prec(p, 1);
+    if (!type_expr || type_expr->kind == AST_ERROR) {
+        if (!type_expr) {
+            return ast_error_new(p->arena, tb, p->pos,
+                                 "expected type after ':'");
+        }
+        return type_expr;
     }
 
     /* 注意：不消费逗号或 )，由调用者处理 */
@@ -125,16 +129,19 @@ ast_node_t *parse_func_like(parser_t *p, ast_kind_t expected_kind) {
                                  "expected function name after 'func'");
         }
 
-        /* 可选返回类型：:type（省略 = void；类型即表达式） */
+        /* 可选返回类型：:type（省略 = void；类型即表达式，普通表达式解析） */
         ast_node_t *return_expr = NULL;
         if (check_symbol(p, ":")) {
             advance(p);
             skip_trivia(p);
 
-            return_expr = parse_type_expr(p);
-            if (!return_expr) {
-                return ast_error_new(p->arena, tb, p->pos,
-                                     "expected return type after ':'");
+            return_expr = parse_expr_prec(p, 1);
+            if (!return_expr || return_expr->kind == AST_ERROR) {
+                if (!return_expr) {
+                    return ast_error_new(p->arena, tb, p->pos,
+                                         "expected return type after ':'");
+                }
+                return return_expr;
             }
         }
 

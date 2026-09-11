@@ -12,7 +12,7 @@ extern "C" {
 typedef struct {
     ast_node_t  base;
     strslice_t  name;        /* 变量名 */
-    ast_node_t *type_expr;   /* 类型表达式（NULL = 推断；M1 只有 AST_TYPE_NAME） */
+    ast_node_t *type_expr;   /* 类型表达式（NULL = 推断；AST_IDENT/AST_CONST/AST_VOLATILE） */
     ast_node_t *init;        /* 初始化表达式（必须存在；AST_UNDEF = 未初始化声明） */
     bool        is_comptime; /* comptime var：右值必须编译期可计算，引用点折叠为常量 */
 } ast_var_def_t;
