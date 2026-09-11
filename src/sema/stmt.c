@@ -9,6 +9,7 @@
 #include "parser/ast_var_def.h"
 #include "parser/ast_while.h"
 #include "parser/lexer.h"
+#include "sema/comptime.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -115,6 +116,14 @@ static void shadow_var_def(sema_t *sema, ast_var_def_t *vd,
   sema_symbol_t *sym = sema_scope_find_local(scope, vd->name);
   if (!sym) return; /* 3a 重复定义已诊断，符号未注册 */
 
+  /* comptime var：编译期求值 + 符号表编码（sema_eval_comptime_var）。
+     定义点不进入 VM scope——调用方（walk_block）负责从语句链摘除；
+     引用点在 sema_expr 折叠为字面量。 */
+  if (vd->is_comptime) {
+    sema_eval_comptime_var(sema, vd, scope);
+    return;
+  }
+
   value_t *var_value;
   if (vd->init && vd->init->kind == AST_UNDEF) {
     /* 未初始化声明：var x:T = undefined。要求显式类型（undefined 无类型
@@ -131,7 +140,7 @@ static void shadow_var_def(sema_t *sema, ast_var_def_t *vd,
         value_make_shadow(sema->vm, sym->type ? sym->type : sema->vm->type_void);
   } else {
     /* 已初始化：先求值 init（定义尚未入 VM scope → 自引用解析到外层同名变量） */
-    value_t *init = sema_expr(sema, vd->init, scope);
+    value_t *init = sema_expr(sema, &vd->init, scope);
     bool init_bad = value_is_error(sema->vm, init) ||
                     type_eq(value_type(init), sema->vm->type_void);
     /* 错误恢复产物（init 已诊断）不提升确定性 */
@@ -189,20 +198,28 @@ static void shadow_assign(sema_t *sema, ast_assign_t *as,
       diag_error(sema->diag, sema_loc(sema, &as->base),
                  "discard '_' only supports simple assignment '='");
     }
-    sema_expr(sema, as->value, scope);
+    sema_expr(sema, &as->value, scope);
     return;
   }
 
   /* 左值从 VM scope 链 lookup（与 sema 作用域树同构） */
   value_t *lhs = scope_lookup(sema->vm->current_scope, as->name);
   if (!lhs) {
+    /* comptime var 不在 VM scope：赋值给编译期常量 → 编译错误 */
+    sema_symbol_t *sym = sema_lookup(scope, as->name);
+    if (sym && sym->is_comptime && sym->ct_valid) {
+      diag_error(sema->diag, sema_loc(sema, &as->base),
+                 "cannot assign to compile-time constant '%.*s'",
+                 (int)as->name.len, as->name.ptr);
+      return;
+    }
     diag_error(sema->diag, sema_loc(sema, &as->base),
                "undefined variable '%.*s' in assignment", (int)as->name.len,
                as->name.ptr);
     return;
   }
 
-  value_t *rhs = sema_expr(sema, as->value, scope);
+  value_t *rhs = sema_expr(sema, &as->value, scope);
   bool rhs_bad = value_is_error(sema->vm, rhs) ||
                  type_eq(value_type(rhs), sema->vm->type_void);
 
@@ -269,7 +286,7 @@ static block_result_t walk_return(sema_t *sema, ast_return_t *rt,
                                   sema_scope_t *scope) {
   block_result_t r = {.definitely_returns = true};
   if (rt->value) {
-    value_t *v = sema_expr(sema, rt->value, scope);
+    value_t *v = sema_expr(sema, &rt->value, scope);
     bool v_bad = value_is_error(sema->vm, v) ||
                  type_eq(value_type(v), sema->vm->type_void);
     if (!v_bad) {
@@ -302,7 +319,7 @@ static block_result_t walk_return(sema_t *sema, ast_return_t *rt,
 
 static block_result_t walk_while(sema_t *sema, ast_while_t *wl,
                                  sema_scope_t *scope, size_t *idx) {
-  value_t *cond = sema_expr(sema, wl->cond, scope);
+  value_t *cond = sema_expr(sema, &wl->cond, scope);
   sema_check_bool(sema, wl->cond, cond, "while condition");
 
   /* 循环体可能执行 0 次：体内赋值不提升外层变量的确定性（保守） */
@@ -340,7 +357,7 @@ static block_result_t walk_for(sema_t *sema, ast_for_t *fr,
         shadow_assign(sema, (ast_assign_t *)fr->init, fs);
         break;
       case AST_EXPR_STMT:
-        sema_expr(sema, ((ast_expr_stmt_t *)fr->init)->expr, fs);
+        sema_expr(sema, &((ast_expr_stmt_t *)fr->init)->expr, fs);
         break;
       default:
         break;
@@ -348,7 +365,7 @@ static block_result_t walk_for(sema_t *sema, ast_for_t *fr,
   }
 
   if (fr->cond) {
-    value_t *c = sema_expr(sema, fr->cond, fs);
+    value_t *c = sema_expr(sema, &fr->cond, fs);
     sema_check_bool(sema, fr->cond, c, "for condition");
   }
 
@@ -360,7 +377,7 @@ static block_result_t walk_for(sema_t *sema, ast_for_t *fr,
   walk_block(sema, fr->body, body_scope ? body_scope : fs, &sub);
   vm_pop_scope(sema->vm);
 
-  if (fr->update) sema_expr(sema, fr->update, fs);
+  if (fr->update) sema_expr(sema, &fr->update, fs);
 
   flow_restore(&snap); /* 丢弃体内确定性提升（保守） */
   flow_release(&snap);
@@ -372,7 +389,7 @@ static block_result_t walk_for(sema_t *sema, ast_for_t *fr,
 static block_result_t walk_if(sema_t *sema, ast_if_t *it, sema_scope_t *scope,
                               size_t *idx) {
   block_result_t r = {0};
-  value_t *cond = sema_expr(sema, it->cond, scope);
+  value_t *cond = sema_expr(sema, &it->cond, scope);
   sema_check_bool(sema, it->cond, cond, "if condition");
 
   /* 确定性赋值合并点：快照分支前状态 → then → 记录 → 恢复 → else →
@@ -459,7 +476,7 @@ static block_result_t walk_stmt(sema_t *sema, ast_node_t *stmt,
       break; /* 位置检查已在 Pass 3a 完成 */
     case AST_EXPR_STMT: {
       ast_expr_stmt_t *es = (ast_expr_stmt_t *)stmt;
-      value_t *v = sema_expr(sema, es->expr, scope);
+      value_t *v = sema_expr(sema, &es->expr, scope);
       if (!value_is_error(sema->vm, v) &&
           !type_eq(value_type(v), sema->vm->type_void)) {
         char tn[64];
@@ -481,12 +498,22 @@ static block_result_t walk_block(sema_t *sema, ast_node_t *block,
                                  sema_scope_t *scope, size_t *idx) {
   block_result_t r = {0};
   ast_block_t *b = (ast_block_t *)block;
-  for (ast_node_t *s = b->stmts; s; s = s->next) {
+  /* prev 维护：comptime var 定义点求值后从语句链摘除（不进入运行时）。
+     var def 不消费子作用域（3a 只注册符号），摘除不影响索引对齐。 */
+  ast_node_t **prev = &b->stmts;
+  for (ast_node_t *s = b->stmts; s;) {
     block_result_t sr = walk_stmt(sema, s, scope, idx);
     if (sr.definitely_returns) {
       r.definitely_returns = true;
       break; /* 之后的语句不可达，不再检查 */
     }
+    if (s->kind == AST_VAR_DEF && ((ast_var_def_t *)s)->is_comptime) {
+      *prev = s->next; /* 摘除定义点 */
+      s = s->next;
+      continue;
+    }
+    prev = &s->next;
+    s = s->next;
   }
   return r;
 }

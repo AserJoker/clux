@@ -5,6 +5,7 @@
 #include "parser/ast_assign.h"
 #include "parser/ast_expr_stmt.h"
 #include "parser/ast_var_def.h"
+#include "parser/ast_func_def.h"
 #include "parser/ast_block.h"
 #include "parser/ast_if.h"
 #include "parser/ast_while.h"
@@ -18,6 +19,7 @@
 /* ================================================================ */
 
 ast_node_t *parse_stmt(parser_t *p) {
+    if (check_keyword(p, "comptime")) return parse_comptime_stmt(p);
     if (check_keyword(p, "var"))    return parse_var_def(p);
     if (check_keyword(p, "if"))     return parse_if(p);
     if (check_keyword(p, "while"))  return parse_while(p);
@@ -29,6 +31,31 @@ ast_node_t *parse_stmt(parser_t *p) {
     if (check_symbol(p, "{"))   return parse_block(p);
     /* 最后尝试表达式语句（赋值已是表达式的一种） */
     return parse_assign_or_expr_stmt(p);
+}
+
+/* ================================================================ */
+/* parse_comptime_stmt: comptime 前缀（comptime var / comptime func） */
+/* ================================================================ */
+
+ast_node_t *parse_comptime_stmt(parser_t *p) {
+    uint32_t tb = p->pos;
+
+    if (!check_keyword(p, "comptime")) return NULL;
+    advance(p);
+    skip_trivia(p);
+
+    if (check_keyword(p, "var")) {
+        ast_node_t *n = parse_var_def(p);
+        if (n && n->kind != AST_ERROR) ((ast_var_def_t *)n)->is_comptime = true;
+        return n;
+    }
+    if (check_keyword(p, "func")) {
+        ast_node_t *n = parse_func_def(p);
+        if (n && n->kind != AST_ERROR) ((ast_func_def_t *)n)->is_comptime = true;
+        return n;
+    }
+    return ast_error_new(p->arena, tb, p->pos,
+                         "expected 'var' or 'func' after 'comptime'");
 }
 
 /* ================================================================ */

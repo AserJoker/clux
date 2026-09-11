@@ -1,0 +1,5 @@
+comptime var A: i32 = 42;
+
+func main() {
+    printf("%d\n", A);
+}

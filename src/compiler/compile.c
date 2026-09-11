@@ -152,8 +152,10 @@ bytecode_t *compiler_compile(compiler_t *c, ast_node_t *program) {
   size_t nfuncs = 0;
   size_t bodies[128];
   for (ast_node_t *f = prog->funcs; f; f = f->next) {
+    /* 跳过非函数节点 + comptime func（调用点已折叠，不注册到运行时） */
     if (f->kind != AST_FUNC_DEF) continue;
     ast_func_def_t *fn = (ast_func_def_t *)f;
+    if (fn->is_comptime) continue;
     if (nfuncs < sizeof(bodies) / sizeof(bodies[0])) {
       bodies[nfuncs] = compile_func_body(c, fn);
       nfuncs++;
@@ -172,6 +174,7 @@ bytecode_t *compiler_compile(compiler_t *c, ast_node_t *program) {
   for (ast_node_t *f = prog->funcs; f; f = f->next) {
     if (f->kind != AST_FUNC_DEF) continue;
     ast_func_def_t *fn = (ast_func_def_t *)f;
+    if (fn->is_comptime) continue;
     compile_func_reg(c, fn, bodies[fi]);
     fi++;
     if (c->failed) break;

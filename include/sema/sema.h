@@ -1,6 +1,7 @@
 #ifndef _H_CLUX_SEMA_SEMA_
 #define _H_CLUX_SEMA_SEMA_
 #include "core/allocator.h"
+#include "core/arena.h"
 #include "core/strslice.h"
 #include "core/vec.h"
 #include "diag/diagnostic.h"
@@ -48,6 +49,8 @@ typedef struct sema_t {
     vm_t         *vm;           /* 复用 VM 类型注册表 + vtable + shadow value */
     diag_buf_t   *diag;         /* 诊断收集器 */
     vec_t        *tokens;       /* token pool（借用，诊断取源码位置） */
+    arena_t      *arena;        /* AST 折叠分配（借用 driver arena；comptime
+                                   折叠出字面量节点与字符串常量） */
     sema_scope_t *global_scope; /* 全局作用域树根 */
 
     /* 函数队列：sema 层全部函数（顶层函数 Pass 1 登记；局部函数/泛型实例
@@ -67,10 +70,10 @@ typedef struct sema_t {
 /**
  * 创建 sema 上下文。vm 提供类型注册表/vtable/shadow value；diag 收集诊断；
  * tokens 是 token pool（借用，不拥有），用于把 AST 节点的 tok_begin 下标
- * 解析为源码位置。
+ * 解析为源码位置；arena 是 AST 折叠分配器（comptime 折叠用，借用）。
  * Panics on out-of-memory. Returns NULL for invalid arguments.
  */
-sema_t *sema_create(vm_t *vm, diag_buf_t *diag, vec_t *tokens);
+sema_t *sema_create(vm_t *vm, diag_buf_t *diag, vec_t *tokens, arena_t *arena);
 
 /**
  * 三遍扫描：Pass 1 函数名收集 → Pass 2 类型解析（func_t 签名）→
@@ -114,8 +117,12 @@ void sema_build_scope_tree(sema_t *sema);
  */
 void sema_walk_function(sema_t *sema, sema_func_t *sf);
 
-/** 表达式求值（shadow value）：只有类型，data=NULL。 */
-value_t *sema_expr(sema_t *sema, ast_node_t *node, sema_scope_t *scope);
+/**
+ * 表达式求值（shadow value）：只有类型，data=NULL。
+ * node 取指针：comptime 折叠（comptime var 引用 / comptime func 调用）会
+ * 就地改写 *node 为字面量 AST 节点（arena 分配），下游（编译器）零感知。
+ */
+value_t *sema_expr(sema_t *sema, ast_node_t **node, sema_scope_t *scope);
 
 /** 检查操作数必须为 bool；error/void shadow（错误恢复产物）静默通过。 */
 void sema_check_bool(sema_t *sema, ast_node_t *node, value_t *v,

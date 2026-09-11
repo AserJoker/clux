@@ -58,6 +58,10 @@ typedef struct vm_t {
     bytecode_t  *bc;      /* 当前执行中的字节码模块（嵌套调用时切换） */
     size_t       pc;      /* 当前指令指针（code 流字节偏移） */
     bool         halted;  /* error 出现即停止 */
+
+    /* ---- 编译期状态 ---- */
+    bool         comptime; /* true = 强制编译期求值（comptime var/func 上下文；
+                              类型表达式槽位自动置位）。false = 只检查类型。 */
 } vm_t;
 
 /** 创建 VM（初始化内置类型、全局作用域、调用栈） */

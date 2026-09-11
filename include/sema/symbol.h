@@ -34,6 +34,22 @@ typedef enum {
 typedef struct _sema_scope_t sema_scope_t;
 
 /*
+ * 编译期常量编码（comptime var / comptime func 调用折叠产物）
+ *
+ * 只支持标量 + 字符串（M2 复合类型后置）。字符串 strslice 指向 arena
+ * 复制的缓冲区（生命周期 = sema arena，跨 sema/compile 阶段安全）。
+ * type 是 vm 类型池指针（借用，生命周期 = vm）。
+ */
+typedef struct sema_ct_const {
+  const type_t *type;  /* 常量类型 */
+  int64_t       i;     /* i8..i64, u8..u32（按位图存） */
+  uint64_t      u;     /* u64 */
+  double        f;     /* f32/f64 */
+  bool          b;     /* bool */
+  strslice_t    s;     /* 字符串（arena 复制） */
+} sema_ct_const_t;
+
+/*
  * sema 侧符号表：纯编译期元数据
  *
  * 符号真正重要的是"名字"——名字是符号表映射的 key。运行态（shadow value）
@@ -48,6 +64,11 @@ typedef struct _sema_scope_t sema_scope_t;
  * 激活语义（is_active）：Pass 3a 注册的变量符号在 Pass 3b 走到定义点
  * （shadow_var_def 完成 VM scope_define）之前不可见——与 VM scope_lookup
  * 对齐，保证 `var x = x + 1` 自引用的 x 解析到外层而非自身。
+ *
+ * comptime 语义：is_comptime = 主动标注的编译期上下文（comptime var/func）。
+ * comptime var 求值成功后 ct_valid=true + ct 编码常量，定义点从语句链
+ * 摘除（不进入运行时），引用点在 sema_expr 折叠为字面量 AST 节点。
+ * comptime func 调用点在 sema_expr 折叠，函数本身不注册到运行时。
  */
 struct _sema_symbol_t {
   const type_t *type; /* 已解析类型；NULL = 待推断（shadow VM 阶段填充）。
@@ -60,6 +81,11 @@ struct _sema_symbol_t {
                          "used before initialization"。仅变量符号有意义。 */
   bool is_active;     /* 符号是否已定义到 VM scope（运行时可见）。函数/内置
                          符号注册即激活；变量在 shadow_var_def 定义时激活。 */
+  /* ---- comptime（M2） ---- */
+  bool           is_comptime; /* comptime var/func 标注 */
+  bool           ct_valid;    /* 已编译期求值（常量有效；comptime var 求值成功
+                                 或 comptime func 调用折叠后引用点改写） */
+  sema_ct_const_t ct;         /* 编译期常量编码（ct_valid 时有效） */
 };
 typedef struct _sema_symbol_t sema_symbol_t;
 

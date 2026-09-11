@@ -19,6 +19,9 @@ ast_node_t *parse_break(parser_t *p);
 /** continue; */
 ast_node_t *parse_continue(parser_t *p);
 
+/** comptime 前缀语句：comptime var / comptime func。 */
+ast_node_t *parse_comptime_stmt(parser_t *p);
+
 /** 统一式：表达式 + ; → 语句（赋值已是表达式的一种）。 */
 ast_node_t *parse_assign_or_expr_stmt(parser_t *p);
 

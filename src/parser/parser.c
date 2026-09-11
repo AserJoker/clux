@@ -1,7 +1,9 @@
 #include "parser/parser.h"
 #include "parser/ast_program.h"
 #include "parser/ast_func_def.h"
+#include "parser/ast_var_def.h"
 #include "parser/ast_error.h"
+#include "parser/parse_stmt.h"
 #include "parser/parse_utils.h"
 #include "parser/lexer.h"
 #include "parser/ast_node.h"
@@ -82,7 +84,28 @@ ast_node_t *parse_program(parser_t *p) {
     ast_node_t *funcs_last = NULL;
 
     while (!at_end(p)) {
-        ast_node_t *func = parse_func_def(p);
+        ast_node_t *func = NULL;
+        if (check_keyword(p, "comptime")) {
+            /* comptime 前缀：comptime func 标记 + 挂链；comptime var（全局
+               编译期常量）挂 funcs 链，sema pass_globals 消费后摘除。 */
+            uint32_t ctb = p->pos;
+            advance(p);
+            skip_trivia(p);
+            if (check_keyword(p, "func")) {
+                func = parse_func_def(p);
+                if (func && func->kind != AST_ERROR)
+                    ((ast_func_def_t *)func)->is_comptime = true;
+            } else if (check_keyword(p, "var")) {
+                func = parse_var_def(p);
+                if (func && func->kind != AST_ERROR)
+                    ((ast_var_def_t *)func)->is_comptime = true;
+            } else {
+                func = ast_error_new(p->arena, ctb, p->pos,
+                                     "expected 'func' or 'var' after 'comptime'");
+            }
+        } else {
+            func = parse_func_def(p);
+        }
         if (!func) {
             return ast_error_new(p->arena, tb, p->pos,
                                  "expected function definition at top level");

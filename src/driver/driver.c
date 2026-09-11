@@ -226,7 +226,7 @@ int driver_run_file(const char *path) {
     return 1;
   }
 
-  sema_t *sema = sema_create(vm, diag, pool);
+  sema_t *sema = sema_create(vm, diag, pool, arena);
   if (!sema) {
     diag_buf_destroy(&diag);
     vm_destroy(&vm);
