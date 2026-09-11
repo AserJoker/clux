@@ -23,6 +23,7 @@
 | 函数类型 `func(...)->ret` | 纳入（无函数体的类型值） |
 | 位运算复合赋值 `&= \|= ^= <<= >>=` | 纳入 |
 | 三元表达式 `? :` | 纳入 |
+| comptime 关键字（`comptime var` / `comptime func`） | **纳入**（2026-09-11，见 §9） |
 | tagged union / cunion | **移出 M2**（鸭子类型协议复杂，后续里程碑） |
 | slice | **移出 M2** |
 | goto / 逗号运算符 | **不要** |
@@ -353,7 +354,7 @@ ctfe_eval(sema, ast_node *expr) → value_t*（真实值）
 
 **编译期计算与 CTFE 的边界**（2026-09-11 用户补充）：
 
-- **shadow 值不可用于编译期计算**：常量槽位（数组边界 N、type 别名计算、enum 值）需要**真实编译期常量值**。`var a = 1; var b:[a]i32 = .{};` **非法**——`a` 在 sema 中是 shadow 值（仅类型、无数据），边界槽位取不到真实值
+- **shadow 值不可用于编译期计算**：常量槽位（数组边界 N、type 别名计算、enum 值）需要**真实编译期常量值**。`var a = 1; var b:[a]i32 = .{};` **非法**——`a` 在 sema 中是 shadow 值（仅类型、无数据），边界槽位取不到真实值（除非 `comptime var a`，见 §9）
 - **编译期函数调用实参同样受限**：`var b:[getLength(a)]i32 = .{};` **非法**——ctfe 解释 `getLength` 函数体需要真实实参值，shadow 无法提供
 - **唯一例外**：sizeof/alignof/typeof（§8 桥梁）——操作数只取类型，shadow 可参与，运算符自身产出真实常量
 - **sema 路径检查**：sema 在常量槽位求值前，必须检查表达式是否依赖 shadow 值 / 运行期值（标识符查找、函数调用实参传播）→ 是则**在 sema 阶段报诊断**（`compile-time constant required`），不得漏到 ctfe 才报笼统错误
@@ -361,9 +362,40 @@ ctfe_eval(sema, ast_node *expr) → value_t*（真实值）
 **决策点定稿**（2026-09-11 用户逐项确认）：
 
 1. **独立 ctfe 模块**（非 sema_expr 双模式）：职责清晰，shadow 语义（`is_shadow`/`data=NULL` 纯类型检查）不动，ctfe 约束（budget/FFI）独立演进。代价：表达式求值逻辑与 sema_expr 部分重复
-2. **任意函数可编译期调用，失败报错**：不设 `const fn` 标记。编译期调用任何用户函数，调用链上遇不可求值 → 报错（与 C constexpr 精神一致，语法零新增）。CTFE 只解释 `AST_FUNC_DEF`（clux 函数）；FFI/编译器内置等非 AST 实体不在可调范围
+2. **普通函数：仅常量槽位可编译期调用**：非 comptime 函数在常量槽位（数组边界等）被调用时尝试编译期求值，失败报错；在普通表达式位置按运行期字节码调用。CTFE 只解释 `AST_FUNC_DEF`（clux 函数）；FFI/编译器内置等非 AST 实体不在可调范围
 3. **支持局部赋值与循环**：函数体内 var 定义、赋值、if、while/for 均可编译期执行（作用于局部常量环境），编译期纯函数表达力完整
-4. **无全局常量，预留 `comptime` 关键字**：M2 阶段编译期计算不查全局变量（数组边界 N 是字面量/局部计算）；未来新增 `comptime` 关键字（类似 Zig comptime）作为编译期上下文入口，本设计为其预留能力底座
+4. **comptime 关键字直接加入 M2**（2026-09-11 推翻"预留"决策，基础设施已就绪）：`comptime var` / `comptime func` 显式声明编译期实体，见下方 §comptime
+
+### 9. comptime 关键字（M2 纳入）
+
+`comptime` 修饰**变量定义与函数定义**，显式声明编译期实体。核心机制是 **vm 的 comptime 状态**（2026-09-11 用户补充统一状态模型）。
+
+**vm->comptime 状态**（统一求值模式开关）：
+- `vm->comptime = true`：表达式**必须编译期求值**（ctfe 真实值），求值失败 → 编译报错
+- `vm->comptime = false`：只做类型检查（shadow 语义），普通运行期路径
+- **comptime var / comptime func 是主动标注的编译期上下文**：进入这些实体时 `vm->comptime = true`
+- **类型表达式是隐式的自动标注**：类型表达式槽位（数组边界 `[N]T`、type 别名 rhs、`sizeof/alignof/typeof` 参数、`.<type>{}` 类型位）解析/求值时自动 `vm->comptime = true`
+
+```
+comptime var a = add(1,2);           // 右值必须编译期可计算（否则编译错误）
+comptime func add(a:i32,b:i32):i32 { return a+b; }
+var b = add(1,2);                    // add 是 comptime func → vm->comptime=true → 折叠为 var b = 3
+var arr:[N]i32 = .{};                // N 是 comptime var（全局/局部），边界槽位自动 comptime
+```
+
+**comptime var**：
+- 右值在 `vm->comptime = true` 下**必须编译期可计算**（ctfe 求值成功），否则编译错误
+- 求值成功后**后续语句中标识符 `a` 直接替换为值**（常量替换，类似 `#define`/constexpr 变量）：sema 阶段把 `a` 的引用解析为折叠后的常量节点（标量 → `AST_INT_LIT` 等，复合 → `AST_CT_CONST`）
+- **作用域：全局 + 局部都支持**（推翻"无全局常量"决策）：
+  - 顶层 `comptime var N = 5;` 是全局编译期常量，任意函数可引用（`var arr:[N]i32 = .{};` 合法）
+  - 函数体内 `comptime var` 是局部编译期常量（`return a;` 替换为 3）
+
+**comptime func**：
+- 调用时 `vm->comptime = true` **强制编译期求值**：`var b = add(1,2)` 在编译期调用，得到编译期值并折叠为 `var b = 3`（AST 写回）；求值失败 = 编译错误
+- 与普通函数的关系：普通函数仅在隐式 comptime 上下文（常量槽位）被尝试编译期求值，普通表达式位置按运行期字节码调用；comptime func 在**任何位置**都强制编译期求值
+- 函数体遵循 CTFE 解释规则（支持 var/赋值/if/while/for/return），保证纯编译期可执行
+
+**实现**：`comptime` 是语法糖标记——解析器接受 `comptime` 前缀（`AST_VAR_DEF` / `AST_FUNC_DEF` 加 `is_comptime` 标志）；sema 遇到 `comptime var` 置 `vm->comptime = true` 求值右值并折叠写回，引用点查全局/局部编译期常量表直接替换；`comptime func` 在符号表中标记，调用点置 `vm->comptime = true` 强制走 ctfe；类型表达式槽位自动置位。求值器对 `vm->comptime` 的检查统一在表达式求值入口（ctfe_eval）：状态为 true 且无法编译期求值 → error。
 
 **常量折叠写回 AST**（sema 阶段，CTFE 的消费机制）：
 
@@ -372,7 +404,7 @@ ctfe_eval(sema, ast_node *expr) → value_t*（真实值）
 - 折叠范围：**类型槽位必须折叠**（编译期类型计算依赖）；普通表达式（如 `var x = 1 + 2`）尝试折叠，成功则写回（编译期优化），失败照常走 shadow 检查 + 运行期字节码
 - 安全性：ctfe 求值成功 ⟺ 表达式纯（无副作用/无运行期依赖），"ctfe 成功 → 折叠写回"不改变语义
 - 传播：ctfe 作用域链内的绑定（参数、局部 var）携带真实常量值，同一函数内后续表达式可继续折叠
-- **写回不限于字面量，需支持复杂类型值**（comptime 引入后生效）：编译期求值结果可能是 struct/array/tuple 等复合常量（如 `.[3]i32{1,2,3}`、匿名 struct 常量），此时以字面量节点替换不成立——需新增**编译期常量对象 AST 节点**（如 `AST_CT_CONST`，携带类型 + 值数据），承载任意类型的折叠结果。M2 阶段常量槽位（边界 N/enum 值等）均为标量，用 `AST_INT_LIT` 等即可；复合常量写回为后续 comptime 能力预留，本设计记录该需求
+- **写回不限于字面量，需支持复杂类型值**（comptime 已在 M2 纳入，立即生效）：编译期求值结果可能是 struct/array/tuple 等复合常量（如 `.[3]i32{1,2,3}`、匿名 struct 常量），此时以字面量节点替换不成立——需新增**编译期常量对象 AST 节点**（`AST_CT_CONST`，携带类型 + 值数据），承载任意类型的折叠结果。标量常量槽位（边界 N/enum 值等）用 `AST_INT_LIT` 等即可；`comptime var` 的复合常量写回与 `comptime func` 返回值替换均依赖 `AST_CT_CONST`
 
 **CTFE 求值器结构**：
 
@@ -391,12 +423,14 @@ ctfe_eval(sema, ast_node *expr) → value_t*（真实值）
 ### Phase 0: Lexer + AST 基础
 
 **Lexer**
-- 关键字：`struct`, `enum`, `type`, `switch`, `default`, `do`, `sizeof`, `alignof`, `::`, `?`
+- 关键字：`struct`, `enum`, `type`, `switch`, `default`, `do`, `sizeof`, `alignof`, `comptime`, `::`, `?`
 - 3-char 符号：`<<=`, `>>=`
 - 2-char：`&=`, `|=`, `^=`
 
 **AST kinds**
 - `AST_TYPE_NAME`, `AST_TERNARY`, `AST_STRUCT_DEF`, `AST_ENUM_DEF`, `AST_TYPE_DEF`, `AST_ARRAY_TYPE`, `AST_TUPLE_TYPE`, `AST_FUNC_TYPE`, `AST_CONSTRUCT`, `AST_SWITCH`, `AST_DO_WHILE`, `AST_SIZEOF`, `AST_ALIGNOF`, `AST_TYPEOF`, `AST_PATH`
+- `AST_CT_CONST`（编译期常量对象：携带类型 + 值数据，承载复合常量写回）
+- `AST_VAR_DEF` / `AST_FUNC_DEF` 新增 `is_comptime` 标志（comptime 语法糖，不建独立节点）
 
 **parse_type_expr**
 - `parse_type_expr(p)` → 解析类型表达式，产生 `AST_TYPE_NAME` / `AST_ARRAY_TYPE` / `AST_TUPLE_TYPE` / `AST_FUNC_TYPE`
@@ -417,6 +451,7 @@ ctfe_eval(sema, ast_node *expr) → value_t*（真实值）
 - Pass 1/2 扩展：收集类型定义名称、解析类型内部结构
 - sema_expr：`AST_CONSTRUCT`/`AST_MEMBER`/`AST_INDEX`/`AST_PATH`/`AST_SIZEOF`/`AST_ALIGNOF`/`AST_TYPEOF`/`AST_TERNARY`
 - sema/stmt：`AST_DO_WHILE`/`AST_SWITCH` + 位运算复合赋值
+- **comptime 处理**：`comptime var` 右值在 `vm->comptime = true` 下求值 + 写回全局/局部编译期常量表；`comptime func` 符号表标记 + 调用点强制编译期；类型表达式槽位自动置 `vm->comptime = true`（见 §9）
 
 ### Phase 4: 构造 + 访问
 
