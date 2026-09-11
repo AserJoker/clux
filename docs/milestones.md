@@ -14,16 +14,40 @@
 
 ---
 
+---
+
+## M2: 与 C 表达力齐平（指针除外）🔨 设计完成，待实施
+
+**目标**：补全语言功能达到 C 的表达力（指针除外），保持 clux 自己的语法风格
+
+**语言特性**：struct、enum（严格分离）、静态数组 `[N]T`、元组 `<T1,T2>`、switch（if 语法糖）、do-while、type 别名 + 类型计算、sizeof/alignof/typeof、函数类型、位运算复合赋值、三元表达式、元组↔数组互转、鸭子类型协议
+
+**不支持**：tagged union / cunion（移至后续里程碑）、slice、goto、逗号运算符、指针
+
+**交付标准**：全部单元测试通过 + 8+ 个新 examples 端到端通过
+
+**设计文档**：[m2-design.md](m2-design.md)
+
+**任务**：
+- Phase 0: Lexer + AST 基础（新关键字/符号 + 新 AST 节点 + `parse_type_expr`）
+- Phase 2: VM 类型系统扩展（复合类型 + interning + vtable + `is_own` 借用字段）
+- Phase 3: Sema 扩展（`resolve_type` 升级 + 类型计算 + 鸭子类型检查）
+- Phase 4: 构造 + 访问（`.<type>{...}` + 字段访问 + enum variant + 新字节码）
+- Phase 5: 控制流 + 表达式补全（switch desugar + do-while + 三元 + 位运算复合赋值）
+- Phase 6: 集成 + 测试（examples + 全测试通过 + 文档更新）
+
+---
+
 ## 后续里程碑（待详细设计）
 
-- **M2**: struct 与 tagged union
 - **M3**: 指针与所有权系统 Phase 1
-- **M4**: 数组、切片与字符串
+- **M4**: 切片与字符串（静态数组已提前到 M2）
 - **M5**: FFI 系统
 - **M6**: 模块系统
 - **M7**: 转译 C 后端
 - **M8**: 所有权系统 Phase 2（借用与生命周期）
 - **M9**: 错误处理机制
 - **M10**: 标准库 v1
-- **M11**: 原生编译后端（远期）
-- **M12**: 自举（远期）
+- **M11**: tagged union / cunion（鸭子类型协议）
+- **M12**: 原生编译后端（远期）
+- **M13**: 自举（远期）
