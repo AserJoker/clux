@@ -155,7 +155,7 @@ typeof(expr)     // 返回 type value
 - `resolve_type` 从 `strslice_t` 升级为 `ast_node_t*` — **M2 的基础**
 - M1 简单命名类型走 fast path 保持性能
 
-### 2. value_t 新增 `is_own` 字段 + 借用数据访问
+### 2. value_t 新增 `is_own` 字段 + 字段借用引用
 
 ```
 struct value_t {
@@ -169,25 +169,139 @@ struct value_t {
 - `is_own=true`：value 拥有数据，负责 disposal（当前 M1 行为）
 - `is_own=false`：value 借用数据，**不负责 disposal**，data 指向其他 value 的数据块内部
 - **struct/array 内存布局与 C 语言一致**：字段/元素在连续内存中按固定偏移排列
-- **`GET_FIELD`**：结果 value 的 `is_own=false`，`data = struct_value.data + field_offset`
-- **`SET_FIELD`**：通过 `data + offset` 直接写入父结构体的数据块
-- **clone 语义**：`is_own=false` → 浅拷贝（只复制指针）；`is_own=true` → 深拷贝（走 vtable clone）
+- **struct_type_t 持有 field_t 数组**：`field_t { name; offset; type; }`，offset 在类型 intern 时按 C 对齐规则一次性布局（`offset_i = align_up(prev_end, align_i)`，`size = align_up(last_end, max_align)`），字段访问 O(1)
+- **`t.b` 是借用引用（partial reference into struct memory）**：天然是左值
+  - **读** `var b = t.b` → 产生 `is_own=false` 借用值，`data = (uint8_t*)t.data + offsetof(b)`
+  - **写** `t.b = 123` → `BCODE_SET_FIELD` 经 `data + offset` 直接写入父数据块（与 C `t.b=123` 一致）
+- **`GET_FIELD`**：结果 `is_own=false`，`data = parent.data + field_offset`，`is_shadow` 沿字段传播
+- **clone 语义**：`is_own=false` 借用值被 clone → materialize 深拷贝（分配新块）；`is_own=true` → 正常深拷贝
 - **dispose 语义**：`is_own=false` → 跳过 disposal（借用者不拥有数据）
+- **嵌套字段** `t.a.b.c`：链式借用，每层 `is_own=false`，data = 最外层 data + 累计偏移，零拷贝
+- **数组下标** `arr[i]`：同理 `data = arr.data + i * elem_size`，`is_own=false`（array_type_t 只需 elem 类型 + bound）
+- **RET 借用值 materialize**：函数返回借用值（字段/数组元素）时产生一次 clone（深拷贝），因为函数 scope 销毁后父 value 不再存活（`func f():i32 { var t:Test; return t.b; }`）
 - scope 所有权保证生命周期：只要父 value 在 scope 中存活，借用引用就有效
 
-### 3. switch = 编译期 desugar
+### 3. 复合类型/值构造统一多步协议（非一次构造）
+
+所有复合类型构造与值构造（初始化）都是**多步字节码协议**，不是一次完成。统一模式：`push_xxx`（压构造器，**无参数，一律注册全局 type 表**）→ 成分逐步定义（成分本身是表达式，`load` 可以是任意构造表达式的结果，嵌套天然支持）→ `seal`（冻结 + 布局计算）。
+
+**struct 类型** `struct Test { a:i32; b:i32; };`
+```asm
+push_struct          ; 压入 struct 构造器，注册全局 type 表
+load "i32"           ; 字段类型表达式入栈
+define_field "a"     ; 消费栈顶类型值，追加字段 a
+load "i32"
+define_field "b"
+seal                 ; 冻结字段表，计算 C 布局（offset/align/size），转不可变 struct_type_t
+push_undefined; define "Test"   ; define 永远双弹 [value, type-spec]；undefined 占类型位，类型从值推断
+```
+
+**数组类型** `[3]i32`
+```asm
+push_array           ; 压入 array 构造器，注册全局 type 表
+load "i32"           ; 元素类型表达式入栈
+define_elem 3        ; 消费栈顶类型值设元素类型，带立即数边界 3（编译期常量）
+seal                 ; 冻结 + 布局（size = bound * elem_size）
+```
+
+**元组类型** `<i32, i32>`
+```asm
+push_tuple           ; 压入 tuple 构造器，注册全局 type 表
+load "i32"
+define_elem          ; 追加匿名字段（位置 0）
+load "i32"
+define_elem          ; 追加匿名字段（位置 1）
+seal                 ; 冻结 + C 布局（与 struct 同布局规则）
+```
+
+**type 别名变体**（struct 为例，数组/元组同理）——**与 struct 定义完全等价**：
+```asm
+; type Test = struct { a:i32; b:i32; };
+push_struct; load "i32"; define_field "a"; load "i32"; define_field "b"; seal;
+push_undefined; define "Test"   ; 与变体 1 完全等价（右值表达式求值 = 单值类型值 + undefined 类型位）
+```
+
+**类型引用**：命名类型统一 `load "Test"`（从全局 type 表取类型值）；内联类型表达式（`[N]T`/`<T1,T2>`）在类型槽位直接构造类型值。
+```asm
+; var data:Test = .{ .a = 1, .b = 2 };
+load "Test"          ; 命名类型引用：从全局 type 表取出 Test 类型值压栈
+; ... .{} 值构造 ...（见下）
+define "data"
+```
+
+**值构造（初始化）** `.<type>{...}` / `.{...}` 同样多步：
+
+带类型位 `var p = .Point{ .x = 1, .y = 2 };`：
+```asm
+load "Point"         ; 类型位：命名类型引用
+push 1               ; 字段值按类型字段序压栈（字段名编译期重排/校验，不产生运行时指令）
+push 2
+construct 2          ; 值构造完成：弹出 2 个字段值 + 类型位，按 Point 布局分配数据块写值 → value
+define "p"
+```
+
+匿名具名字段 `.{ .x = 1, .y = 2 }`（鸭子类型赋左值）——**先在栈上构造匿名类型**（等价于具名的 `load "XXX"`）：
+```asm
+push_struct          ; 在栈上构造匿名 struct 类型（等价于具名类型的 load "Test"）
+load "i32"
+define_field "x"
+load "i32"
+define_field "y"
+seal                 ; 匿名 struct 类型值留栈顶
+push 1               ; 字段值按匿名类型字段序压栈
+push 2
+construct 2          ; 弹出 2 个字段值 + 类型位，分配数据块写值 → value
+```
+
+匿名匿名字段 `.{ 0, 1 }`（→ 元组）：
+```asm
+push_tuple           ; 在栈上构造匿名 tuple 类型
+load "i32"
+define_elem
+load "i32"
+define_elem
+seal                 ; 匿名 tuple 类型值留栈顶
+push 0
+push 1
+construct 2          ; 弹出 2 个值 + 类型位，完成元组值构造
+```
+
+数组值构造 `.[1]i32{ 0 }`：
+```asm
+push_array; load "i32"; define_elem 1; seal  ; 内联构造数组类型 [1]i32（类型值留栈顶）
+push 0
+construct 1          ; 弹出 1 个元素值 + 类型位，完成数组值构造
+```
+
+**统一规则**：
+- `push_struct`/`push_array`/`push_tuple`：压**类型**构造器，**无参数，一律注册全局 type 表**（构造期间即被登记，类型引用可解析）
+- `define_field name` / `define_elem [bound]`：消费栈顶类型值追加成分
+- **`seal` 只用于类型构造完成**：冻结 + 布局计算（C 对齐规则）
+- **`construct N` 用于值构造完成**（新指令，非 seal）：N = 字段数量立即数，弹出 N 个字段值 + 类型位，分配数据块按布局写值，校验字段数
+- **值构造类型位统一**：类型位永远是栈顶一个类型值——命名类型 = `load "Test"`，匿名类型 = 先 `push_xxx...seal` 在栈上构造类型值留栈顶（等价于具名 `load`）；随后字段值按类型字段序压栈 → `construct N`。**类型生成发生在类型构造阶段（push_xxx...seal），construct 不负责生成类型**
+- **字段名纯编译期**：具名字段 `.field = v` 的字段名只在编译期用于重排值压栈顺序 + 字段存在性/缺失校验，**不产生运行时指令**（运行时按类型字段序写值，无 store_field）
+- **缺失字段递归补全 0 值**（compiler 职责）：用户只提供部分字段时（`.{ .x = 1 }` 缺 y），编译器按类型字段序对**缺失字段递归生成该字段类型的 0 值构造字节码**，保证 `construct N` 的 N 个字段值齐全——基本类型压 0 立即数；复合类型（struct/array/tuple）递归构造零值对象（复用类型位 + 各子字段 0 值 + construct）。示例 `var p = .Point{ .x = 1 }`：
+```asm
+load "Point"; push 1; push 0; construct 2   ; y 缺失 → 补 i32 0 值
+```
+- **类型引用**：命名类型统一 `load "Test"`；内联类型表达式（`[N]T`/`<T1,T2>`）在类型槽位直接构造类型值。与类型定义（push_xxx）解耦
+- **`define` 是唯一绑定指令**（`define_struct`/`DEFINE_FUNCTION` 已删除），**永远双弹 `[value, type-spec]`**（value 在底、类型说明符在顶，**无单弹分支**）：type-spec = type value（`load "T"`，显式类型）或 undefined（`push_undefined`，无标注 → define 从值推断类型）。`var a = 5` → `push_i32 5; push_undefined; define "a"`；`var a:i32 = 5` → `push_i32 5; load "i32"; define "a"`；**函数定义** → `CREATE_FUNC_TYPE argc; PUSH_FUNCTION entry_pc; push_undefined; define "add"`（函数值自带签名类型）；**函数参数绑定**（函数体开头倒序）→ 每参数 `push_undefined; define name`（从值推断，与 var 定义完全一致）。**两个变体完全等价**：`struct Test {...}` 与 `type Test = struct {...}` 字节码相同（`push_struct...seal; push_undefined; define "Test"`）
+- 类型构造与值构造走同一套构造器求值协议
+- 为类型计算打基础：`type T = <表达式>` 右值就是普通表达式求值
+
+### 4. switch = 编译期 desugar
 
 解析为嵌套 if 链（`var __switch_N = cond; if (...) {} else if ...`），无独立 switch 语义。
 
-### 4. enum 严格分离
+### 5. enum 严格分离
 
 `Color extends i32 = false`，只能 `as` 底层类型，需两次 as（`c as i32 as i8`）。
 
-### 5. 类型名迁移
+### 6. 类型名迁移
 
 `strslice_t type_name` → `ast_node_t *type_expr`，所有类型槽位统一。
 
-### 6. 复合类型
+### 7. 复合类型
 
 `struct_type_t`/`array_type_t`/`tuple_type_t`/`enum_type_t` 全跟 `func_type_t` C 继承，各列 interning 池 + 独立 vtable。
 
