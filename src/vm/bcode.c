@@ -71,7 +71,9 @@ size_t bcode_str_count(const bytecode_t *bc) {
 strslice_t bcode_str_at(const bytecode_t *bc, size_t idx) {
     string_t *s = (string_t *)vec_get(bc->strs, idx);
     if (!s) return STRSLICE_EMPTY;
-    return strslice_from_cstr(string_cstr(s));
+    /* 用真实字节长度而非 NUL 截断：字符串表条目可含内嵌 '\0'（如二进制
+     * 反序列化还原的字符串），必须按长度视图返回，否则内容被截断。 */
+    return strslice_from_bytes(string_cstr(s), string_len(s));
 }
 
 size_t bcode_str_index(bytecode_t *bc, strslice_t s) {

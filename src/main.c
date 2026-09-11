@@ -23,14 +23,31 @@ static const cmd_t g_cmds[] = {
     },
     {
         .name = "build",
-        .usage = "clux build [options]",
-        .help = "Build the project.",
+        .usage = "clux build <file> [options]",
+        .help =
+            "Compile clux source or convert bytecode artifacts.\n"
+            "\n"
+            "Source compile (input is clux source):\n"
+            "  --emit-asm[=PATH]    compile and emit .cxs text assembly\n"
+            "  --emit-bin[=PATH]    compile and emit .cxb binary bytecode\n"
+            "\n"
+            "Format conversion (no source front end):\n"
+            "  --to-bin[=PATH]      .cxs text  -> .cxb binary\n"
+            "  --to-asm[=PATH]      .cxb binary -> .cxs text\n"
+            "\n"
+            "Other:\n"
+            "  --input=<cx|cxs|cxb> force input kind (skip content sniffing)",
         .handler = cmd_build,
     },
     {
         .name = "run",
-        .usage = "clux run [options]",
-        .help = "Run the project.",
+        .usage = "clux run <file.cx> | --asm <file.cxs> | --bin <file.cxb>",
+        .help =
+            "Run clux source or prebuilt bytecode.\n"
+            "\n"
+            "  clux run <file.cx>        compile and run source\n"
+            "  clux run --asm <file.cxs> run .cxs text assembly\n"
+            "  clux run --bin <file.cxb> run .cxb binary bytecode",
         .handler = cmd_run,
     },
     {

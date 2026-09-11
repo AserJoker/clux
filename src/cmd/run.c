@@ -3,58 +3,67 @@
 #include <stdio.h>
 #include <string.h>
 
-/* 解析 -asm / --asm 模式及其文件路径：
- *   --asm=PATH          （cmd.c 解析为 key="asm", value="PATH"）
- *   --asm PATH          （flag 无 value，路径取自首个位置参数）
- *   -asm PATH           （单短线被 cmd.c 当作位置参数，需在此特判）
- *   -asm=PATH           （同上，位置参数形式）
- * 返回是否进入 asm 模式；*out_path 为解析到的文件路径（可能为 NULL）。 */
-static bool resolve_asm_path(const cmd_args_t *args, const char **out_path) {
-    const char *p = NULL;
-
-    /* 双短线 --asm / --asm=PATH */
-    if (cmd_args_has(args, "asm")) {
-        p = cmd_args_get(args, "asm"); /* flag 无值则 NULL */
-        if (!p) p = cmd_args_pos(args, 0); /* 回退到紧随的位置参数 */
-        *out_path = p;
-        return true;
-    }
-
-    /* 单短线 -asm PATH / -asm=PATH（cmd.c 仅识别 --，故落入位置参数） */
-    for (size_t i = 0; i < args->posc; i++) {
-        const char *a = args->posargs[i];
-        if (strcmp(a, "-asm") == 0) {
-            *out_path = (i + 1 < args->posc) ? args->posargs[i + 1] : NULL;
-            return true;
-        }
-        if (strncmp(a, "-asm=", 5) == 0) {
-            *out_path = a + 5;
-            return true;
-        }
-    }
-
-    *out_path = NULL;
-    return false;
+/* 取选项路径：`--key=PATH` 取 value；`--key PATH`（flag）回退到首个位置参数。 */
+static const char *opt_path(const cmd_args_t *args, const char *key) {
+    const char *p = cmd_args_get(args, key);
+    if (!p) p = cmd_args_pos(args, 0);
+    return p;
 }
+
+static const char *USAGE =
+    "usage: clux run <file.cx>\n"
+    "       clux run --asm <file.cxs>\n"
+    "       clux run --bin <file.cxb>\n";
 
 int cmd_run(const cmd_args_t *args) {
     if (!args) return 1;
 
-    const char *asm_path = NULL;
-    if (resolve_asm_path(args, &asm_path)) {
-        if (!asm_path) {
-            fprintf(stderr, "run: -asm requires a file path\n");
-            fprintf(stderr, "usage: clux run -asm <file.cxs>\n");
+    bool asm_mode = cmd_args_has(args, "asm");
+    bool bin_mode = cmd_args_has(args, "bin");
+
+    if (asm_mode && bin_mode) {
+        fprintf(stderr, "run: --asm and --bin are mutually exclusive\n");
+        fputs(USAGE, stderr);
+        return 1;
+    }
+
+    /* .cxs 文本汇编模式 */
+    if (asm_mode) {
+        const char *path = opt_path(args, "asm");
+        if (!path) {
+            fprintf(stderr, "run: --asm requires a file path\n");
+            fputs(USAGE, stderr);
             return 1;
         }
-        return driver_run_asm(asm_path);
+        return driver_run_asm(path);
+    }
+
+    /* .cxb 二进制字节码模式 */
+    if (bin_mode) {
+        const char *path = opt_path(args, "bin");
+        if (!path) {
+            fprintf(stderr, "run: --bin requires a file path\n");
+            fputs(USAGE, stderr);
+            return 1;
+        }
+        return driver_run_bin(path);
     }
 
     /* 常规路径：源码文件为第一个位置参数 */
     const char *path = cmd_args_pos(args, 0);
     if (!path) {
         fprintf(stderr, "run: missing input file\n");
-        fprintf(stderr, "usage: clux run <file.cx>\n");
+        fputs(USAGE, stderr);
+        return 1;
+    }
+
+    /* 单横线选项（如 -asm/-bin）不是 clux 的选项语法：cmd.c 只识别 `--`，
+     * 它们会落到位置参数。给出明确提示，避免被误当作文件名。 */
+    if (path[0] == '-' && path[1] != '\0') {
+        fprintf(stderr,
+                "run: unknown option '%s' (clux options use '--', e.g. --asm/--bin)\n",
+                path);
+        fputs(USAGE, stderr);
         return 1;
     }
 

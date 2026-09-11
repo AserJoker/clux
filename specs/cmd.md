@@ -162,7 +162,34 @@ const char *cmd_args_pos(const cmd_args_t *args, size_t i);
 
 ---
 
-## 6. 禁止事项
+## 6. 选项风格约定
+
+### 6.1 统一为双横线 `--key`
+
+clux 的选项语法统一为 GNU 风格 `--key` / `--key=value` / `--key value`：
+
+- `cmd_args_parse` **只识别 `--` 前缀**为选项；单横线 `-key` 会落入位置参数
+- **禁止**在 handler 中为单横线形式手写特判（历史上 `run` 曾特判 `-asm`/`-bin`，已移除）——这会造成各命令风格分裂，且与 `cmd_args_parse` 的契约冲突
+- 若首个位置参数以 `-` 开头（用户误用单横线），handler 应给出"unknown option (clux options use '--')"类明确诊断，而非将其当作文件名尝试打开
+
+### 6.2 语义对称的键名
+
+同一概念在不同子命令中应使用同名键：
+
+| 键 | 含义 | 出现于 |
+|----|------|--------|
+| `--asm` | `.cxs` 文本汇编 | `build`（输出格式）/ `run`（输入形态） |
+| `--bin` | `.cxb` 二进制字节码 | `build`（输出格式）/ `run`（输入形态） |
+
+`build` 用 `--emit-asm` / `--emit-bin` 表达"源码编译产出"，用 `--to-bin` / `--to-asm` 表达"落盘格式互转"；两组语义不同，**禁止混用**（handler 须校验并报错）。
+
+### 6.3 输入类型判定
+
+字节码工具链的输入类型由 **内容嗅探**（`driver_detect_input`）判定，**不以扩展名为判据**（扩展名可被任意改名，不可靠）。嗅探无法确定时，用 `--input=<cx|cxs|cxb>` 显式覆盖。
+
+---
+
+## 7. 禁止事项
 
 1. **禁止** 依赖 argv 内容在 `cmd_args_parse` 后保持原样——`--key=value` 中的 `=` 被替换为 `\0`。
 2. **禁止** 在 handler 中使用 malloc/free——遵循项目统一内存通道规则。

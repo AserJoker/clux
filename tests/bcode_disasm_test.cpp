@@ -75,7 +75,7 @@ TEST(BcodeDisasm, EscapesQuotesBackslashAndControlChars) {
     ASSERT_NE(alloc, nullptr);
 
     bytecode_t *bc = bcode_new(alloc);
-    /* 含双引号、反斜杠、制表符的字符串 */
+    /* 含双引号、反斜杠、制表符的字符串（末尾内嵌 NUL 亦应保留并转义） */
     const char tricky[] = {'"', '\\', '\t', 'a', '\0'};
     (void)bcode_str_index(bc, strslice_from_bytes(tricky, sizeof tricky));
     (void)bcode_str_index(bc, strslice_from_cstr("plain"));
@@ -87,8 +87,8 @@ TEST(BcodeDisasm, EscapesQuotesBackslashAndControlChars) {
     ASSERT_EQ(bcode_disasm(bc, out), 0);
     std::string text = read_file(out);
 
-    /* " → \"  ;  \ → \\  ;  \t → \t */
-    EXPECT_NE(text.find("PUSH_STRING \"\\\"\\\\\\ta\""), std::string::npos);
+    /* " → \"  ;  \ → \\  ;  \t → \t  ;  内嵌 NUL → \x00（不截断） */
+    EXPECT_NE(text.find("PUSH_STRING \"\\\"\\\\\\ta\\x00\""), std::string::npos);
 
     std::remove(out);
     bcode_destroy(&bc);
