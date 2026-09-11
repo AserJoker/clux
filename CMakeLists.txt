@@ -110,6 +110,21 @@ if(CLUX_COMPILER_SOURCES)
 endif()
 
 # ---------------------------------------------------------------------------
+# CTFE library (compile-time evaluation: interpret AST into real values)
+#
+# Materializes as soon as the first *.c file lands in src/ctfe/.
+# ---------------------------------------------------------------------------
+file(GLOB CLUX_CTFE_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/ctfe/*.c")
+if(CLUX_CTFE_SOURCES)
+  add_library(clux_ctfe STATIC ${CLUX_CTFE_SOURCES})
+  target_include_directories(clux_ctfe PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  target_link_libraries(clux_ctfe PUBLIC clux_core clux_parser clux_vm clux_sema clux_diag ICU::uc ICU::i18n)
+  clux_target_warnings(clux_ctfe)
+  list(APPEND CLUX_STAGE_LIBS clux_ctfe)
+endif()
+
+# ---------------------------------------------------------------------------
 # Driver library (pipeline orchestration: load -> lex -> ...)
 #
 # Only src/driver/driver.c exists so far; later stages (parser/sema/interp)
@@ -132,9 +147,10 @@ add_library(clux_cmd STATIC
     src/cmd/run.c
     src/cmd/test.c
     src/cmd/version.c
+    src/cmd/eval.c
 )
 target_include_directories(clux_cmd PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(clux_cmd PUBLIC clux_core clux_driver ICU::uc icu_data_init)
+target_link_libraries(clux_cmd PUBLIC clux_core clux_driver clux_ctfe ICU::uc icu_data_init)
 clux_target_warnings(clux_cmd)
 
 target_link_libraries(clux PRIVATE

@@ -4,6 +4,7 @@
 #include "cmd/run.h"
 #include "cmd/test.h"
 #include "cmd/version.h"
+#include "cmd/eval.h"
 #include "icu_data.h"
 #include <locale.h>
 
@@ -43,6 +44,12 @@ static const cmd_t g_cmds[] = {
         .usage = "clux version",
         .help = "Print version information.",
         .handler = cmd_version,
+    },
+    {
+        .name = "eval",
+        .usage = "clux eval <expr>",
+        .help = "Evaluate an expression at compile time (CTFE).",
+        .handler = cmd_eval,
     },
 };
 
