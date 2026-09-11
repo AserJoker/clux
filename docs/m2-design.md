@@ -25,6 +25,7 @@
 | 三元表达式 `? :` | 纳入 |
 | comptime 关键字（`comptime var` / `comptime func`） | **纳入**（2026-09-11，见 §9） |
 | const / volatile 前导修饰类型 | **纳入**（2026-09-11，见 §10；指针仍排除，示例仅作语义说明） |
+| 字节码汇编 `.cxs`（`build --emit-asm` / `run --asm`） | **纳入**（2026-09-12，见 §11；工具链已完成） |
 | tagged union / cunion | **移出 M2**（鸭子类型协议复杂，后续里程碑） |
 | slice | **移出 M2**（前导判定语法示例，不实现） |
 | 指针 `*T` | **移出 M2**（const 前后缀语义示例用，后续里程碑实现） |
@@ -172,6 +173,52 @@ clux 类型是**前导判定**（前缀式）的：`[N]i32` 数组、`[]i32` 切
 - 组合场景 `const volatile i32` → volatile 代理到 const i32
 
 **M2 范围内 const 实际修饰**：基础类型与复合类型（`const i32`、`const [N]i32`、`const <T1,T2>`、`const struct` 等）。const 类型参与类型计算（extends/== 基于 const 类型自身）；const 值的不可变检查（赋值/修改）为语义层职责。
+
+### 11. 字节码汇编 `.cxs`（工具链，已完成）
+
+字节码模块（strtable + code 流）自包含、可落盘重载。`.cxs` 是它的**可读文本形态**，由一对互逆工具读写，构成"源码 → 字节码 → 文本 → 字节码"的完整闭环，用于调试、手写测试、回归比对。
+
+**双向工具**：
+
+| 方向 | API | CLI | 产物 |
+|------|-----|-----|------|
+| 反汇编 | `bcode_disasm(bc, path)` / `bcode_disasm_mem(alloc, bc, len)` | `clux build <file.cx> --emit-asm[=PATH]` | `.cxs` 文本 |
+| 汇编 | `bcode_asm_parse(alloc, text, len, &bc)` / `bcode_asm_from_file(alloc, path, &bc)` | `clux run --asm <file.cxs>`（亦接受 `-asm`） | `bytecode_t` |
+
+- `build --emit-asm` 走完整前端流水线（lex → parse → sema → 编译）后**不执行**，仅反汇编写盘；省略 PATH 时由输入路径推导同目录同名 `.cxs`
+- `run --asm` 跳过前端，直接把 `.cxs` 汇编为字节码执行（复用 run 的执行阶段：注册函数 → 调用 `main`）
+
+**文本格式**（纯指令序列，无独立字符串段）：
+
+```
+; 行注释（; 起始，整行忽略）
+name:                     ; 标签定义（去空白后形如 "name:"，无内嵌空格）
+    MNEMONIC operand...   ; 指令行：助记符 + 空白分隔的操作数
+```
+
+- **字符串内联**：字符串表是编译器内部概念，不在文本暴露；凡引用字符串的指令（`PUSH` / `STORE` / `LOAD` / `PUSH_STRING` / `DEFINE`）操作数直接内联为 C 风格转义字面量 `PUSH_STRING "hello\n"`。汇编器自动 intern 回 strtable 并写入其索引
+- **助记符大小写无关**（全大写为规范输出形式）；`.byte <u32>` 伪指令兜底未知 opcode
+- 兼容遗留的 `[.section ...]` 节标记行（直接跳过）
+
+**操作数类型**（`bcode_asm_operand_t`，汇编/反汇编共享）：
+
+| 类型 | 文本形式 | 说明 |
+|------|----------|------|
+| `STR` | `"..."` | 转义字符串字面量 → strtable 索引 |
+| `U32` | `<u32>` 或 `[label]` | 索引 / argc / 目标 pc；`[label]` 为标签引用 |
+| `I8`…`I64` / `U8`…`U64` | 十进制立即数 | 越界即报错 |
+| `F32` / `F64` | 十进制浮点 | 反汇编以 `%.9g` / `%.17g` 输出 |
+| `BOOL` | `0` / `1` | 仅接受 0 / 1 |
+
+**标签与前向引用**：跳转/函数入口目标以标签表示，引用用 `[name]`（与裸数字地址区分）。汇编采用**两遍法**——第一遍记录标签 pc 并登记待回填 fixup，第二遍回填全部 fixup，因此支持前向引用；引用未定义标签报错。反汇编侧按"跳转目标 / 函数入口锚点"生成 `L0/L1…` 标签（按 pc 升序确定性命名），并保证 `disasm → asm → disasm` **逐字节稳定往返**。
+
+**指令集**（`BCODE_ASM_TABLE`，按 `bcode_op_t` 枚举值索引）：`PUSH` / `STORE` / `PUSH_STRING` / `PUSH_I8..I64` / `PUSH_U8..U64` / `PUSH_F32` / `PUSH_F64` / `PUSH_BOOL` / `PUSH_VALUE` / `LOAD` / `PUSH_UNDEFINED` / `DEFINE` / `CREATE_FUNC_TYPE` / `PUSH_FUNCTION` / `ADD..MOD` / `EQ..GE` / `AND OR BXOR SHL SHR` / `NEG NOT BNOT` / `CAST CREATE_CONST CREATE_VOLATILE` / `CALL` / `RET` / `JMP JZ JNZ` / `PUSH_SCOPE POP_SCOPE POP` / `HALT`。
+
+**单一事实源**：`bcode_asm_defs.c` 的 `BCODE_ASM_TABLE`（助记符 + 操作数布局）同时驱动汇编器（反向查表）与反汇编器（正向解码），新增/改名 opcode 只改此表，保证两侧助记符与操作数布局永远一致。
+
+**手写汇编约定**（示例见 `examples/asm/*.cxs`）：程序入口用引导段 `_start:` 显式注册函数（`CREATE_FUNC_TYPE` + `PUSH_FUNCTION [entry]` + `PUSH_UNDEFINED` + `DEFINE`），`HALT` 后由虚拟机调用 `main`；函数体首部按**倒序** `PUSH_UNDEFINED; DEFINE "param"` 绑定参数（与字节码函数定义模板一致）。
+
+**测试**：`tests/bcode_disasm_test.cpp`（段格式/转义/变长操作数/标签生成/坏路径）、`tests/bcode_asm_test.cpp`（文本往返/操作数往返/字符串转义/大小写无关/标签前向引用/未定义标签/非法输入），并覆盖 5 个 `examples/asm/*.cxs` 示例。
 
 ---
 
@@ -520,3 +567,11 @@ Phase 0 是基础（新关键字 + `parse_type_expr`）；Phase 3 是枢纽（`r
 
 **新增 ~40 个文件**（parse_type_expr.c, type_struct.c, type_array.c, type_tuple.c, type_enum.c, parse_construct.c, parse_path.c, parse_ternary.c, parse_switch.c, parse_do_while.c, ...）
 **修改 ~25 个文件**（lexer.c, parse_expr.c, sema.c, compile_expr.c, compile_stmt.c, exec.c, ast_kind.h, value.c, type.h, ...）
+
+**字节码汇编工具链（§11，已完成）**：
+- 新增 `include/vm/bcode_asm.h`、`include/vm/bcode_asm_defs.h`、`include/vm/bcode_disasm.h`
+- 新增 `src/vm/bcode_asm.c`、`src/vm/bcode_asm_defs.c`、`src/vm/bcode_disasm.c`
+- 修改 `include/driver/driver.h` + `src/driver/driver.c`（新增 `driver_build_asm` / `driver_run_asm`）
+- 修改 `src/cmd/build.c`（`--emit-asm[=PATH]`）、`src/cmd/run.c`（`--asm` / `-asm`）
+- 新增 `tests/bcode_asm_test.cpp`、`tests/bcode_disasm_test.cpp`
+- 新增 `examples/asm/`（hello / arithmetic / fib / factorial / loop，共 5 个 `.cxs`）

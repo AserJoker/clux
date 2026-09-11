@@ -35,6 +35,7 @@
 - Phase 4: 构造 + 访问（`.<type>{...}` + 字段访问 + enum variant + 新字节码）
 - Phase 5: 控制流 + 表达式补全（switch desugar + do-while + 三元 + 位运算复合赋值）
 - Phase 6: 集成 + 测试（examples + 全测试通过 + 文档更新）
+- 工具链: 字节码汇编 / 反汇编（`build --emit-asm` / `run --asm`，`.cxs` 文本）✅ 已完成（2026-09-12）
 
 ---
 
