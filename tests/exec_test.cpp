@@ -522,7 +522,7 @@ TEST_F(ExecTest, ErrorPropagatesThroughBinary) {
 }
 
 /* ================================================================ */
-/* 5. 函数（CREATE_FUNC_TYPE / PUSH_FUNCTION / DEFINE_FUNCTION /     */
+/* 5. 函数（CREATE_FUNC_TYPE / PUSH_FUNCTION / define 统一绑定 /     */
 /*    CALL / RET）                                                  */
 /* ================================================================ */
 
@@ -549,13 +549,14 @@ TEST_F(ExecTest, FunctionRegisterAndCallMain) {
     bcode_write_op(bc, BCODE_ADD);
     bcode_write_op(bc, BCODE_RET);
 
-    /* 注册段：[ret, is_variadic] → CREATE_FUNC_TYPE → PUSH_FUNCTION → DEFINE_FUNCTION */
+    /* 注册段：[ret, is_variadic] → CREATE_FUNC_TYPE → PUSH_FUNCTION → push_undefined + DEFINE */
     size_t end = bcode_tell(bc);
     bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
     bcode_write_op(bc, BCODE_PUSH_BOOL); bcode_write_bool(bc, false);
     bcode_write_op(bc, BCODE_CREATE_FUNC_TYPE); bcode_write_u32(bc, 0);
     bcode_write_op(bc, BCODE_PUSH_FUNCTION); bcode_write_u32(bc, (uint32_t)body);
-    bcode_write_op(bc, BCODE_DEFINE_FUNCTION); bcode_write_str(bc, STRSLICE_LIT("main"));
+    bcode_write_op(bc, BCODE_PUSH_UNDEFINED);
+    bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("main"));
     bcode_write_op(bc, BCODE_HALT);
     bcode_patch_u32(bc, jmp_pc + 4, (uint32_t)end);
 
@@ -581,7 +582,8 @@ TEST_F(ExecTest, VoidFunctionReturnsUndefined) {
     bcode_write_op(bc, BCODE_PUSH_BOOL); bcode_write_bool(bc, false);
     bcode_write_op(bc, BCODE_CREATE_FUNC_TYPE); bcode_write_u32(bc, 0);
     bcode_write_op(bc, BCODE_PUSH_FUNCTION); bcode_write_u32(bc, (uint32_t)body);
-    bcode_write_op(bc, BCODE_DEFINE_FUNCTION); bcode_write_str(bc, STRSLICE_LIT("main"));
+    bcode_write_op(bc, BCODE_PUSH_UNDEFINED);
+    bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("main"));
     bcode_write_op(bc, BCODE_HALT);
     bcode_patch_u32(bc, jmp_pc + 4, (uint32_t)end);
 
@@ -612,8 +614,9 @@ TEST_F(ExecTest, CallArgCountMismatchPropagatesError) {
     bcode_write_op(bc, BCODE_JMP);
     bcode_write_u32(bc, 0);
 
-    /* foo 函数体：绑定参数 a → return a */
+    /* foo 函数体：绑定参数 a（push_undefined + define，从值推断）→ return a */
     size_t foo_body = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_PUSH_UNDEFINED);
     bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("a"));
     bcode_write_op(bc, BCODE_PUSH); bcode_write_str(bc, STRSLICE_LIT("a"));
     bcode_write_op(bc, BCODE_RET);
@@ -634,13 +637,15 @@ TEST_F(ExecTest, CallArgCountMismatchPropagatesError) {
     bcode_write_op(bc, BCODE_PUSH_BOOL); bcode_write_bool(bc, false);
     bcode_write_op(bc, BCODE_CREATE_FUNC_TYPE); bcode_write_u32(bc, 1);
     bcode_write_op(bc, BCODE_PUSH_FUNCTION); bcode_write_u32(bc, (uint32_t)foo_body);
-    bcode_write_op(bc, BCODE_DEFINE_FUNCTION); bcode_write_str(bc, STRSLICE_LIT("foo"));
+    bcode_write_op(bc, BCODE_PUSH_UNDEFINED);
+    bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("foo"));
     /* main: () -> i32 */
     bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
     bcode_write_op(bc, BCODE_PUSH_BOOL); bcode_write_bool(bc, false);
     bcode_write_op(bc, BCODE_CREATE_FUNC_TYPE); bcode_write_u32(bc, 0);
     bcode_write_op(bc, BCODE_PUSH_FUNCTION); bcode_write_u32(bc, (uint32_t)main_body);
-    bcode_write_op(bc, BCODE_DEFINE_FUNCTION); bcode_write_str(bc, STRSLICE_LIT("main"));
+    bcode_write_op(bc, BCODE_PUSH_UNDEFINED);
+    bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("main"));
     bcode_write_op(bc, BCODE_HALT);
     bcode_patch_u32(bc, jmp_pc + 4, (uint32_t)end);
 
@@ -657,6 +662,7 @@ TEST_F(ExecTest, RecursiveFactorial) {
 
     /* fact 函数体：n <= 1 ? 1 : n * fact(n - 1) */
     size_t fact_body = bcode_tell(bc);
+    bcode_write_op(bc, BCODE_PUSH_UNDEFINED);
     bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("n"));
     bcode_write_op(bc, BCODE_PUSH); bcode_write_str(bc, STRSLICE_LIT("n"));
     bcode_write_op(bc, BCODE_PUSH_I32); bcode_write_i32(bc, 1);
@@ -692,13 +698,15 @@ TEST_F(ExecTest, RecursiveFactorial) {
     bcode_write_op(bc, BCODE_PUSH_BOOL); bcode_write_bool(bc, false);
     bcode_write_op(bc, BCODE_CREATE_FUNC_TYPE); bcode_write_u32(bc, 1);
     bcode_write_op(bc, BCODE_PUSH_FUNCTION); bcode_write_u32(bc, (uint32_t)fact_body);
-    bcode_write_op(bc, BCODE_DEFINE_FUNCTION); bcode_write_str(bc, STRSLICE_LIT("fact"));
+    bcode_write_op(bc, BCODE_PUSH_UNDEFINED);
+    bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("fact"));
     /* main: () -> i32 */
     bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
     bcode_write_op(bc, BCODE_PUSH_BOOL); bcode_write_bool(bc, false);
     bcode_write_op(bc, BCODE_CREATE_FUNC_TYPE); bcode_write_u32(bc, 0);
     bcode_write_op(bc, BCODE_PUSH_FUNCTION); bcode_write_u32(bc, (uint32_t)main_body);
-    bcode_write_op(bc, BCODE_DEFINE_FUNCTION); bcode_write_str(bc, STRSLICE_LIT("main"));
+    bcode_write_op(bc, BCODE_PUSH_UNDEFINED);
+    bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("main"));
     bcode_write_op(bc, BCODE_HALT);
     bcode_patch_u32(bc, jmp_pc + 4, (uint32_t)end);
 
@@ -732,7 +740,8 @@ TEST_F(ExecTest, FunctionBodySeesModuleVariables) {
     bcode_write_op(bc, BCODE_PUSH_BOOL); bcode_write_bool(bc, false);
     bcode_write_op(bc, BCODE_CREATE_FUNC_TYPE); bcode_write_u32(bc, 0);
     bcode_write_op(bc, BCODE_PUSH_FUNCTION); bcode_write_u32(bc, (uint32_t)main_body);
-    bcode_write_op(bc, BCODE_DEFINE_FUNCTION); bcode_write_str(bc, STRSLICE_LIT("main"));
+    bcode_write_op(bc, BCODE_PUSH_UNDEFINED);
+    bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("main"));
     bcode_write_op(bc, BCODE_HALT);
     bcode_patch_u32(bc, jmp_pc + 4, (uint32_t)end);
 
@@ -743,8 +752,8 @@ TEST_F(ExecTest, FunctionBodySeesModuleVariables) {
     EXPECT_EQ(read_sint(r), 6);
 }
 
-/* 匿名函数表达式：var add = func():i32{ return 1; } → 走普通 DEFINE（非
-   DEFINE_FUNCTION），函数值 auto-track 归 scope 统一回收（无泄漏） */
+/* 匿名函数表达式：var add = func():i32{ return 1; } → 与命名函数同走统一
+   push_undefined + define（从值推断），函数值 auto-track 归 scope 统一回收（无泄漏） */
 TEST_F(ExecTest, FunctionExpressionDefinedViaPlainDefine) {
     size_t jmp_pc = bcode_tell(bc);
     bcode_write_op(bc, BCODE_JMP);
@@ -755,11 +764,12 @@ TEST_F(ExecTest, FunctionExpressionDefinedViaPlainDefine) {
     bcode_write_op(bc, BCODE_RET);
 
     size_t end = bcode_tell(bc);
-    /* 函数表达式：构造签名 func():i32 → PUSH_FUNCTION → DEFINE "add"（普通双弹） */
+    /* 函数表达式：构造签名 func():i32 → PUSH_FUNCTION → push_undefined → DEFINE "add" */
     bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));
     bcode_write_op(bc, BCODE_PUSH_BOOL); bcode_write_bool(bc, false);
     bcode_write_op(bc, BCODE_CREATE_FUNC_TYPE); bcode_write_u32(bc, 0);
     bcode_write_op(bc, BCODE_PUSH_FUNCTION); bcode_write_u32(bc, (uint32_t)body);
+    bcode_write_op(bc, BCODE_PUSH_UNDEFINED);
     bcode_write_op(bc, BCODE_DEFINE); bcode_write_str(bc, STRSLICE_LIT("add"));
     bcode_write_op(bc, BCODE_HALT);
     bcode_patch_u32(bc, jmp_pc + 4, (uint32_t)end);

@@ -38,9 +38,9 @@ value_t *bcode_function_new(vm_t *vm, const type_t *sig_type,
     if (vm->functions) vec_push(vm->functions, vm->alloc, fn);
 
     /* 包装为 func value：data 存 bcode_function_t*，type 即签名类型。
-       auto-track 到当前作用域（函数是一等值：既经 DEFINE_FUNCTION 注册命名，
-       也可作为普通值参与 DEFINE——匿名函数表达式 var add = func(){}，track 壳
-       由 scope 统一回收，DEFINE 系指令不手动释放原值） */
+       auto-track 到当前作用域（函数是一等值：既经统一 push_undefined + DEFINE
+       注册命名，也可作为普通值参与 DEFINE——匿名函数表达式 var add = func(){}，
+       track 壳由 scope 统一回收，DEFINE 系指令不手动释放原值） */
     void *data = value_alloc_data_copy(vm->alloc, sig_type, &fn);
     return value_make(vm, sig_type, data);
 }

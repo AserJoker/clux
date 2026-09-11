@@ -18,7 +18,7 @@
 size_t compile_func_body(compiler_t *c, ast_func_def_t *fn) {
   size_t body = bcode_tell(c->bc);
 
-  /* 倒序绑定参数：DEFINE name（实参已按序压栈，栈顶 = 最后一个参数） */
+  /* 倒序绑定参数：每参数 push_undefined; define name（从值推断，与 var 定义一致） */
   /* 收集参数名（倒序） */
   strslice_t names[64];
   size_t ni = 0;
@@ -27,6 +27,7 @@ size_t compile_func_body(compiler_t *c, ast_func_def_t *fn) {
     if (ni < sizeof(names) / sizeof(names[0])) names[ni++] = vd->name;
   }
   for (size_t i = ni; i-- > 0; ) {
+    bcode_write_op(c->bc, BCODE_PUSH_UNDEFINED);
     bcode_write_op(c->bc, BCODE_DEFINE);
     bcode_write_str(c->bc, names[i]);
   }
@@ -48,7 +49,7 @@ size_t compile_func_body(compiler_t *c, ast_func_def_t *fn) {
   return body;
 }
 
-/** 编译函数注册段（JMP 守卫之后）：签名构造 + PUSH_FUNCTION + DEFINE_FUNCTION */
+/** 编译函数注册段（JMP 守卫之后）：签名构造 + PUSH_FUNCTION + push_undefined + DEFINE */
 void compile_func_reg(compiler_t *c, ast_func_def_t *fn, size_t body) {
   /* 签名弹栈顺序：[return, param1..argc, is_variadic] */
   /* 1. return 类型 */
@@ -79,7 +80,8 @@ void compile_func_reg(compiler_t *c, ast_func_def_t *fn, size_t body) {
   bcode_write_u32(c->bc, (uint32_t)body);
   st_push(c, 0);
 
-  bcode_write_op(c->bc, BCODE_DEFINE_FUNCTION);
+  bcode_write_op(c->bc, BCODE_PUSH_UNDEFINED);
+  bcode_write_op(c->bc, BCODE_DEFINE);
   bcode_write_str(c->bc, fn->name);
   st_push(c, -1);
 }

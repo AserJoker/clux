@@ -144,23 +144,16 @@ static value_t *op_push_undefined(vm_t *vm, bytecode_t *bc, size_t *pc) {
 static value_t *op_define(vm_t *vm, bytecode_t *bc, size_t *pc) {
     strslice_t name = bcode_read_str(bc, pc);
 
-    /* 栈顶判定：type value（LOAD 压入）或 void/undefined（PUSH_UNDEFINED 压入）
-       作为类型说明符 → 再弹一个值；否则栈顶即值本身（函数参数定义场景） */
-    value_t *top = exec_stack_peek(vm, 0);
-    bool is_type_spec = (value_type(top) == vm->type_type) || value_is_undefined(vm, top);
+    /* 永远双弹 [value, type-spec]（value 在底、类型说明符在顶）：
+       type-spec = type value（LOAD 压入）或 undefined（PUSH_UNDEFINED 压入） */
+    value_t *spec = exec_stack_pop(vm); /* 类型说明符 */
+    value_t *init = exec_stack_pop(vm);
 
     const type_t *decl_type = NULL;
-    value_t *init;
-    if (is_type_spec) {
-        value_t *spec = exec_stack_pop(vm); /* 类型说明符 */
-        init = exec_stack_pop(vm);
-        if (value_type(spec) == vm->type_type) {
-            decl_type = value_as(spec, const type_t *);
-        }
-        /* spec 是 undefined：无显式类型，从值推断 */
-    } else {
-        init = exec_stack_pop(vm);
+    if (value_type(spec) == vm->type_type) {
+        decl_type = value_as(spec, const type_t *);
     }
+    /* spec 是 undefined：无显式类型，从值推断 */
     if (!decl_type) decl_type = value_type(init);
 
     /* 无初始值（init 为 void/undefined，来自 var x:T = undefined）：
@@ -246,18 +239,6 @@ static value_t *op_push_function(vm_t *vm, bytecode_t *bc, size_t *pc) {
     value_t *sig_v = exec_stack_pop(vm);
     const type_t *sig = *(const type_t **)value_data(sig_v);
     return bcode_function_new(vm, sig, entry_pc, vm->root_scope);
-}
-
-static value_t *op_define_function(vm_t *vm, bytecode_t *bc, size_t *pc) {
-    /* 单值弹栈（函数值自带签名类型，无类型说明符；与 DEFINE 双弹区分）。
-       函数值是 auto-track 的普通一等值：scope_define clone 进 scope 后，
-       原值壳归 scope 统一回收（与 op_define 一致，不手动释放，避免 double
-       free）；func_t 本体归 vm->functions 池 */
-    strslice_t name = bcode_read_str(bc, pc);
-    value_t *fnv = exec_stack_pop(vm);
-    value_t *stored = scope_define(vm, vm->current_scope, name.ptr, fnv);
-    if (value_is_error(vm, stored)) return stored;
-    return NULL;
 }
 
 static value_t *op_call(vm_t *vm, bytecode_t *bc, size_t *pc) {
@@ -379,7 +360,6 @@ static const bcode_handler_t HANDLERS[] = {
     [BCODE_CAST]           = op_cast,
     [BCODE_CREATE_FUNC_TYPE] = op_create_func_type,
     [BCODE_PUSH_FUNCTION]  = op_push_function,
-    [BCODE_DEFINE_FUNCTION] = op_define_function,
     [BCODE_CALL]           = op_call,
     [BCODE_RET]            = op_ret,
     [BCODE_JMP]            = op_jmp,

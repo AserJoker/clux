@@ -50,10 +50,9 @@ typedef enum {
     BCODE_LOAD,            /* strtable 索引：从 global scope 查 type value 压栈 */
     BCODE_PUSH_UNDEFINED,  /* 压入 void 类型 value（"类型待推导"） */
 
-    BCODE_DEFINE,          /* strtable 索引：弹栈定义变量（type/value 双弹约定） */
+    BCODE_DEFINE,          /* strtable 索引：弹栈定义（永远双弹 [value, type-spec]） */
     BCODE_CREATE_FUNC_TYPE,/* argc：弹栈构造签名类型 type value 压栈 */
     BCODE_PUSH_FUNCTION,   /* entry pc：构造 bcode_function_t + 签名类型 → func value */
-    BCODE_DEFINE_FUNCTION, /* strtable 索引：弹栈 func value 直接定义 */
 
     BCODE_ADD, BCODE_SUB, BCODE_MUL, BCODE_DIV, BCODE_MOD,
     BCODE_EQ,  BCODE_NE,  BCODE_LT,  BCODE_LE,  BCODE_GT,  BCODE_GE,

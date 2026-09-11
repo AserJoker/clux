@@ -28,12 +28,10 @@ void compile_stmt(compiler_t *c, ast_node_t *node) {
       bcode_write_op(c->bc, BCODE_PUSH_UNDEFINED); /* 无初始值 → 零值占位（sema 已保证未初始化不可读） */
       st_push(c, 1);
     }
-    if (!strslice_is_empty(n->type_name)) {
-      compile_type_expr(c, n->type_name);    /* 栈: [value, type] */
-    }
+    compile_type_expr(c, n->type_name);      /* 栈: [value, type-spec]；空类型压 PUSH_UNDEFINED（从值推断） */
     bcode_write_op(c->bc, BCODE_DEFINE);
     bcode_write_str(c->bc, n->name);
-    /* DEFINE 弹掉全部（双弹或单弹），栈深归零 */
+    /* DEFINE 永远双弹弹掉全部，栈深归零 */
     st_push(c, -2);
     break;
   }
