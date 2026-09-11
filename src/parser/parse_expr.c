@@ -365,18 +365,19 @@ ast_node_t *parse_expr_prec(parser_t *p, int min_prec) {
         advance(p);
         skip_trivia(p);
 
-        /* as 特殊处理：右侧是类型名，不是表达式 */
+        /* as 特殊处理：右侧是类型名（可带 const/volatile 前缀），不是表达式 */
         if (lp == 21) {
-            if (!check_kind(p, TOKEN_TYPE_KEYWORD)) {
+            strslice_t target_type;
+            type_qual_t target_qual;
+            if (!parse_type_spec(p, &target_type, &target_qual)) {
                 return ast_error_new(p->arena, op_pos, p->pos,
                                      "expected type name after 'as'");
             }
-            strslice_t target_type = token_strslice(cur_token(p));
-            advance(p);
 
             ast_node_t *node = ast_cast_new(p->arena, op_pos, p->pos);
             ((ast_cast_t *)node)->expr        = left;
             ((ast_cast_t *)node)->target_type = target_type;
+            ((ast_cast_t *)node)->target_qual = target_qual;
             left = node;
             continue;
         }

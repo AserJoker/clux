@@ -6,6 +6,7 @@
 #include "core/vec.h"
 #include "diag/diagnostic.h"
 #include "parser/ast_node.h"
+#include "parser/type_qual.h"
 #include "sema/symbol.h"
 #include "vm/vm.h"
 #include <stdbool.h>
@@ -97,6 +98,14 @@ void sema_destroy(sema_t **sema);
 
 /** 类型解析唯一入口：M1 内部 type_find；未来替换为类型表达式求值器。 */
 const type_t *resolve_type(sema_t *sema, strslice_t name);
+
+/**
+ * 带限定符的类型解析：`[const|volatile]* name` → 类型
+ * 在 resolve_type 基础上应用限定位（m2-design §10 固定组合顺序
+ * volatile(const(T))：先 const 后 volatile，volatile 外层）。无修饰
+ * 时等价 resolve_type。
+ */
+const type_t *resolve_type_q(sema_t *sema, strslice_t name, type_qual_t qual);
 
 /** 将 AST 节点解析为源码位置（经 token pool）。 */
 location_t sema_loc(sema_t *sema, ast_node_t *node);

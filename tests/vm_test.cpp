@@ -247,6 +247,155 @@ TEST_F(VmBuiltinTypes, TypeAsValue) {
 }
 
 /* ================================================================ */
+/* 2.5 const/volatile 限定类型                                        */
+/* ================================================================ */
+
+class VmQualifiedTypes : public ::testing::Test {
+protected:
+    allocator_t *alloc = nullptr;
+    vm_t        *vm    = nullptr;
+
+    void SetUp() override {
+        alloc = create_allocator(test_alloc, test_free);
+        vm    = vm_new(alloc);
+    }
+    void TearDown() override {
+        vm_destroy(&vm);
+        EXPECT_ALLOCATOR_EMPTY_DELETE(&alloc);
+    }
+};
+
+TEST_F(VmQualifiedTypes, ConstIsRealDistinctType) {
+    /* const i32 是独立类型，与 i32 指针不相等（type identity 分离） */
+    const type_t *ci32 = type_const_intern(vm, vm->type_i32);
+    ASSERT_NE(ci32, nullptr);
+    EXPECT_NE(ci32, vm->type_i32);
+    EXPECT_TRUE(type_is_const(ci32));
+    EXPECT_FALSE(type_is_const(vm->type_i32));
+}
+
+TEST_F(VmQualifiedTypes, ConstInternDeduplicates) {
+    const type_t *a = type_const_intern(vm, vm->type_i32);
+    const type_t *b = type_const_intern(vm, vm->type_i32);
+    EXPECT_EQ(a, b); /* 同 sub 指针去重 */
+    const type_t *c = type_const_intern(vm, vm->type_i64);
+    EXPECT_NE(a, c);
+}
+
+TEST_F(VmQualifiedTypes, VolatileInternDeduplicates) {
+    const type_t *a = type_volatile_intern(vm, vm->type_i32);
+    const type_t *b = type_volatile_intern(vm, vm->type_i32);
+    EXPECT_EQ(a, b);
+    EXPECT_TRUE(type_is_volatile(a));
+    /* const 与 volatile 是不同限定，互不等价 */
+    const type_t *ci32 = type_const_intern(vm, vm->type_i32);
+    EXPECT_NE(a, ci32);
+}
+
+TEST_F(VmQualifiedTypes, QualifierSubAndUnwrap) {
+    const type_t *ci32 = type_const_intern(vm, vm->type_i32);
+    EXPECT_EQ(type_qualifier_sub(ci32), vm->type_i32);
+    EXPECT_EQ(type_qualifier_sub(vm->type_i32), nullptr);
+
+    /* 组合固定顺序 volatile(const(i32))：volatile 外层 */
+    const type_t *vci = type_volatile_intern(vm, ci32);
+    EXPECT_EQ(type_qualifier_sub(vci), ci32);
+    EXPECT_EQ(type_qualifier_sub(type_qualifier_sub(vci)), vm->type_i32);
+}
+
+TEST_F(VmQualifiedTypes, ConstHasConstAlongChain) {
+    const type_t *ci32 = type_const_intern(vm, vm->type_i32);
+    const type_t *vci = type_volatile_intern(vm, ci32);
+    EXPECT_TRUE(type_has_const(ci32));
+    EXPECT_TRUE(type_has_const(vci)); /* 沿 sub 链查到 const */
+    EXPECT_FALSE(type_has_const(vm->type_i32));
+    EXPECT_FALSE(type_has_const(type_volatile_intern(vm, vm->type_i32)));
+}
+
+TEST_F(VmQualifiedTypes, QualifiedTypeSizeAlignMatchSub) {
+    /* 限定类型不改变布局：size/align 与子类型一致 */
+    const type_t *ci32 = type_const_intern(vm, vm->type_i32);
+    EXPECT_EQ(ci32->size, vm->type_i32->size);
+    EXPECT_EQ(ci32->align, vm->type_i32->align);
+    const type_t *vi64 = type_volatile_intern(vm, vm->type_i64);
+    EXPECT_EQ(vi64->size, vm->type_i64->size);
+    EXPECT_EQ(vi64->align, vm->type_i64->align);
+}
+
+TEST_F(VmQualifiedTypes, TypeEqualDuckDispatch) {
+    /* type value 的 == 经 type_equal 分派：
+       const i32 == const i32 → true；const i32 == i32 → false（类型身份分离） */
+    const type_t *a = type_const_intern(vm, vm->type_i32);
+    const type_t *b = type_const_intern(vm, vm->type_i32);
+    EXPECT_TRUE(type_equal(vm, a, b));
+    EXPECT_FALSE(type_equal(vm, a, vm->type_i32));
+    EXPECT_FALSE(type_equal(vm, vm->type_i32, a));
+    EXPECT_TRUE(type_equal(vm, vm->type_i32, vm->type_i32));
+}
+
+TEST_F(VmQualifiedTypes, ConstTypeExtendsUnwraps) {
+    /* const T extends U = T extends U（复制语义：const 值可赋给非 const 变量）。
+       反向 i32 extends const i32 不成立（无 type_extends 槽位的类型默认严格相等） */
+    const type_t *ci32 = type_const_intern(vm, vm->type_i32);
+    EXPECT_TRUE(type_extends(vm, ci32, vm->type_i32));  /* const i32 可赋给 i32 */
+    EXPECT_FALSE(type_extends(vm, vm->type_i32, ci32)); /* 反向不成立 */
+    EXPECT_FALSE(type_extends(vm, ci32, vm->type_i64));
+}
+
+TEST_F(VmQualifiedTypes, VolatileTypeExtendsUnwraps) {
+    const type_t *vi32 = type_volatile_intern(vm, vm->type_i32);
+    EXPECT_TRUE(type_extends(vm, vi32, vm->type_i32));
+    EXPECT_FALSE(type_extends(vm, vi32, vm->type_i64));
+}
+
+TEST_F(VmQualifiedTypes, CombinedTypeExtendsToPlain) {
+    /* volatile(const(i32)) extends i32 → 沿链解包 true */
+    const type_t *ci32 = type_const_intern(vm, vm->type_i32);
+    const type_t *vci = type_volatile_intern(vm, ci32);
+    EXPECT_TRUE(type_extends(vm, vci, vm->type_i32));
+    EXPECT_FALSE(type_extends(vm, vci, vm->type_i64));
+}
+
+TEST_F(VmQualifiedTypes, ConstValueArithmeticProxies) {
+    /* const/volatile 值的运算代理到子类型 vtable（解包代理） */
+    const type_t *ci32 = type_const_intern(vm, vm->type_i32);
+    int32_t lhs = 3, rhs = 4;
+    void *ld = value_alloc_data_copy(vm->alloc, ci32, &lhs);
+    value_t *lv = value_make_untracked(vm->alloc, ci32, ld);
+    void *rd = value_alloc_data_copy(vm->alloc, vm->type_i32, &rhs);
+    value_t *rv = value_make_untracked(vm->alloc, vm->type_i32, rd);
+
+    value_t *sum = value_add(vm, lv, rv);
+    ASSERT_NE(sum, nullptr);
+    EXPECT_EQ(value_type(sum), vm->type_i32);
+    EXPECT_EQ(read_sint(sum), 7);
+
+    /* sum auto-track 到 current_scope，vm_destroy 释放 */
+    raw_free(vm, lv);
+    raw_free(vm, rv);
+}
+
+TEST_F(VmQualifiedTypes, VolatileValueAssignProxies) {
+    /* volatile 值赋值（volatile 是存取提示，不影响赋值语义）。
+       int_assign 返回 dst 自身（非新值），raw_free(res) 即释放 dst */
+    const type_t *vi32 = type_volatile_intern(vm, vm->type_i32);
+    int32_t src = 42;
+    void *sd = value_alloc_data_copy(vm->alloc, vm->type_i32, &src);
+    value_t *sv = value_make_untracked(vm->alloc, vm->type_i32, sd);
+    void *dd = value_alloc_data_copy(vm->alloc, vi32, &src);
+    value_t *dv = value_make_untracked(vm->alloc, vi32, dd);
+
+    value_t *res = value_assign(vm, dv, sv);
+    ASSERT_NE(res, nullptr);
+    EXPECT_EQ(res, dv); /* assign 返回 dst 自身 */
+    EXPECT_EQ(read_sint(dv), 42);
+
+    raw_free(vm, dv);
+    raw_free(vm, sv);
+}
+
+
+/* ================================================================ */
 /* 3. Value 核心机制                                                 */
 /* ================================================================ */
 

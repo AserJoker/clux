@@ -155,7 +155,7 @@ clux 采用统一的前导类型修饰符语法，类型修饰符始终在基底
 
 > M1 不支持数组、切片、指针、元组，但语法规则先行声明。
 
-### 3.3 const / volatile 修饰符（M1 词法识别，语义不生效）
+### 3.3 const / volatile 修饰符
 
 `const` 和 `volatile` 直接修饰紧随其后的类型，消除 C 语言中 const 修饰指针还是修饰指向对象的歧义：
 
@@ -185,7 +185,25 @@ const *i32 p;       // const 修饰指针 → 指针不可变，指向的 i32 �
 const *const i32 p; // 第一个 const 修饰指针，第二个 const 修饰 i32 → 两者都不可变
 ```
 
-> **M1 阶段 const/volatile 不实现语义**：词法识别（关键字 + 前导类型语法），但语义上不生效。`const i32 x` 与 `i32 x` 等价，不产生 const 赋值检查。类型解析（`resolve_type`）在 M1 只识别基底类型名，const/volatile 前缀留给未来类型表达式求值器处理。
+**语义（已实现）**：const/volatile 是真实类型（intern 池管理，`const i32 != i32`），可任意顺序重复修饰并位或合并（`const volatile i32`、`volatile const i32` 等价，固定组合顺序 `volatile(const(T))`）：
+
+- **const**：声明后不可再作为赋值左值。`var x:const T = undefined` 声明后**首次赋值豁免**（TDZ 赋值 = 初始化，仅一次），此后赋值/复合赋值编译报错。读取与参与运算不受限。
+- **volatile**：存取语义提示（禁止优化器重排/合并读写），不改变类型身份。读写、赋值、运算全部合法，vtable 代理子类型功能。
+- **解包代理**：const/volatile 类型的全部运算（算术/比较/位运算/赋值/call/cast）解包到子类型 vtable 执行，值布局（size/align）与子类型一致。
+- **复制语义**：`const T` 值可复制到 `T` 变量（`const T extends T` 身份拷贝）；类型身份判断（`type_equal`）保持严格（`const i32 == i32` 为 false）。
+
+示例：
+```
+var a:const i32 = undefined;
+a = 123;                // 首次赋值 = 初始化，合法
+// a = 456;             // 再赋值非法（编译错误）
+
+var b:volatile i32 = 1;
+b = b + 1;              // volatile 读写全合法
+
+var c:const volatile i32 = undefined;
+c = 7;                  // 组合限定，首次赋值豁免
+```
 
 ### 3.2 str 类型
 

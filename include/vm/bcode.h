@@ -61,6 +61,8 @@ typedef enum {
     BCODE_NEG, BCODE_NOT, BCODE_BNOT,
 
     BCODE_CAST,            /* 显式转换：类型经栈顶 type value（LOAD 压入），弹 type+值 */
+    BCODE_CREATE_CONST,    /* 弹 type value → type_const_intern → type value 压回 */
+    BCODE_CREATE_VOLATILE, /* 弹 type value → type_volatile_intern → type value 压回 */
     BCODE_CALL,            /* argc：value_call（callee 在 stack[sp-1-argc]） */
     BCODE_RET,             /* 返回 interrupt 哨兵，栈顶即返回值 */
 

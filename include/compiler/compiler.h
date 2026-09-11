@@ -130,7 +130,8 @@ void st_push(compiler_t *c, int delta);
 
 /* ---- 节点编译入口（各文件实现） ---- */
 
-void   compile_type_expr(compiler_t *c, strslice_t type_name); /* compile_type.c */
+void   compile_type_expr(compiler_t *c, strslice_t type_name,
+                         type_qual_t qual); /* compile_type.c */
 void   compile_expr(compiler_t *c, ast_node_t *node);          /* compile_expr.c */
 void   compile_stmt(compiler_t *c, ast_node_t *node);          /* compile_stmt.c */
 size_t compile_func_body(compiler_t *c, ast_func_def_t *fn);   /* compile_func.c */

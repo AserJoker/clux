@@ -225,6 +225,19 @@ static void shadow_assign(sema_t *sema, ast_assign_t *as,
 
   if (token_is(as->op, "=")) {
     if (rhs_bad) return; /* 错误恢复产物跳过，已有诊断 */
+
+    /* const 赋值检查（TDZ 豁免）：声明 const 且已初始化（flow_init=true）
+       的变量不可再赋值；flow_init=false（未初始化声明 var a:const T =
+       undefined）时的赋值是首次初始化，豁免（const 变量的 TDZ 赋值 =
+       初始化，仅一次）。 */
+    sema_symbol_t *sym = sema_lookup(scope, as->name);
+    if (sym && sym->type && type_has_const(sym->type) && sym->flow_init) {
+      diag_error(sema->diag, sema_loc(sema, &as->base),
+                 "cannot assign to const variable '%.*s'",
+                 (int)as->name.len, as->name.ptr);
+      return;
+    }
+
     /* 简单赋值：value_assign 校验；赋值成功 → 数据流 flow_init=true
        （TDZ 退出由确定性赋值分析承担，VM 值层不感知） */
     value_t *r = value_assign(sema->vm, lhs, rhs);
@@ -236,10 +249,20 @@ static void shadow_assign(sema_t *sema, ast_assign_t *as,
                  "cannot assign %s to variable '%.*s' of type %s", rn,
                  (int)as->name.len, as->name.ptr, tn);
     } else {
-      sema_symbol_t *sym = sema_lookup(scope, as->name);
       if (sym) sym->flow_init = true;
     }
     return;
+  }
+
+  /* const 检查：复合赋值是读+写，const 变量已初始化后禁止 */
+  {
+    sema_symbol_t *sym = sema_lookup(scope, as->name);
+    if (sym && sym->type && type_has_const(sym->type) && sym->flow_init) {
+      diag_error(sema->diag, sema_loc(sema, &as->base),
+                 "cannot assign to const variable '%.*s'",
+                 (int)as->name.len, as->name.ptr);
+      return;
+    }
   }
 
   /* 复合赋值 x op= rhs → x = x op rhs（shadow 走 vtable 类型协商） */

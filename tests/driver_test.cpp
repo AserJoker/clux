@@ -137,3 +137,87 @@ TEST(Driver, RunFileEmptyBareBlockReturnsZero) {
   EXPECT_EQ(driver_run_file(path.c_str()), 0);
   std::remove(path.c_str());
 }
+
+/* ---- const/volatile 限定类型 ---- */
+
+TEST(Driver, ConstTdzFirstAssignAllowed) {
+  /* const 变量 TDZ 首次赋值 = 初始化，豁免合法：
+     var a:const i32 = undefined; a = 123; */
+  std::string path = write_temp_file(
+      "func main():i32 { var a:const i32 = undefined; a = 123; return a; }\n");
+  EXPECT_EQ(driver_run_file(path.c_str()), 0);
+  std::remove(path.c_str());
+}
+
+TEST(Driver, ConstReassignAfterInitRejected) {
+  /* const 变量已初始化后再赋值 → 语义错误 */
+  std::string path = write_temp_file(
+      "func main() { var a:const i32 = undefined; a = 123; a = 456; }\n");
+  EXPECT_EQ(driver_run_file(path.c_str()), 1);
+  std::remove(path.c_str());
+}
+
+TEST(Driver, ConstInitThenAssignRejected) {
+  /* const 变量带初始值定义（flow_init=true）后再赋值 → 语义错误 */
+  std::string path =
+      write_temp_file("func main() { var a:const i32 = 1; a = 2; }\n");
+  EXPECT_EQ(driver_run_file(path.c_str()), 1);
+  std::remove(path.c_str());
+}
+
+TEST(Driver, ConstCompoundAssignRejected) {
+  /* const 变量复合赋值（读+写）同样禁止 */
+  std::string path =
+      write_temp_file("func main() { var a:const i32 = 1; a += 1; }\n");
+  EXPECT_EQ(driver_run_file(path.c_str()), 1);
+  std::remove(path.c_str());
+}
+
+TEST(Driver, ConstReadAndArithmeticAllowed) {
+  /* const 变量只读 + 参与运算合法 */
+  std::string path = write_temp_file(
+      "func main():i32 { var a:const i32 = 5; var b:i32 = a * 2; return b; }\n");
+  EXPECT_EQ(driver_run_file(path.c_str()), 0);
+  std::remove(path.c_str());
+}
+
+TEST(Driver, VolatileVarNormalOps) {
+  /* volatile 变量读写/运算/赋值全合法（代理子类型） */
+  std::string path = write_temp_file(
+      "func main():i32 { var a:volatile i32 = 1; a = a + 1; return a; }\n");
+  EXPECT_EQ(driver_run_file(path.c_str()), 0);
+  std::remove(path.c_str());
+}
+
+TEST(Driver, ConstVolatileCombined) {
+  /* const volatile i32（固定组合顺序 volatile(const(i32))）：
+     首次赋值豁免，之后禁止 */
+  std::string path = write_temp_file(
+      "func main():i32 { var a:const volatile i32 = undefined; a = 7; return a; }\n");
+  EXPECT_EQ(driver_run_file(path.c_str()), 0);
+  std::remove(path.c_str());
+}
+
+TEST(Driver, ConstVolatileReassignRejected) {
+  std::string path = write_temp_file(
+      "func main() { var a:volatile const i32 = undefined; a = 1; a = 2; }\n");
+  EXPECT_EQ(driver_run_file(path.c_str()), 1);
+  std::remove(path.c_str());
+}
+
+TEST(Driver, VolatileCompoundAssignAllowed) {
+  /* volatile 不影响赋值（非 const），复合赋值合法 */
+  std::string path = write_temp_file(
+      "func main():i32 { var a:volatile i32 = 1; a += 2; return a; }\n");
+  EXPECT_EQ(driver_run_file(path.c_str()), 0);
+  std::remove(path.c_str());
+}
+
+TEST(Driver, ConstValueCopyToNonConst) {
+  /* const 值可复制到非 const 变量（const T extends T 复制语义） */
+  std::string path = write_temp_file(
+      "func main():i32 { var a:const i32 = 10; var b:i32 = a; return b; }\n");
+  EXPECT_EQ(driver_run_file(path.c_str()), 0);
+  std::remove(path.c_str());
+}
+

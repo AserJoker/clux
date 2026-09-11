@@ -71,6 +71,11 @@ vm_t *vm_new(allocator_t *alloc) {
        （必须先于 func_new 使用——内置函数注册依赖池存在） */
     vm->functions = vec_new(alloc, /*owns_element=*/false);
 
+    /* const/volatile 修饰类型池（type_const_intern / type_volatile_intern
+       intern 用；元素由 vm_destroy 手动释放，vec 只持有指针数组） */
+    vm->const_types = vec_new(alloc, /*owns_element=*/false);
+    vm->volatile_types = vec_new(alloc, /*owns_element=*/false);
+
     /* 基本类型注册进 global scope（LOAD 指令按名查 type value） */
     vm_register_builtin_types(vm);
 
@@ -127,6 +132,36 @@ void vm_destroy(vm_t **pvm) {
             allocator_free(vm->alloc, (void **)&ft);
         }
         vec_free(vm->alloc, &vm->sig_types);
+    }
+
+    /* const 修饰类型池：释放 name + 结构体（sub 归底层类型，不在此释放） */
+    if (vm->const_types) {
+        size_t n = vec_len(vm->const_types);
+        for (size_t i = 0; i < n; i++) {
+            const_type_t *ct = (const_type_t *)vec_get(vm->const_types, i);
+            if (!ct) continue;
+            if (ct->base.name.ptr) {
+                char *np = (char *)ct->base.name.ptr;
+                allocator_free(vm->alloc, (void **)&np);
+            }
+            allocator_free(vm->alloc, (void **)&ct);
+        }
+        vec_free(vm->alloc, &vm->const_types);
+    }
+
+    /* volatile 修饰类型池：同上 */
+    if (vm->volatile_types) {
+        size_t n = vec_len(vm->volatile_types);
+        for (size_t i = 0; i < n; i++) {
+            volatile_type_t *vt = (volatile_type_t *)vec_get(vm->volatile_types, i);
+            if (!vt) continue;
+            if (vt->base.name.ptr) {
+                char *np = (char *)vt->base.name.ptr;
+                allocator_free(vm->alloc, (void **)&np);
+            }
+            allocator_free(vm->alloc, (void **)&vt);
+        }
+        vec_free(vm->alloc, &vm->volatile_types);
     }
 
     allocator_free(vm->alloc, (void **)pvm);

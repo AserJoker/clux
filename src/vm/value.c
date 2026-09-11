@@ -147,6 +147,66 @@ interrupt_kind_t value_interrupt_kind(vm_t *vm, const value_t *v) {
     return ((interrupt_data_t *)value_data(v))->kind;
 }
 
+/* ---- 类型运算 ---- */
+
+/*
+ * type value 的 == / extends 代理：type value 的 data 存指向 type_t 的
+ * 指针。比较分派到类型自身的 vtable 槽位（type_equal / type_extends，
+ * 鸭子类型判断）。NULL 槽位 → 默认指针比较（type.c 的默认入口处理）。
+ * 返回 bool value（shadow 输入 → shadow 输出，与其余 vtable 一致）。
+ */
+value_t *value_type_eq(vm_t *vm, value_t *a, value_t *b) {
+    if (value_is_error(vm, a)) return a;
+    if (value_is_error(vm, b)) return b;
+    if (value_type(a) != vm->type_type || value_type(b) != vm->type_type)
+        return value_make_error(vm, "==: type value required");
+    const type_t *ta = value_as(a, const type_t *);
+    const type_t *tb = value_as(b, const type_t *);
+    bool r = type_equal(vm, ta, tb);
+    if (value_is_shadow(a) || value_is_shadow(b))
+        return value_make_shadow(vm, vm->type_bool);
+    void *data = value_alloc_data(vm->alloc, vm->type_bool);
+    *(bool *)data = r;
+    return value_make(vm, vm->type_bool, data);
+}
+
+value_t *value_type_extends(vm_t *vm, value_t *a, value_t *b) {
+    if (value_is_error(vm, a)) return a;
+    if (value_is_error(vm, b)) return b;
+    if (value_type(a) != vm->type_type || value_type(b) != vm->type_type)
+        return value_make_error(vm, "extends: type value required");
+    const type_t *ta = value_as(a, const type_t *);
+    const type_t *tb = value_as(b, const type_t *);
+    bool r = type_extends(vm, ta, tb);
+    if (value_is_shadow(a) || value_is_shadow(b))
+        return value_make_shadow(vm, vm->type_bool);
+    void *data = value_alloc_data(vm->alloc, vm->type_bool);
+    *(bool *)data = r;
+    return value_make(vm, vm->type_bool, data);
+}
+
+/* extends 运算符入口：分派到 a 的 vtable（type value 的 VTABLE_TYPE.extends） */
+value_t *value_extends(vm_t *vm, value_t *a, value_t *b) {
+    if (value_is_error(vm, a)) return a;
+    if (value_is_error(vm, b)) return b;
+    if (!a->type || !a->type->vtable || !a->type->vtable->extends)
+        return value_make_error(vm, "type does not support operator 'extends'");
+    return a->type->vtable->extends(vm, a, b);
+}
+
+/* ---- const/volatile 解包原语 ---- */
+
+const type_t *value_swap_type(value_t *v, const type_t *new_type) {
+    if (!v) return NULL;
+    const type_t *old = v->type;
+    v->type = new_type;
+    return old;
+}
+
+void value_restore_type(value_t *v, const type_t *old_type) {
+    if (v) v->type = old_type;
+}
+
 /* ---- 运算分派 ---- */
 
 /*

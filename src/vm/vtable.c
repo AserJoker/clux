@@ -21,9 +21,12 @@ const vtable_t VTABLE_ZERO = {
     .shr            = NULL,
     .lnot           = NULL,
     .call           = NULL,
+    .extends        = NULL,
     .dispose        = NULL,
     .clone          = NULL,
     .assign         = NULL,
     .implicit_cast  = NULL,
     .explicit_cast  = NULL,
+    .type_equal     = NULL,
+    .type_extends   = NULL,
 };

@@ -214,6 +214,27 @@ static value_t *op_cast(vm_t *vm, bytecode_t *bc, size_t *pc) {
     return value_explicit_cast(vm, value, target);
 }
 
+/* ---- 限定类型构造（const/volatile） ---- */
+
+static value_t *op_create_const(vm_t *vm, bytecode_t *bc, size_t *pc) {
+    /* 弹 type value → intern const 类型 → type value 压回 */
+    (void)bc; (void)pc;
+    value_t *vtype = exec_stack_pop(vm);
+    const type_t *t = *(const type_t **)value_data(vtype);
+    const type_t *ct = type_const_intern(vm, t);
+    if (!ct) return value_make_error(vm, "exec: cannot make const type");
+    return type_as_value(vm, ct);
+}
+
+static value_t *op_create_volatile(vm_t *vm, bytecode_t *bc, size_t *pc) {
+    (void)bc; (void)pc;
+    value_t *vtype = exec_stack_pop(vm);
+    const type_t *t = *(const type_t **)value_data(vtype);
+    const type_t *vt = type_volatile_intern(vm, t);
+    if (!vt) return value_make_error(vm, "exec: cannot make volatile type");
+    return type_as_value(vm, vt);
+}
+
 /* ---- 函数 ---- */
 
 static value_t *op_create_func_type(vm_t *vm, bytecode_t *bc, size_t *pc) {
@@ -358,6 +379,8 @@ static const bcode_handler_t HANDLERS[] = {
     [BCODE_NOT]            = op_not,
     [BCODE_BNOT]           = op_bnot,
     [BCODE_CAST]           = op_cast,
+    [BCODE_CREATE_CONST]   = op_create_const,
+    [BCODE_CREATE_VOLATILE]= op_create_volatile,
     [BCODE_CREATE_FUNC_TYPE] = op_create_func_type,
     [BCODE_PUSH_FUNCTION]  = op_push_function,
     [BCODE_CALL]           = op_call,

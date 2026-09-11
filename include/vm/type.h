@@ -51,6 +51,24 @@ typedef struct func_type_t {
     func_sig_t  sig;
 } func_type_t;
 
+/**
+ * const_type_t / volatile_type_t: 前导修饰类型（type_t 的扩展）
+ *
+ * 真实类型（const i32 != i32），持 sub 指针指向被修饰的底层类型。
+ * 由 vm 类型池 intern（type_const_intern / type_volatile_intern），vm
+ * 拥有生命周期。运算行为（vtable）代理到 sub（解包语义，见 m2-design §10）：
+ * volatile(const(i32)) 组合时 volatile 外层、const 内层（固定顺序）。
+ */
+typedef struct const_type_t {
+    type_t      base;
+    const type_t *sub;
+} const_type_t;
+
+typedef struct volatile_type_t {
+    type_t      base;
+    const type_t *sub;
+} volatile_type_t;
+
 /** 根据名称在 vm 的类型注册表中查找类型，未找到返回 NULL */
 const type_t *type_find(const vm_t *vm, strslice_t name);
 
@@ -58,6 +76,46 @@ const type_t *type_find(const vm_t *vm, strslice_t name);
 static inline bool type_eq(const type_t *a, const type_t *b) {
     return a == b;
 }
+
+/**
+ * 鸭子类型相等判断：分派 a->vtable->type_equal(vm, a, b)。
+ * NULL 槽位 = 默认指针比较（基础类型单例）。
+ * 复合类型（M2 struct/array/tuple）按成员结构递归判断。
+ */
+bool type_equal(vm_t *vm, const type_t *a, const type_t *b);
+
+/**
+ * 类型兼容性判断（T extends U）：sub 是否可兼容 sup（鸭子类型转换）。
+ * 分派 sub->vtable->type_extends(vm, sub, sup)；NULL 槽位 = 默认同类型
+ * （type_equal）。M2 复合类型按成员递归判断。
+ */
+bool type_extends(vm_t *vm, const type_t *sub, const type_t *sup);
+
+/** 判断类型是否为 const 修饰类型 */
+static inline bool type_is_const(const type_t *t) {
+    return t && t->vtable == &VTABLE_CONST;
+}
+
+/** 判断类型是否为 volatile 修饰类型 */
+static inline bool type_is_volatile(const type_t *t) {
+    return t && t->vtable == &VTABLE_VOLATILE;
+}
+
+/** 取修饰类型的 sub（非 const/volatile 时返回 NULL） */
+const type_t *type_qualifier_sub(const type_t *t);
+
+/**
+ * 类型是否含 const 修饰（递归 sub 链）：const i32 → true；
+ * volatile(const(i32)) → true；volatile(i32) → false。
+ * sema 赋值左值检查用。
+ */
+bool type_has_const(const type_t *t);
+
+/** const 类型 intern（按 sub 指针去重，vm 拥有生命周期） */
+const type_t *type_const_intern(vm_t *vm, const type_t *sub);
+
+/** volatile 类型 intern（按 sub 指针去重，vm 拥有生命周期） */
+const type_t *type_volatile_intern(vm_t *vm, const type_t *sub);
 
 /** 将 type 转为 value_t*（type 作为 first-class value） */
 value_t *type_as_value(vm_t *vm, const type_t *t);

@@ -133,6 +133,29 @@ value_t *value_clone(vm_t *vm, value_t *v);
 /** 原地赋值：将 src 的数据写入 dst（类型必须匹配），返回 dst 或 error */
 value_t *value_assign(vm_t *vm, value_t *dst, value_t *src);
 
+/* ---- 类型运算（鸭子类型，type value 的 == / extends） ---- */
+
+/** type value 的 == 代理：比较两个类型值是否鸭子类型相等（type_equal） */
+value_t *value_type_eq(vm_t *vm, value_t *a, value_t *b);
+
+/** type value 的 extends：sub 类型值是否兼容 sup 类型值（type_extends） */
+value_t *value_type_extends(vm_t *vm, value_t *a, value_t *b);
+
+/** extends 运算符入口：分派 a->type->vtable->extends（type value 专用） */
+value_t *value_extends(vm_t *vm, value_t *a, value_t *b);
+
+/* ---- const/volatile 解包原语（type_const.c/type_volatile.c 代理用） ---- */
+
+/**
+ * 临时替换 value 的 type 指针（限定类型解包代理用）。返回旧 type。
+ * 调用方须在 sub vtable 槽位返回后恢复（value_restore_type）。
+ * 仅限 vm 内部类型实现使用。
+ */
+const type_t *value_swap_type(value_t *v, const type_t *new_type);
+
+/** 恢复 value 的 type 指针（与 value_swap_type 配对） */
+void value_restore_type(value_t *v, const type_t *old_type);
+
 /* ---- 类型转换 ---- */
 
 value_t *value_implicit_cast(vm_t *vm, value_t *v, const type_t *target);

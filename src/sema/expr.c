@@ -249,7 +249,7 @@ value_t *sema_expr(sema_t *sema, ast_node_t **node, sema_scope_t *scope) {
     case AST_CAST: {
       ast_cast_t *n = (ast_cast_t *)*node;
       value_t *expr = sema_expr(sema, &n->expr, scope);
-      const type_t *target = resolve_type(sema, n->target_type);
+      const type_t *target = resolve_type_q(sema, n->target_type, n->target_qual);
       if (!target) {
         diag_error(sema->diag, sema_loc(sema, *node), "unknown type '%.*s'",
                    (int)n->target_type.len, n->target_type.ptr);

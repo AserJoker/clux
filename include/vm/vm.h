@@ -48,6 +48,10 @@ typedef struct vm_t {
     /* ---- 函数签名类型池（按签名去重 intern，vm 拥有生命周期） ---- */
     vec_t *sig_types;    /* func_type_t*，元素为签名类型（sig 非空） */
 
+    /* ---- const/volatile 修饰类型池（按 sub 去重 intern，vm 拥有生命周期） ---- */
+    vec_t *const_types;    /* const_type_t*，元素为 const 修饰类型 */
+    vec_t *volatile_types; /* volatile_type_t*，元素为 volatile 修饰类型 */
+
     /* ---- 函数对象池（func_t / bcode_function_t*，vm 统一持有生命周期） ---- */
     /* 所有函数值共享同一 func_t*（clone 浅拷贝指针），因此 func_t 不能由
      * 某个 value dispose 释放（double free）；归本池统一释放。 */

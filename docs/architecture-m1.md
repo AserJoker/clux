@@ -641,6 +641,8 @@ void exec_run(exec_t *e) {
 | `BXOR SHL SHR` | — | 同上 | `value_bxor`/`value_shl`/`value_shr` |
 | `NEG NOT BNOT` | — | 弹一引用 → 一元运算 → 压结果 | `value_neg`/`value_lnot`/`value_bnot` |
 | `CAST` | —（无操作数） | 类型经**栈顶 type value**（`LOAD` 压入）传递：弹 type value → 弹被转换值 → `value_explicit_cast(vm, value, *(const type_t**)data)` | `value_explicit_cast` |
+| `CREATE_CONST` | — | 弹栈顶 **type value** → `type_const_intern` intern（按 sub 去重）→ 构造 const type value 压回（`const i32 != i32`，真实类型） | `type_const_intern` |
+| `CREATE_VOLATILE` | — | 弹栈顶 **type value** → `type_volatile_intern` intern（按 sub 去重）→ 构造 volatile type value 压回（固定组合顺序 `volatile(const(T))`） | `type_volatile_intern` |
 | `CALL` | argc | callee 在 `stack[sp-1-argc]`、实参 `args=&stack[sp-argc]`（调用点先 `PUSH "name"`）→ **args 复制进 VLA**（`value_call` 内压栈可能 realloc 使栈缓冲悬垂）→ 清理 callee+实参 → **`value_call(vm, callee, args, argc)`**（scope/frame 由 `func_vcall` + `bcode_call_cfunc` 完成，见 2.7.6）→ 结果压栈 | `value_call` |
 | `RET` | — | 栈顶即返回值，返回 **interrupt 哨兵**（`INTERRUPT_RETURN`），由 `bcode_call_cfunc` 子循环捕获 | `value_make_interrupt` |
 | `JMP` | 目标 pc | `*pc = read_u32(...)`（绝对字节偏移） | — |

@@ -140,6 +140,43 @@ strslice_t token_strslice(const token_t *t) {
     return strslice_from_bytes(ptr, len);
 }
 
+/* ---- 类型标注解析 ---- */
+
+bool parse_type_spec(parser_t *p, strslice_t *out_type_name,
+                     type_qual_t *out_qual) {
+    if (!p || !out_type_name || !out_qual) return false;
+
+    type_qual_t qual = TYPE_QUAL_NONE;
+
+    /* 可选 const/volatile 前缀：可重复组合，位或合并 */
+    for (;;) {
+        if (check_keyword(p, "const")) {
+            qual = (type_qual_t)(qual | TYPE_QUAL_CONST);
+            advance(p);
+            skip_trivia(p);
+            continue;
+        }
+        if (check_keyword(p, "volatile")) {
+            qual = (type_qual_t)(qual | TYPE_QUAL_VOLATILE);
+            advance(p);
+            skip_trivia(p);
+            continue;
+        }
+        break;
+    }
+
+    /* 类型名：关键字（i32/bool/...） */
+    if (!check_kind(p, TOKEN_TYPE_KEYWORD)) {
+        parse_error(p, "expected type name after type qualifier");
+        return false;
+    }
+    *out_type_name = token_strslice(cur_token(p));
+    *out_qual      = qual;
+    advance(p);
+    skip_trivia(p);
+    return true;
+}
+
 /* ---- 字面量解析工具 ---- */
 
 uint32_t parse_escape_seq(const char *text, size_t len, size_t *consumed) {

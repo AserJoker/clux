@@ -59,6 +59,47 @@ value_t *type_as_value(vm_t *vm, const type_t *t) {
     return value_make(vm, vm->type_type, data);
 }
 
+/* ---- type_equal / type_extends（鸭子类型判断） ---- */
+
+/*
+ * 分派到 a 自身 vtable 的类型运算槽位。NULL 槽位 = 默认：
+ *   - type_equal：指针比较（基础类型单例，const/volatile 独立 intern）
+ *   - type_extends：同 type_equal（默认严格兼容，M2 复合类型按成员扩展）
+ */
+bool type_equal(vm_t *vm, const type_t *a, const type_t *b) {
+    if (!a || !b) return a == b;
+    if (a == b) return true;
+    if (a->vtable && a->vtable->type_equal)
+        return a->vtable->type_equal(vm, a, b);
+    return false;
+}
+
+bool type_extends(vm_t *vm, const type_t *sub, const type_t *sup) {
+    if (!sub || !sup) return false;
+    if (sub == sup) return true;
+    if (sub->vtable && sub->vtable->type_extends)
+        return sub->vtable->type_extends(vm, sub, sup);
+    /* 默认：兼容 = 鸭子相等（无复合结构时即类型相同） */
+    return type_equal(vm, sub, sup);
+}
+
+/* ---- const/volatile 辅助 ---- */
+
+const type_t *type_qualifier_sub(const type_t *t) {
+    if (!t) return NULL;
+    if (t->vtable == &VTABLE_CONST)
+        return ((const const_type_t *)t)->sub;
+    if (t->vtable == &VTABLE_VOLATILE)
+        return ((const volatile_type_t *)t)->sub;
+    return NULL;
+}
+
+bool type_has_const(const type_t *t) {
+    for (const type_t *p = t; p; p = type_qualifier_sub(p))
+        if (p->vtable == &VTABLE_CONST) return true;
+    return false;
+}
+
 /* ---- type_promote ---- */
 
 typedef enum {

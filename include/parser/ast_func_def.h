@@ -7,6 +7,7 @@ extern "C" {
 #include "core/strslice.h"
 #include "parser/ast_node.h"
 #include "parser/parser.h"
+#include "parser/type_qual.h"
 
 typedef struct {
     ast_node_t  base;
@@ -14,6 +15,7 @@ typedef struct {
     ast_node_t *params;      /* AST_VAR_DEF 兄弟链 */
     ast_node_t *params_last; /* O(1) 追加 */
     strslice_t  return_type; /* 返回类型文本（空切片 = void） */
+    type_qual_t return_qual; /* 返回类型 const/volatile 限定位 */
     ast_node_t *body;        /* AST_BLOCK */
     bool        is_comptime; /* comptime func：调用点编译期求值折叠为常量，不注册到运行时 */
 } ast_func_def_t;

@@ -52,6 +52,20 @@ const type_t *resolve_type(sema_t *sema, strslice_t name) {
   return type_find(sema->vm, name);
 }
 
+const type_t *resolve_type_q(sema_t *sema, strslice_t name, type_qual_t qual) {
+  const type_t *t = resolve_type(sema, name);
+  if (!t || qual == TYPE_QUAL_NONE) return t;
+  if (qual & TYPE_QUAL_CONST) {
+    t = type_const_intern(sema->vm, t);
+    if (!t) return NULL;
+  }
+  if (qual & TYPE_QUAL_VOLATILE) {
+    t = type_volatile_intern(sema->vm, t);
+    if (!t) return NULL;
+  }
+  return t;
+}
+
 location_t sema_loc(sema_t *sema, ast_node_t *node) {
   location_t zero = {0};
   if (!sema || !node) return zero;
@@ -136,7 +150,7 @@ static void pass2_types(sema_t *sema) {
       size_t j = 0;
       for (ast_node_t *p = fn->params; p; p = p->next, j++) {
         ast_var_def_t *vd = (ast_var_def_t *)p;
-        const type_t *t = resolve_type(sema, vd->type_name);
+        const type_t *t = resolve_type_q(sema, vd->type_name, vd->type_qual);
         if (!t) {
           diag_error(sema->diag, sema_loc(sema, p),
                      "unknown type '%.*s' in parameter '%.*s'",
@@ -149,7 +163,7 @@ static void pass2_types(sema_t *sema) {
 
     const type_t *rt = NULL;
     if (fn->return_type.len) {
-      rt = resolve_type(sema, fn->return_type);
+      rt = resolve_type_q(sema, fn->return_type, fn->return_qual);
       if (!rt) {
         diag_error(sema->diag, sema_loc(sema, f), "unknown return type '%.*s'",
                    (int)fn->return_type.len, fn->return_type.ptr);

@@ -39,7 +39,8 @@ static void build_func(sema_t *sema, sema_func_t *sf) {
   /* 注册参数（已解析类型，运行时值在 Pass 3b 进入函数时定义到 VM scope） */
   for (ast_node_t *p = fn->params; p; p = p->next) {
     ast_var_def_t *vd = (ast_var_def_t *)p;
-    sema_symbol_t init = {.type = resolve_type(sema, vd->type_name)};
+    sema_symbol_t init = {
+        .type = resolve_type_q(sema, vd->type_name, vd->type_qual)};
     if (!sema_scope_define(fscope, vd->name, &init)) {
       diag_error(sema->diag, sema_loc(sema, p),
                  "duplicate parameter '%.*s'", (int)vd->name.len,
@@ -51,8 +52,9 @@ static void build_func(sema_t *sema, sema_func_t *sf) {
   build_result_t r = build_block(sema, (ast_block_t *)fn->body, fscope);
 
   /* 控制流分析：非 void 函数所有路径必须 return（纯结构，不依赖类型） */
-  const type_t *rt = fn->return_type.len ? resolve_type(sema, fn->return_type)
-                                         : NULL;
+  const type_t *rt = fn->return_type.len
+                         ? resolve_type_q(sema, fn->return_type, fn->return_qual)
+                         : NULL;
   if (rt && !type_eq(rt, sema->vm->type_void) && !r.definitely_returns) {
     diag_error(sema->diag, sema_loc(sema, &fn->base),
                "function '%.*s' must return a value on all paths",
@@ -75,7 +77,7 @@ static build_result_t build_block(sema_t *sema, ast_block_t *block,
         ast_var_def_t *vd = (ast_var_def_t *)s;
         const type_t *vt = NULL;
         if (vd->type_name.len) {
-          vt = resolve_type(sema, vd->type_name);
+          vt = resolve_type_q(sema, vd->type_name, vd->type_qual);
           if (!vt) {
             diag_error(sema->diag, sema_loc(sema, s), "unknown type '%.*s'",
                        (int)vd->type_name.len, vd->type_name.ptr);
@@ -140,7 +142,7 @@ static build_result_t build_block(sema_t *sema, ast_block_t *block,
           ast_var_def_t *vd = (ast_var_def_t *)fr->init;
           const type_t *vt = NULL;
           if (vd->type_name.len) {
-            vt = resolve_type(sema, vd->type_name);
+            vt = resolve_type_q(sema, vd->type_name, vd->type_qual);
             if (!vt) {
               diag_error(sema->diag, sema_loc(sema, fr->init),
                          "unknown type '%.*s'", (int)vd->type_name.len,

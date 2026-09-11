@@ -38,18 +38,19 @@ static ast_node_t *parse_param(parser_t *p) {
     }
     skip_trivia(p);
 
-    if (!check_kind(p, TOKEN_TYPE_KEYWORD)) {
+    strslice_t type_name;
+    type_qual_t type_qual;
+    if (!parse_type_spec(p, &type_name, &type_qual)) {
         return ast_error_new(p->arena, tb, p->pos,
                              "expected type name after ':'");
     }
-    strslice_t type_name = token_strslice(cur_token(p));
-    advance(p);
 
     /* 注意：不消费逗号或 )，由调用者处理 */
 
     ast_node_t *node = ast_var_def_new(p->arena, tb, p->pos);
     ((ast_var_def_t *)node)->name      = name;
     ((ast_var_def_t *)node)->type_name = type_name;
+    ((ast_var_def_t *)node)->type_qual = type_qual;
     /* init 为 NULL：参数定义无初始化表达式 */
     return node;
 }
@@ -128,17 +129,15 @@ ast_node_t *parse_func_like(parser_t *p, ast_kind_t expected_kind) {
 
         /* 可选返回类型：:type（省略 = void） */
         strslice_t return_type = STRSLICE_EMPTY;
+        type_qual_t return_qual = TYPE_QUAL_NONE;
         if (check_symbol(p, ":")) {
             advance(p);
             skip_trivia(p);
 
-            if (!check_kind(p, TOKEN_TYPE_KEYWORD)) {
+            if (!parse_type_spec(p, &return_type, &return_qual)) {
                 return ast_error_new(p->arena, tb, p->pos,
                                      "expected return type name after ':'");
             }
-            return_type = token_strslice(cur_token(p));
-            advance(p);
-            skip_trivia(p);
         }
 
         /* 函数体：{ ... } */
@@ -157,6 +156,7 @@ ast_node_t *parse_func_like(parser_t *p, ast_kind_t expected_kind) {
         fn->params      = params;
         fn->params_last = params_last;
         fn->return_type = return_type;
+        fn->return_qual = return_qual;
         fn->body        = body;
         return node;
     }
