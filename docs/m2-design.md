@@ -314,6 +314,62 @@ load "Point"; push 1; push 0; construct 2   ; y 缺失 → 补 i32 0 值
 
 成员/类型/顺序相同 = 兼容；空 struct 万能兼容；编译期检查，运行时字段拷贝。
 
+### 8. 编译期计算（CTFE）：直接运行 AST 的常量求值器
+
+M2 需要**编译期类型计算**（type 别名、数组边界 `[N]T`、sizeof/alignof/typeof、enum 值），而当前表达式计算是运行期的（字节码 + VM）。因此新增 **CTFE（compile-time evaluation）**：直接解释 AST 表达式，产生**编译期确定的真实 value**（非 shadow）。
+
+**架构定位**：独立模块（`src/ctfe/`），与 sema 的 shadow 类型检查（`sema_expr`）平行。sema 是全部表达式的主路径（纯类型检查）；ctfe 只在**需要编译期常量的槽位**被按需调用。两者共享 value 层 vtable 运算（`value_add` 等对真实值与 shadow 均可用）。
+
+```
+sema_expr（shadow 类型检查，全表达式主路径）
+   │  需要编译期常量的槽位（M2）：
+   │   · 数组边界 [N]T → ctfe 求值 N → u64
+   │   · type 别名 = 类型计算表达式 → ctfe → type value
+   │   · sizeof/alignof/typeof 参数 → ctfe → u64 / type value
+   │   · enum variant 值 → ctfe → 常量
+   ▼
+ctfe_eval(sema, ast_node *expr) → value_t*（真实值）
+   · 同步递归 AST 解释器（天然"不允许暂停恢复"）
+   · 字面量 → 构造真实值；运算 → value_add 等 vtable（真实值路径）
+   · 变量 lookup → ctfe 作用域链（参数/局部 var 绑定）；查不到 → error
+   · 函数调用 → sema 符号表查 AST_FUNC_DEF → 解释函数体；FFI(ast=NULL) → error
+   · budget：步骤上限 + 递归深度上限（防死循环/无限递归）
+   · 生命周期：临时 vm scope（push/pop），返回值 clone 到调用方 scope
+```
+
+**严格限制**（用户确认）：
+
+| 限制 | 实现 |
+|------|------|
+| 不允许暂停恢复 | 同步递归下降，无 yield/resume、无跨调用挂起状态 |
+| 必须编译期求值 | 遇到运行期依赖（变量非常量、副作用外逃）→ `error("not a compile-time constant")`；budget 超限报错 |
+| 禁止调用 FFI | ctfe 调用内置 cfunc（`sym->ast == NULL`，如 printf）→ `error("cannot call FFI at compile time")` |
+
+**决策点定稿**（2026-09-11 用户逐项确认）：
+
+1. **独立 ctfe 模块**（非 sema_expr 双模式）：职责清晰，shadow 语义（`is_shadow`/`data=NULL` 纯类型检查）不动，ctfe 约束（budget/FFI）独立演进。代价：表达式求值逻辑与 sema_expr 部分重复
+2. **任意函数可编译期调用，失败报错**：不设 `const fn` 标记。编译期调用任何用户函数，调用链上遇 FFI/不可求值 → 报错（与 C constexpr 精神一致，语法零新增）
+3. **支持局部赋值与循环**：函数体内 var 定义、赋值、if、while/for 均可编译期执行（作用于局部常量环境），编译期纯函数表达力完整
+4. **无全局常量，预留 `comptime` 关键字**：M2 阶段编译期计算不查全局变量（数组边界 N 是字面量/局部计算）；未来新增 `comptime` 关键字（类似 Zig comptime）作为编译期上下文入口，本设计为其预留能力底座
+
+**常量折叠写回 AST**（sema 阶段，CTFE 的消费机制）：
+
+- 常量槽位求值成功后，将结果**写回替换 AST 节点**：折叠后的常量（如 `[1+2]i32` → `[3]i32`）以 AST 字面量节点（`AST_INT_LIT` 等）原地替换原表达式节点，后续 sema 类型检查与编译器直接消费常量，**不再生成运行期计算字节码**
+- 替换方式：父节点持有子表达式指针的槽位（如 `ast_array_type_t->bound`、type 别名 rhs、enum 值）由 sema 在求值成功后指针替换；新常量节点经 arena 分配
+- 折叠范围：**类型槽位必须折叠**（编译期类型计算依赖）；普通表达式（如 `var x = 1 + 2`）尝试折叠，成功则写回（编译期优化），失败照常走 shadow 检查 + 运行期字节码
+- 安全性：ctfe 求值成功 ⟺ 表达式纯（无副作用/无运行期依赖），"ctfe 成功 → 折叠写回"不改变语义
+- 传播：ctfe 作用域链内的绑定（参数、局部 var）携带真实常量值，同一函数内后续表达式可继续折叠
+
+**CTFE 求值器结构**：
+
+- `ctfe_eval(sema, node)`：表达式求值入口，返回真实 value（归调用方 scope）
+- `ctfe_eval_stmt`：语句级解释器（var/return/if/while/for/block/表达式语句），服务于 CTFE 函数体
+- `ctfe_ctx`：求值上下文（budget 计数器：步骤 + 递归深度；当前临时 scope；sema 指针）
+- 函数调用：`sema_lookup` 查符号 → `sym->ast` 为 `AST_FUNC_DEF` → 绑定参数到新临时 scope → `ctfe_eval_stmt` 解释函数体 → 返回 return 值 clone 给调用方；递归共享同一 `ctfe_ctx` budget
+- 错误统一 `value_make_error` + 语义化消息，sema 调用方翻译为诊断（`compile-time constant required`）
+
+**M2 消费点**：数组边界 N、type 别名计算、sizeof/alignof/typeof、enum 值、`.[N]T{...}` 构造边界——均经 ctfe 求值后读数值或 type value。
+
 ---
 
 ## 实现阶段
