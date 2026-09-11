@@ -332,7 +332,7 @@ ctfe_eval(sema, ast_node *expr) → value_t*（真实值）
    · 同步递归 AST 解释器（天然"不允许暂停恢复"）
    · 字面量 → 构造真实值；运算 → value_add 等 vtable（真实值路径）
    · 变量 lookup → ctfe 作用域链（参数/局部 var 绑定）；查不到 → error
-   · 函数调用 → sema 符号表查 AST_FUNC_DEF → 解释函数体；FFI(ast=NULL) → error
+   · 函数调用 → 仅解释 AST_FUNC_DEF（clux 函数体 AST）；非 AST 实体 → error
    · budget：步骤上限 + 递归深度上限（防死循环/无限递归）
    · 生命周期：临时 vm scope（push/pop），返回值 clone 到调用方 scope
 ```
@@ -343,12 +343,12 @@ ctfe_eval(sema, ast_node *expr) → value_t*（真实值）
 |------|------|
 | 不允许暂停恢复 | 同步递归下降，无 yield/resume、无跨调用挂起状态 |
 | 必须编译期求值 | 遇到运行期依赖（变量非常量、副作用外逃）→ `error("not a compile-time constant")`；budget 超限报错 |
-| 禁止调用 FFI | ctfe 调用内置 cfunc（`sym->ast == NULL`，如 printf）→ `error("cannot call FFI at compile time")` |
+| 禁止调用 FFI | **规则记录，暂不实现检测**：CTFE 禁止调用 FFI 函数。当前 M1 无 FFI；未来 FFI 函数与编译器内置函数将以**专门实体表示**（非 AST_FUNC_DEF，也不以 `ast==NULL` 区分），届时 CTFE 对 FFI 调用报错。本设计只记录该约束 |
 
 **决策点定稿**（2026-09-11 用户逐项确认）：
 
 1. **独立 ctfe 模块**（非 sema_expr 双模式）：职责清晰，shadow 语义（`is_shadow`/`data=NULL` 纯类型检查）不动，ctfe 约束（budget/FFI）独立演进。代价：表达式求值逻辑与 sema_expr 部分重复
-2. **任意函数可编译期调用，失败报错**：不设 `const fn` 标记。编译期调用任何用户函数，调用链上遇 FFI/不可求值 → 报错（与 C constexpr 精神一致，语法零新增）
+2. **任意函数可编译期调用，失败报错**：不设 `const fn` 标记。编译期调用任何用户函数，调用链上遇不可求值 → 报错（与 C constexpr 精神一致，语法零新增）。CTFE 只解释 `AST_FUNC_DEF`（clux 函数）；FFI/编译器内置等非 AST 实体不在可调范围
 3. **支持局部赋值与循环**：函数体内 var 定义、赋值、if、while/for 均可编译期执行（作用于局部常量环境），编译期纯函数表达力完整
 4. **无全局常量，预留 `comptime` 关键字**：M2 阶段编译期计算不查全局变量（数组边界 N 是字面量/局部计算）；未来新增 `comptime` 关键字（类似 Zig comptime）作为编译期上下文入口，本设计为其预留能力底座
 
@@ -365,7 +365,7 @@ ctfe_eval(sema, ast_node *expr) → value_t*（真实值）
 - `ctfe_eval(sema, node)`：表达式求值入口，返回真实 value（归调用方 scope）
 - `ctfe_eval_stmt`：语句级解释器（var/return/if/while/for/block/表达式语句），服务于 CTFE 函数体
 - `ctfe_ctx`：求值上下文（budget 计数器：步骤 + 递归深度；当前临时 scope；sema 指针）
-- 函数调用：`sema_lookup` 查符号 → `sym->ast` 为 `AST_FUNC_DEF` → 绑定参数到新临时 scope → `ctfe_eval_stmt` 解释函数体 → 返回 return 值 clone 给调用方；递归共享同一 `ctfe_ctx` budget
+- 函数调用：`sema_lookup` 查符号 → 仅当 `sym->ast` 为 `AST_FUNC_DEF`（clux 函数）→ 绑定参数到新临时 scope → `ctfe_eval_stmt` 解释函数体 → 返回 return 值 clone 给调用方；递归共享同一 `ctfe_ctx` budget。非 `AST_FUNC_DEF` 实体（FFI/编译器内置，未来以专门表示存在）不在 CTFE 可调范围
 - 错误统一 `value_make_error` + 语义化消息，sema 调用方翻译为诊断（`compile-time constant required`）
 
 **M2 消费点**：数组边界 N、type 别名计算、sizeof/alignof/typeof、enum 值、`.[N]T{...}` 构造边界——均经 ctfe 求值后读数值或 type value。
