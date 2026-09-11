@@ -24,8 +24,10 @@
 | 位运算复合赋值 `&= \|= ^= <<= >>=` | 纳入 |
 | 三元表达式 `? :` | 纳入 |
 | comptime 关键字（`comptime var` / `comptime func`） | **纳入**（2026-09-11，见 §9） |
+| const / volatile 前导修饰类型 | **纳入**（2026-09-11，见 §10；指针仍排除，示例仅作语义说明） |
 | tagged union / cunion | **移出 M2**（鸭子类型协议复杂，后续里程碑） |
-| slice | **移出 M2** |
+| slice | **移出 M2**（前导判定语法示例，不实现） |
+| 指针 `*T` | **移出 M2**（const 前后缀语义示例用，后续里程碑实现） |
 | goto / 逗号运算符 | **不要** |
 
 ---
@@ -148,6 +150,28 @@ typeof(expr)     // 返回 type value
 ```
 
 全部纳入 M2。
+
+### 10. const / volatile 前导修饰类型
+
+clux 类型是**前导判定**（前缀式）的：`[N]i32` 数组、`[]i32` 切片、`const T`、`volatile T` 都是前缀类型。const/volatile 天然支持递归：`const volatile i32` 与 `volatile const i32` 均合法。
+
+**const/volatile 是真实类型，不是修饰**（2026-09-11 确认）：
+- `const i32` 是一个具体的复合类型（如同数组类型 `[N]i32`），在类型 intern 池注册，与 `i32` 是**两个完全独立的类型**
+- 类型相等（`==`）判断：`const i32 == i32` → false；const 类型与基础类型/其他 const 类型均独立
+- `const_type_t` 继承 `type_t`（同 struct/array/tuple/enum 平级），持 `base` 指针指向被 const 修饰的类型，各列 interning 池 + 独立 vtable
+
+**const 永远修饰其后的子语句**（右结合语义，消除 C 指针前后 const 痛点）：
+- `const *i32` → const 修饰指针（子语句是 `*i32`）= const pointer to i32
+- `*const i32` → const 修饰 i32（i32 是指针的子语句）= pointer to const i32
+- 指针 `*T` **移出 M2**，上述仅为 const 语义说明（未来里程碑实现指针时语法已定）
+
+**volatile：自动解包，vtable 代理**（2026-09-11 确认）：
+- 当前 clux 是脚本执行场景（解释器），volatile 无硬件/多线程语义
+- 语义上 volatile 类型等价子类型，但**实现不直接剥离**：`volatile_type_t` 保留为独立类型，其 vtable 采用**代理方式**——所有槽位转发到子类型的 vtable（运算结果与子类型一致）
+- 好处：类型结构稳定（无需解包重建），未来 volatile 引入真实语义时只需替换 vtable 槽位，不影响其他类型
+- 组合场景 `const volatile i32` → volatile 代理到 const i32
+
+**M2 范围内 const 实际修饰**：基础类型与复合类型（`const i32`、`const [N]i32`、`const <T1,T2>`、`const struct` 等）。const 类型参与类型计算（extends/== 基于 const 类型自身）；const 值的不可变检查（赋值/修改）为语义层职责。
 
 ---
 
@@ -315,8 +339,9 @@ load "Point"; push 1; push 0; construct 2   ; y 缺失 → 补 i32 0 值
 - `VTABLE_ARRAY.implicit_cast`：Array↔Tuple，同元素数+类型
 - `VTABLE_TUPLE.implicit_cast`：Tuple↔Array
 - `VTABLE_ENUM.implicit_cast`：仅同枚举（严格分离）；`explicit_cast`：仅到声明底层类型
+- **const/volatile 类型**（§10）：`const_type_t` / `volatile_type_t` 继承 `type_t`，持 `base` 指针，各列 intern 池 + 独立 vtable；volatile vtable 代理到子类型（解包语义，不剥离）
 
-### 7. 鸭子类型协议
+### 8. 鸭子类型协议
 
 成员/类型/顺序相同 = 兼容；空 struct 万能兼容；编译期检查，运行时字段拷贝。
 
@@ -423,7 +448,7 @@ var arr:[N]i32 = .{};                // N 是 comptime var（全局/局部），
 ### Phase 0: Lexer + AST 基础
 
 **Lexer**
-- 关键字：`struct`, `enum`, `type`, `switch`, `default`, `do`, `sizeof`, `alignof`, `comptime`, `::`, `?`
+- 关键字：`struct`, `enum`, `type`, `switch`, `default`, `do`, `sizeof`, `alignof`, `comptime`, `const`, `volatile`, `::`, `?`
 - 3-char 符号：`<<=`, `>>=`
 - 2-char：`&=`, `|=`, `^=`
 
@@ -440,8 +465,8 @@ var arr:[N]i32 = .{};                // N 是 comptime var（全局/局部），
 
 - `type_compatible(vm, from, to)` — 鸭子类型检查
 - `vm_register_type(vm, type, name)` — 用户类型注册
-- 新类型：`struct_type_t`, `array_type_t`, `tuple_type_t`, `enum_type_t`
-- interning 池 + 独立 vtable
+- 新类型：`struct_type_t`, `array_type_t`, `tuple_type_t`, `enum_type_t`, `const_type_t`（持 base 指针）, `volatile_type_t`（持 base 指针 + 代理 vtable）
+- interning 池 + 独立 vtable（volatile vtable 代理到子类型，见 §10）
 - value_t 新增 `is_own` 字段 + 借用数据 dispose/clone 语义
 
 ### Phase 3: Sema 扩展
