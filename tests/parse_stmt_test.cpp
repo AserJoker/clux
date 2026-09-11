@@ -725,6 +725,44 @@ TEST_F(ParseStmtTest, Block_MissingCloseBrace) {
     cleanup_parser(p);
 }
 
+/**
+ * Scenario: Bare block as standalone statement via parse_stmt
+ * Expected: AST_BLOCK dispatched by parse_stmt
+ */
+TEST_F(ParseStmtTest, Stmt_BareBlock) {
+    parser_t *p = make_parser("{ var x = 1; }");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_stmt(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_BLOCK);
+
+    auto *blk = (ast_block_t *)node;
+    ASSERT_NE(blk->stmts, nullptr);
+    EXPECT_EQ(blk->stmts->kind, AST_VAR_DEF);
+
+    cleanup_parser(p);
+}
+
+/**
+ * Scenario: Nested bare blocks
+ * Expected: outer AST_BLOCK containing inner AST_BLOCK
+ */
+TEST_F(ParseStmtTest, Stmt_NestedBareBlock) {
+    parser_t *p = make_parser("{ { var x = 1; } }");
+    ASSERT_NE(p, nullptr);
+
+    ast_node_t *node = parse_stmt(p);
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->kind, AST_BLOCK);
+
+    auto *blk = (ast_block_t *)node;
+    ASSERT_NE(blk->stmts, nullptr);
+    EXPECT_EQ(blk->stmts->kind, AST_BLOCK);
+
+    cleanup_parser(p);
+}
+
 /* ================================================================ */
 /* Return: return [expr];                                            */
 /* ================================================================ */

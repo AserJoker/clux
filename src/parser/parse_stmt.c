@@ -25,6 +25,8 @@ ast_node_t *parse_stmt(parser_t *p) {
     if (check_keyword(p, "return")) return parse_return(p);
     if (check_keyword(p, "break"))  return parse_break(p);
     if (check_keyword(p, "continue")) return parse_continue(p);
+    /* 裸块语句：{ stmt; ... }（独立作用域） */
+    if (check_symbol(p, "{"))   return parse_block(p);
     /* 最后尝试表达式语句（赋值已是表达式的一种） */
     return parse_assign_or_expr_stmt(p);
 }

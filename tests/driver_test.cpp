@@ -121,3 +121,19 @@ TEST(Driver, RunFileValidSemaPassesReturnsZero) {
   EXPECT_EQ(driver_run_file(path.c_str()), 0);
   std::remove(path.c_str());
 }
+
+TEST(Driver, RunFileBareBlockReturnsZero) {
+  /* 裸块语句（独立作用域）应完整通过流水线 */
+  std::string path = write_temp_file(
+      "func main():i32 { var x = 1; { var y = 2; x = x + y; } return 0; }\n");
+  EXPECT_EQ(driver_run_file(path.c_str()), 0);
+  std::remove(path.c_str());
+}
+
+TEST(Driver, RunFileEmptyBareBlockReturnsZero) {
+  /* 空裸块语句也应完整通过流水线 */
+  std::string path =
+      write_temp_file("func main():i32 { var x = 1; { } return x; }\n");
+  EXPECT_EQ(driver_run_file(path.c_str()), 0);
+  std::remove(path.c_str());
+}
