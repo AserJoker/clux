@@ -351,6 +351,13 @@ ctfe_eval(sema, ast_node *expr) → value_t*（真实值）
 | 必须编译期求值 | 遇到运行期依赖（变量非常量、副作用外逃）→ `error("not a compile-time constant")`；budget 超限报错 |
 | 禁止调用 FFI | **规则记录，暂不实现检测**：CTFE 禁止调用 FFI 函数。当前 M1 无 FFI；未来 FFI 函数与编译器内置函数将以**专门实体表示**（非 AST_FUNC_DEF，也不以 `ast==NULL` 区分），届时 CTFE 对 FFI 调用报错。本设计只记录该约束 |
 
+**编译期计算与 CTFE 的边界**（2026-09-11 用户补充）：
+
+- **shadow 值不可用于编译期计算**：常量槽位（数组边界 N、type 别名计算、enum 值）需要**真实编译期常量值**。`var a = 1; var b:[a]i32 = .{};` **非法**——`a` 在 sema 中是 shadow 值（仅类型、无数据），边界槽位取不到真实值
+- **编译期函数调用实参同样受限**：`var b:[getLength(a)]i32 = .{};` **非法**——ctfe 解释 `getLength` 函数体需要真实实参值，shadow 无法提供
+- **唯一例外**：sizeof/alignof/typeof（§8 桥梁）——操作数只取类型，shadow 可参与，运算符自身产出真实常量
+- **sema 路径检查**：sema 在常量槽位求值前，必须检查表达式是否依赖 shadow 值 / 运行期值（标识符查找、函数调用实参传播）→ 是则**在 sema 阶段报诊断**（`compile-time constant required`），不得漏到 ctfe 才报笼统错误
+
 **决策点定稿**（2026-09-11 用户逐项确认）：
 
 1. **独立 ctfe 模块**（非 sema_expr 双模式）：职责清晰，shadow 语义（`is_shadow`/`data=NULL` 纯类型检查）不动，ctfe 约束（budget/FFI）独立演进。代价：表达式求值逻辑与 sema_expr 部分重复
