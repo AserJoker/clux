@@ -207,6 +207,12 @@ static build_result_t build_func_if(sema_t *sema, ast_if_t *it,
 void sema_build_scope_tree(sema_t *sema) {
   size_t n = vec_len(sema->funcs);
   for (size_t i = 0; i < n; i++) {
-    build_func(sema, (sema_func_t *)vec_get(sema->funcs, i));
+    sema_func_t *sf = (sema_func_t *)vec_get(sema->funcs, i);
+    ast_func_def_t *fn = (ast_func_def_t *)sf->def;
+    /* comptime func：不建作用域树、不 shadow walk。函数体只在调用点
+       （sema_eval_comptime_call → ctfe）解释求值，参数是编译期实值，
+       静态 walk 参数为 shadow 无法求值；未调用则不检查（同 C++ template）。 */
+    if (fn->is_comptime) continue;
+    build_func(sema, sf);
   }
 }

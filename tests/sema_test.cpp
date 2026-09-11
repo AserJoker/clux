@@ -98,7 +98,7 @@ protected:
         parser_destroy(&parser);
         if (!ast_ || ast_->kind != AST_PROGRAM) return false;
 
-        sema_ = sema_create(vm_, diag_, lex_.tokens);
+        sema_ = sema_create(vm_, diag_, lex_.tokens, arena_);
         return sema_analyze(sema_, ast_);
     }
 
@@ -125,14 +125,15 @@ protected:
 /* ================================================================ */
 
 TEST_F(SemaTest, CreateWithNullArgsReturnsNull) {
-    EXPECT_EQ(sema_create(nullptr, diag_, nullptr), nullptr);
-    EXPECT_EQ(sema_create(vm_, nullptr, nullptr), nullptr);
-    EXPECT_EQ(sema_create(vm_, diag_, nullptr), nullptr);
+    EXPECT_EQ(sema_create(nullptr, diag_, nullptr, arena_), nullptr);
+    EXPECT_EQ(sema_create(vm_, nullptr, nullptr, arena_), nullptr);
+    EXPECT_EQ(sema_create(vm_, diag_, nullptr, arena_), nullptr);
+    EXPECT_EQ(sema_create(vm_, diag_, lex_.tokens, nullptr), nullptr);
 }
 
 TEST_F(SemaTest, AnalyzeNullProgram) {
     lex_ = lex_source(alloc_, "");
-    sema_t *s = sema_create(vm_, diag_, lex_.tokens);
+    sema_t *s = sema_create(vm_, diag_, lex_.tokens, arena_);
     ASSERT_NE(s, nullptr);
     EXPECT_FALSE(sema_analyze(s, nullptr));
     sema_destroy(&s);
@@ -775,6 +776,284 @@ TEST_F(SemaTest, BlockVariableDoesNotLeakOut) {
         "  x = 2;"
         "}"));
     expect_message(0, "undefined variable 'x' in assignment");
+}
+
+/* ================================================================ */
+/* comptime：编译期常量求值（M2，CTFE 集成）                        */
+/* ================================================================ */
+
+TEST_F(SemaTest, ComptimeVarGlobal) {
+    /* 全局 comptime var：符号表编码常量，定义点从语句链摘除（不进运行时） */
+    EXPECT_TRUE(analyze(
+        "comptime var A: i32 = 42;"
+        "func main() { var x = A; }"));
+    EXPECT_FALSE(diag_has_error(diag_));
+
+    sema_symbol_t *a = sema_lookup(sema_->global_scope, STRSLICE_LIT("A"));
+    ASSERT_NE(a, nullptr);
+    EXPECT_TRUE(a->is_comptime);
+    EXPECT_TRUE(a->ct_valid);
+    EXPECT_TRUE(a->flow_init);
+    EXPECT_EQ(a->type, vm_->type_i32);
+    EXPECT_EQ(a->ct.i, 42);
+}
+
+TEST_F(SemaTest, ComptimeVarInference) {
+    /* 无显式类型：从右值推断 */
+    EXPECT_TRUE(analyze(
+        "comptime var N = 7;"
+        "func main() { var x = N; }"));
+    EXPECT_FALSE(diag_has_error(diag_));
+
+    sema_symbol_t *n = sema_lookup(sema_->global_scope, STRSLICE_LIT("N"));
+    ASSERT_NE(n, nullptr);
+    EXPECT_EQ(n->type, vm_->type_i32);
+    EXPECT_EQ(n->ct.i, 7);
+}
+
+TEST_F(SemaTest, ComptimeVarTypes) {
+    /* 各类标量 + 字符串折叠编码 */
+    EXPECT_TRUE(analyze(
+        "comptime var I: i64 = 1;"
+        "comptime var U: u64 = 2;"
+        "comptime var F: f64 = 3.5;"
+        "comptime var B: bool = true;"
+        "comptime var S: str = \"hi\";"
+        "func main() {"
+        "  var a:i64 = I;"
+        "  var b:u64 = U;"
+        "  var c:f64 = F;"
+        "  var d:bool = B;"
+        "  var e:str = S;"
+        "}"));
+    EXPECT_FALSE(diag_has_error(diag_));
+
+    sema_symbol_t *b = sema_lookup(sema_->global_scope, STRSLICE_LIT("B"));
+    ASSERT_NE(b, nullptr);
+    EXPECT_TRUE(b->ct.b);
+    sema_symbol_t *f = sema_lookup(sema_->global_scope, STRSLICE_LIT("F"));
+    ASSERT_NE(f, nullptr);
+    EXPECT_DOUBLE_EQ(f->ct.f, 3.5);
+    sema_symbol_t *s = sema_lookup(sema_->global_scope, STRSLICE_LIT("S"));
+    ASSERT_NE(s, nullptr);
+    EXPECT_EQ(s->ct.s.len, 2u);
+    EXPECT_EQ(std::memcmp(s->ct.s.ptr, "hi", 2), 0);
+}
+
+TEST_F(SemaTest, ComptimeVarExprFold) {
+    /* 右值可以是任意编译期可计算表达式（二元运算 + 字面量） */
+    EXPECT_TRUE(analyze(
+        "comptime var X = (1 + 2) * 3 - 4;"
+        "func main() { var y = X; }"));
+    EXPECT_FALSE(diag_has_error(diag_));
+
+    sema_symbol_t *x = sema_lookup(sema_->global_scope, STRSLICE_LIT("X"));
+    ASSERT_NE(x, nullptr);
+    EXPECT_EQ(x->ct.i, 5);
+}
+
+TEST_F(SemaTest, ComptimeFuncDefinition) {
+    /* comptime func 定义：符号注册 + is_comptime 标记，不要求调用 */
+    EXPECT_TRUE(analyze(
+        "comptime func add(a:i32, b:i32):i32 { return a + b; }"
+        "func main() { }"));
+    EXPECT_FALSE(diag_has_error(diag_));
+
+    sema_symbol_t *add = sema_lookup(sema_->global_scope, STRSLICE_LIT("add"));
+    ASSERT_NE(add, nullptr);
+    EXPECT_TRUE(add->is_comptime);
+    EXPECT_NE(add->ast, nullptr);
+    EXPECT_EQ(add->ast->kind, AST_FUNC_DEF);
+}
+
+TEST_F(SemaTest, ComptimeFuncCallFold) {
+    /* 调用点折叠：var r = add(1,2) 类型为返回类型（i32） */
+    EXPECT_TRUE(analyze(
+        "comptime func add(a:i32, b:i32):i32 { return a + b; }"
+        "func main() { var r = add(1, 2); }"));
+    EXPECT_FALSE(diag_has_error(diag_));
+
+    /* comptime func 不建作用域树（调用点折叠），global_scope 唯一子节点是 main */
+    sema_scope_t *fscope = sema_scope_child(sema_->global_scope, 0);
+    ASSERT_NE(fscope, nullptr);
+    sema_symbol_t *r = sema_scope_find_local(fscope, STRSLICE_LIT("r"));
+    ASSERT_NE(r, nullptr);
+    EXPECT_EQ(r->type, vm_->type_i32);
+}
+
+TEST_F(SemaTest, ComptimeVarFromComptimeFunc) {
+    /* comptime var 右值 = comptime func 调用（跨函数折叠） */
+    EXPECT_TRUE(analyze(
+        "comptime func add(a:i32, b:i32):i32 { return a + b; }"
+        "comptime var SUM = add(1, 2);"
+        "func main() { var x = SUM; }"));
+    EXPECT_FALSE(diag_has_error(diag_));
+
+    sema_symbol_t *sum = sema_lookup(sema_->global_scope, STRSLICE_LIT("SUM"));
+    ASSERT_NE(sum, nullptr);
+    EXPECT_TRUE(sum->ct_valid);
+    EXPECT_EQ(sum->ct.i, 3);
+}
+
+TEST_F(SemaTest, ComptimeNestedCalls) {
+    /* comptime func 调用另一 comptime func（嵌套解释 + 作用域往返） */
+    EXPECT_TRUE(analyze(
+        "comptime func double_(a:i32):i32 { return a * 2; }"
+        "comptime func quad(a:i32):i32 { return double_(double_(a)); }"
+        "comptime var Q = quad(3);"
+        "func main() { var x = Q; }"));
+    EXPECT_FALSE(diag_has_error(diag_));
+
+    sema_symbol_t *q = sema_lookup(sema_->global_scope, STRSLICE_LIT("Q"));
+    ASSERT_NE(q, nullptr);
+    EXPECT_EQ(q->ct.i, 12);
+}
+
+TEST_F(SemaTest, ComptimeFuncCallsPlainFunc) {
+    /* comptime func 调用普通纯函数：ctfe 解释执行普通函数（实参实值），
+       调用链允许 comptime → 普通（普通函数自身仍做 shadow walk，body 无
+       comptime 调用即无冲突） */
+    EXPECT_TRUE(analyze(
+        "func double_(a:i32):i32 { return a * 2; }"
+        "comptime func quad(a:i32):i32 { return double_(a) + double_(a); }"
+        "comptime var Q = quad(3);"
+        "func main() { var x = Q; }"));
+    EXPECT_FALSE(diag_has_error(diag_));
+
+    sema_symbol_t *q = sema_lookup(sema_->global_scope, STRSLICE_LIT("Q"));
+    ASSERT_NE(q, nullptr);
+    EXPECT_EQ(q->ct.i, 12);
+}
+
+TEST_F(SemaTest, ComptimeChainPropagation) {
+    /* comptime 属性沿调用链显式传播：comptime var 右值 = comptime 函数链
+       （helper→add 全 comptime）。普通函数内部调用 comptime func 且实参为
+       运行期变量是非法用法（comptime func 不注册运行时）。 */
+    EXPECT_TRUE(analyze(
+        "comptime func add(a:i32, b:i32):i32 { return a + b; }"
+        "comptime func helper(x:i32):i32 { return add(x, 1); }"
+        "comptime var R = helper(5);"
+        "func main() { var r = R; }"));
+    EXPECT_FALSE(diag_has_error(diag_));
+
+    sema_symbol_t *r = sema_lookup(sema_->global_scope, STRSLICE_LIT("R"));
+    ASSERT_NE(r, nullptr);
+    EXPECT_EQ(r->ct.i, 6);
+}
+
+TEST_F(SemaTest, ComptimePlainFuncRuntimeArg) {
+    /* 普通函数内部调用 comptime func 且实参为运行期变量（参数 shadow）：
+       comptime func 不注册运行时，运行期实参无法编译期求值 → 诊断 */
+    EXPECT_FALSE(analyze(
+        "comptime func add(a:i32, b:i32):i32 { return a + b; }"
+        "func bad(x:i32) { var y = add(x, 1); }"
+        "func main() { bad(1); }"));
+    expect_message(0, "not a compile-time constant");
+}
+
+TEST_F(SemaTest, ComptimeFuncCallsSideEffect) {
+    /* comptime func 调用带副作用函数：ctfe 执行时副作用发生在编译期，
+       且 void 返回值不可折叠 → 诊断。comptime func 应为纯函数 */
+    EXPECT_FALSE(analyze(
+        "func p(x:i32):void { }"
+        "comptime func f():void { p(1); }"
+        "comptime var T = f();"
+        "func main() { }"));
+    expect_message(0, "cannot be folded");
+}
+
+TEST_F(SemaTest, ComptimeLocalVar) {
+    /* 局部 comptime var：定义点从语句链摘除，引用点折叠 */
+    EXPECT_TRUE(analyze(
+        "func main() {"
+        "  comptime var L = 10;"
+        "  var y = L + 1;"
+        "}"));
+    EXPECT_FALSE(diag_has_error(diag_));
+
+    sema_scope_t *fscope = sema_scope_child(sema_->global_scope, 0);
+    ASSERT_NE(fscope, nullptr);
+    sema_symbol_t *l = sema_scope_find_local(fscope, STRSLICE_LIT("L"));
+    ASSERT_NE(l, nullptr);
+    EXPECT_TRUE(l->is_comptime);
+    EXPECT_TRUE(l->ct_valid);
+    EXPECT_EQ(l->ct.i, 10);
+    /* 折叠后编译器看到的语句链不再包含 comptime var 定义 */
+    EXPECT_EQ(l->type, vm_->type_i32);
+}
+
+TEST_F(SemaTest, ComptimeFuncWithControlFlow) {
+    /* comptime func 内含 if/while：CTFE 语句解释路径 */
+    EXPECT_TRUE(analyze(
+        "comptime func fact(n:i32):i32 {"
+        "  var r:i32 = 1;"
+        "  var i:i32 = 1;"
+        "  while (i <= n) { r = r * i; i = i + 1; }"
+        "  return r;"
+        "}"
+        "comptime var F = fact(5);"
+        "func main() { var x = F; }"));
+    EXPECT_FALSE(diag_has_error(diag_));
+
+    sema_symbol_t *f = sema_lookup(sema_->global_scope, STRSLICE_LIT("F"));
+    ASSERT_NE(f, nullptr);
+    EXPECT_EQ(f->ct.i, 120); /* 5! */
+}
+
+/* ---- comptime 错误场景 ---- */
+
+TEST_F(SemaTest, ComptimeVarMissingInit) {
+    EXPECT_FALSE(analyze(
+        "comptime var A: i32 = undefined;"
+        "func main() { }"));
+    expect_message(0, "must have a compile-time initializer");
+}
+
+TEST_F(SemaTest, ComptimeVarNotConstant) {
+    /* 右值引用运行期变量 → 非编译期常量 */
+    EXPECT_FALSE(analyze(
+        "func main() {"
+        "  var x = 1;"
+        "  comptime var A = x;"
+        "}"));
+    expect_message(0, "not a compile-time constant");
+}
+
+TEST_F(SemaTest, ComptimeVarTypeMismatch) {
+    EXPECT_FALSE(analyze(
+        "comptime var A: i32 = 1.5;"
+        "func main() { }"));
+    expect_message(0, "cannot initialize comptime variable 'A'");
+}
+
+TEST_F(SemaTest, ComptimeVarAssignForbidden) {
+    EXPECT_FALSE(analyze(
+        "comptime var A = 1;"
+        "func main() { A = 2; }"));
+    expect_message(0, "cannot assign to compile-time constant 'A'");
+}
+
+TEST_F(SemaTest, ComptimeCallArgCountMismatch) {
+    EXPECT_FALSE(analyze(
+        "comptime func add(a:i32, b:i32):i32 { return a + b; }"
+        "func main() { var r = add(1); }"));
+    expect_message(0, "expects 2 arguments, got 1");
+}
+
+TEST_F(SemaTest, ComptimeCallArgTypeMismatch) {
+    EXPECT_FALSE(analyze(
+        "comptime func add(a:i32, b:i32):i32 { return a + b; }"
+        "func main() { var r = add(\"s\", 2); }"));
+    expect_message(0, "cannot convert str to i32");
+}
+
+TEST_F(SemaTest, ComptimeFuncNotConstantPath) {
+    /* comptime func 内部引用未定义/非编译期实体 → 求值失败诊断 */
+    EXPECT_FALSE(analyze(
+        "comptime func f():i32 { return g(); }"
+        "func main() { var r = f(); }"));
+    /* g 未定义 → undefined function 诊断（sema 阶段） */
+    expect_message(0, "undefined function 'g'");
 }
 
 } /* namespace */

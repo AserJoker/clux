@@ -5,20 +5,23 @@
 #include "parser/ast_program.h"
 #include "parser/ast_var_def.h"
 #include "parser/lexer.h"
+#include "sema/comptime.h"
 #include <string.h>
 
 /* ===========================================================================
  * 上下文管理
  * =========================================================================== */
 
-sema_t *sema_create(vm_t *vm, diag_buf_t *diag, vec_t *tokens) {
-  if (!vm || !diag || !tokens) return NULL;
+sema_t *sema_create(vm_t *vm, diag_buf_t *diag, vec_t *tokens,
+                    arena_t *arena) {
+  if (!vm || !diag || !tokens || !arena) return NULL;
   sema_t *sema =
       allocator_new_ex(vm->alloc, "sema_t", sizeof(sema_t), NULL, NULL, NULL,
                        1);
   sema->vm = vm;
   sema->diag = diag;
   sema->tokens = tokens;
+  sema->arena = arena;
   sema->global_scope = NULL;
   sema->funcs = vec_new(vm->alloc, false); /* 元素手动释放（sema_func_t 无 dispose） */
   sema->func_return_type = NULL;
@@ -78,6 +81,20 @@ size_t sema_count_siblings(const ast_node_t *node) {
 
 static void pass1_names(sema_t *sema, ast_program_t *prog) {
   for (ast_node_t *f = prog->funcs; f; f = f->next) {
+    /* 全局 comptime var：注册变量符号（暂不激活，pass_globals 求值后激活）。
+       不创建 sema_func_t（不入 Pass 3 队列——不是函数，无函数体）。 */
+    if (f->kind == AST_VAR_DEF) {
+      ast_var_def_t *vd = (ast_var_def_t *)f;
+      sema_symbol_t init = {0};
+      sema_symbol_t *sym =
+          sema_scope_define(sema->global_scope, vd->name, &init);
+      if (!sym) {
+        diag_error(sema->diag, sema_loc(sema, f), "duplicate name '%.*s'",
+                   (int)vd->name.len, vd->name.ptr);
+      }
+      continue;
+    }
+
     ast_func_def_t *fn = (ast_func_def_t *)f;
     sema_symbol_t init = {0}; /* 函数定义顺序自由：Pass 1 全部注册，无遮罩问题 */
     sema_symbol_t *sym = sema_scope_define(sema->global_scope, fn->name, &init);
@@ -88,6 +105,7 @@ static void pass1_names(sema_t *sema, ast_program_t *prog) {
     }
     /* 函数名全局可见（无 TDZ）→ 注册即激活 */
     sym->is_active = true;
+    sym->is_comptime = fn->is_comptime;
     /* 登记 sema 层函数对象（Pass 3 队列驱动；局部函数/泛型实例将来追加） */
     sema_func_t *sf = allocator_new_ex(sema->vm->alloc, "sema_func_t",
                                        sizeof(sema_func_t), NULL, NULL, NULL,
@@ -151,6 +169,30 @@ static void pass2_types(sema_t *sema) {
 }
 
 /* ===========================================================================
+ * pass_globals：全局 comptime var 求值
+ *
+ * 遍历 prog->funcs 链上的 AST_VAR_DEF（parser 仅把 comptime var 挂上链），
+ * 逐一定义点求值（sema_eval_comptime_var：改写 init → ctfe 求值 → 符号表
+ * 编码）。无论成功失败都从链摘除——comptime var 不进入运行时。
+ * 在 pass2_types 之后执行：函数签名已解析，init 可调用函数（含 comptime func）。
+ * =========================================================================== */
+
+static void pass_globals(sema_t *sema, ast_program_t *prog) {
+  ast_node_t **prev = &prog->funcs;
+  for (ast_node_t *f = prog->funcs; f;) {
+    ast_node_t *next = f->next;
+    if (f->kind == AST_VAR_DEF) {
+      /* 失败（诊断已记录）：仍摘除，避免下游误以为全局 var 存在 */
+      sema_eval_comptime_var(sema, (ast_var_def_t *)f, sema->global_scope);
+      *prev = next;
+    } else {
+      prev = &f->next;
+    }
+    f = next;
+  }
+}
+
+/* ===========================================================================
  * 三遍编排
  * =========================================================================== */
 
@@ -174,6 +216,7 @@ bool sema_analyze(sema_t *sema, ast_node_t *program) {
 
   pass1_names(sema, prog);
   pass2_types(sema);
+  pass_globals(sema, prog);
 
   /* Pass 3a：作用域树构建 + 控制流分析（符号注册、break/continue 位置检查、
      不可达语句、非 void 函数返回路径完整性）。快速失败：3a 有错误则
@@ -186,7 +229,12 @@ bool sema_analyze(sema_t *sema, ast_node_t *program) {
      队列驱动：遍历 sema->funcs，解析过程中队列可增长（局部函数提升 /
      泛型单态化追加到队尾），len 每次重取自动覆盖新函数。 */
   for (size_t i = 0; i < vec_len(sema->funcs); i++) {
-    sema_walk_function(sema, (sema_func_t *)vec_get(sema->funcs, i));
+    sema_func_t *sf = (sema_func_t *)vec_get(sema->funcs, i);
+    ast_func_def_t *fn = (ast_func_def_t *)sf->def;
+    /* comptime func：调用点折叠为字面量（sema_eval_comptime_call），
+       不 shadow walk（参数为 shadow 无法编译期求值，body 求值在调用点）。 */
+    if (fn->is_comptime) continue;
+    sema_walk_function(sema, sf);
   }
 
   return !diag_has_error(sema->diag);

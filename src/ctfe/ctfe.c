@@ -29,6 +29,8 @@
 #include "vm/type_error.h"
 #include "vm/value.h"
 
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 
 /* ===========================================================================
@@ -37,6 +39,16 @@
 
 static value_t *err(ctfe_ctx_t *ctx, const char *msg) {
     return value_make_error(ctx->vm, msg);
+}
+
+/* 格式化错误（带函数名等上下文的诊断） */
+static value_t *errf(ctfe_ctx_t *ctx, const char *fmt, ...) {
+    char buf[256];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    return value_make_error(ctx->vm, buf);
 }
 
 /* 兄弟链计数 */
@@ -99,6 +111,7 @@ static bool read_bool(vm_t *vm, value_t *v) {
  * =========================================================================== */
 
 static value_t *ctfe_eval_inner(ctfe_ctx_t *ctx, ast_node_t *node);
+static value_t *ctfe_hoist_error(ctfe_ctx_t *ctx, value_t *e);
 
 /* ===========================================================================
  * 函数调用
@@ -113,17 +126,20 @@ static value_t *ctfe_call_ast_fn(ctfe_ctx_t *ctx, ast_func_def_t *fn,
 
     /* 1. 临时局部作用域（参数 + 函数体变量） */
     vm_push_scope(vm);
+    scope_t *callee_scope = vm->current_scope;
 
     /* 2. 绑定参数：实参链与参数声明链逐对对应 */
     ast_node_t *a = args;
     for (ast_node_t *p = fn->params; p; p = p->next) {
         if (!a) {
             value_t *e = err(ctx, "ctfe: function call: too few arguments");
+            e = ctfe_hoist_error(ctx, e);
             vm_pop_scope(vm);
             return e;
         }
         value_t *av = ctfe_eval(ctx, a);
         if (value_is_error(vm, av)) {
+            av = ctfe_hoist_error(ctx, av);
             vm_pop_scope(vm);
             return av;
         }
@@ -132,6 +148,7 @@ static value_t *ctfe_call_ast_fn(ctfe_ctx_t *ctx, ast_func_def_t *fn,
         const char *name = slice_to_cstr_local(vd->name, nb, sizeof nb);
         value_t *stored = scope_define(vm, vm->current_scope, name, av);
         if (value_is_error(vm, stored)) {
+            stored = ctfe_hoist_error(ctx, stored);
             vm_pop_scope(vm);
             return stored;
         }
@@ -139,6 +156,7 @@ static value_t *ctfe_call_ast_fn(ctfe_ctx_t *ctx, ast_func_def_t *fn,
     }
     if (a) {
         value_t *e = err(ctx, "ctfe: function call: too many arguments");
+        e = ctfe_hoist_error(ctx, e);
         vm_pop_scope(vm);
         return e;
     }
@@ -148,6 +166,7 @@ static value_t *ctfe_call_ast_fn(ctfe_ctx_t *ctx, ast_func_def_t *fn,
     ctx->ret_value = NULL;
     value_t *stmt_r = ctfe_eval_stmt(ctx, fn->body);
     if (value_is_error(vm, stmt_r)) {
+        stmt_r = ctfe_hoist_error(ctx, stmt_r);
         vm_pop_scope(vm);
         return stmt_r;
     }
@@ -166,7 +185,10 @@ static value_t *ctfe_call_ast_fn(ctfe_ctx_t *ctx, ast_func_def_t *fn,
     ctx->ctrl = CTFE_CTRL_NONE;
     ctx->ret_value = NULL;
 
-    /* 5. pop 函数局部作用域 */
+    /* 5. pop 函数局部作用域：clone 块切走了 current_scope，恢复为 callee
+       再 pop（vm_pop_scope 无参、pop 当前作用域，误 pop caller 会销毁
+       调用方作用域） */
+    vm->current_scope = callee_scope;
     vm_pop_scope(vm);
     vm->current_scope = caller_scope;
 
@@ -232,6 +254,10 @@ static value_t *ctfe_eval_inner(ctfe_ctx_t *ctx, ast_node_t *node) {
         ast_ident_t *n = (ast_ident_t *)node;
         value_t *v = scope_lookup(vm->current_scope, n->name);
         if (!v) return err(ctx, "ctfe: undefined variable (not compile-time)");
+        /* shadow value（data=NULL）是 sema 阶段运行期变量的占位：无真实
+           数据可读，不是编译期常量 */
+        if (value_is_shadow(v))
+            return err(ctx, "ctfe: variable is not a compile-time constant");
         return v; /* 借用引用，归 scope */
     }
     case AST_BINARY: {
@@ -318,7 +344,8 @@ static value_t *ctfe_eval_inner(ctfe_ctx_t *ctx, ast_node_t *node) {
                                             n->args);
                 }
             }
-            return err(ctx, "ctfe: function not found (not compile-time)");
+            return errf(ctx, "ctfe: undefined function '%.*s' (not compile-time)",
+                        (int)id->name.len, id->name.ptr);
         }
         /* 3. 一般 callee：求值 → value_call */
         value_t *callee = ctfe_eval(ctx, n->callee);
@@ -354,6 +381,37 @@ value_t *ctfe_eval(ctfe_ctx_t *ctx, ast_node_t *node) {
  * 语句解释
  * =========================================================================== */
 
+/* RETURN 控制流下把 ret_value 上移到父作用域。作用域 pop 前调用：value 归
+   owned 向量管理，pop 会 dispose+free；上移保证 ret_value 存活到 callee
+   函数作用域（嵌套块逐层上移），ctfe_call_ast_fn 在 pop callee 前 clone 到
+   调用方。 */
+static void ctfe_hoist_return(ctfe_ctx_t *ctx) {
+    vm_t *vm = ctx->vm;
+    if (ctx->ctrl != CTFE_CTRL_RETURN || !ctx->ret_value) return;
+    scope_t *scope = vm->current_scope;
+    if (!scope || !scope->parent) return;
+    scope_t *saved = vm->current_scope;
+    vm->current_scope = scope->parent;
+    value_t *hoisted = value_clone(vm, ctx->ret_value);
+    vm->current_scope = saved;
+    ctx->ret_value = hoisted;
+}
+
+/* error value 跨作用域传播：pop 前 clone 到父作用域（error 归创建时 scope，
+   pop 会 dispose+free；上移保证 error 存活到调用方，与 ctfe_hoist_return 同理）。
+   非 error / 无父作用域时原样返回。 */
+static value_t *ctfe_hoist_error(ctfe_ctx_t *ctx, value_t *e) {
+    vm_t *vm = ctx->vm;
+    if (!e || !value_is_error(vm, e)) return e;
+    scope_t *scope = vm->current_scope;
+    if (!scope || !scope->parent) return e;
+    scope_t *saved = vm->current_scope;
+    vm->current_scope = scope->parent;
+    value_t *hoisted = value_clone(vm, e);
+    vm->current_scope = saved;
+    return hoisted;
+}
+
 static value_t *ctfe_assign(ctfe_ctx_t *ctx, ast_assign_t *n) {
     vm_t *vm = ctx->vm;
     value_t *dst = scope_lookup(vm->current_scope, n->name);
@@ -388,11 +446,14 @@ value_t *ctfe_eval_stmt(ctfe_ctx_t *ctx, ast_node_t *stmt) {
         for (ast_node_t *s = b->stmts; s; s = s->next) {
             value_t *r = ctfe_eval_stmt(ctx, s);
             if (value_is_error(vm, r)) {
+                r = ctfe_hoist_error(ctx, r);
                 vm_pop_scope(vm);
                 return r;
             }
             if (ctx->ctrl != CTFE_CTRL_NONE) break;
         }
+        /* 块 pop 前：RETURN 值上移，防止 pop 销毁（嵌套块逐层上移） */
+        ctfe_hoist_return(ctx);
         vm_pop_scope(vm);
         return value_make_undefined(vm);
     }
@@ -460,6 +521,7 @@ value_t *ctfe_eval_stmt(ctfe_ctx_t *ctx, ast_node_t *stmt) {
         if (n->init) {
             value_t *r = ctfe_eval_stmt(ctx, n->init);
             if (value_is_error(vm, r)) {
+                r = ctfe_hoist_error(ctx, r);
                 vm_pop_scope(vm);
                 return r;
             }
@@ -472,6 +534,7 @@ value_t *ctfe_eval_stmt(ctfe_ctx_t *ctx, ast_node_t *stmt) {
             if (n->cond) {
                 value_t *cv = ctfe_eval(ctx, n->cond);
                 if (value_is_error(vm, cv)) {
+                    cv = ctfe_hoist_error(ctx, cv);
                     vm_pop_scope(vm);
                     return cv;
                 }
@@ -483,6 +546,7 @@ value_t *ctfe_eval_stmt(ctfe_ctx_t *ctx, ast_node_t *stmt) {
             }
             value_t *r = ctfe_eval_stmt(ctx, n->body);
             if (value_is_error(vm, r)) {
+                r = ctfe_hoist_error(ctx, r);
                 vm_pop_scope(vm);
                 return r;
             }
@@ -495,11 +559,14 @@ value_t *ctfe_eval_stmt(ctfe_ctx_t *ctx, ast_node_t *stmt) {
             if (n->update) {
                 value_t *u = ctfe_eval_stmt(ctx, n->update);
                 if (value_is_error(vm, u)) {
+                    u = ctfe_hoist_error(ctx, u);
                     vm_pop_scope(vm);
                     return u;
                 }
             }
         }
+        /* for 作用域 pop 前：RETURN 值上移，防止 pop 销毁 */
+        ctfe_hoist_return(ctx);
         vm_pop_scope(vm);
         return value_make_undefined(vm);
     }
