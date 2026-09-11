@@ -1,0 +1,19 @@
+; hello.cxs — 最小可运行示例：打印一行字符串
+; 引导段 _start 注册 main，再由虚拟机调用 main
+_start:
+    push "void"
+    push_bool 0
+    create_func_type 0
+    push_function [main]
+    push_undefined
+    define "main"
+    halt
+main:
+    push_scope
+    push "printf"
+    push_string "hello, clux\n"
+    call 1
+    pop
+    pop_scope
+    push_undefined
+    ret

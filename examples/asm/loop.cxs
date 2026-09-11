@@ -1,0 +1,40 @@
+; loop.cxs — while 风格循环：累加 1..10
+_start:
+    push "void"
+    push_bool 0
+    create_func_type 0
+    push_function [main]
+    push_undefined
+    define "main"
+    halt
+main:
+    push_scope
+    push_i32 0
+    push_undefined
+    define "sum"
+    push_i32 1
+    push_undefined
+    define "i"
+loop:
+    ; 循环条件：i <= 10 ? 否则跳出到 end
+    push "i"
+    push_i32 10
+    le
+    jz [end]
+        push "sum"
+        push "i"
+        add
+        store "sum"
+        push "i"
+        push_i32 1
+        add
+        store "i"
+        jmp [loop]
+end:
+    push "printf"
+    push_string "sum(1..10) = %d\n"
+    push "sum"
+    call 2
+    pop
+    push_undefined
+    ret

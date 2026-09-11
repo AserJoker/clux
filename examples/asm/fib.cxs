@@ -1,0 +1,57 @@
+; fib.cxs — 递归求斐波那契（fib(10) = 55）
+_start:
+    push "i32"
+    push "i32"
+    push_bool 0
+    create_func_type 1
+    push_function [fib]
+    push_undefined
+    define "fib"
+    push "void"
+    push_bool 0
+    create_func_type 0
+    push_function [main]
+    push_undefined
+    define "main"
+    halt
+fib:
+    push_undefined
+    define "n"
+    push_scope
+    push "n"
+    push_i32 2
+    lt
+    jz [rec]
+        push_scope
+        push "n"
+        ret
+        pop_scope
+; rec：返回 fib(n-1) + fib(n-2)
+rec:
+    push "fib"
+    push "n"
+    push_i32 1
+    sub
+    call 1
+    push "fib"
+    push "n"
+    push_i32 2
+    sub
+    call 1
+    add
+    ret
+    pop_scope
+    push_undefined
+    ret
+main:
+    push_scope
+    push "printf"
+    push_string "fib(10) = %d\n"
+    push "fib"
+    push_i32 10
+    call 1
+    call 2
+    pop
+    pop_scope
+    push_undefined
+    ret

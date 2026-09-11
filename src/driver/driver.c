@@ -20,6 +20,8 @@
 #include "vm/scope.h"
 #include "vm/exec.h"
 #include "vm/bcode.h"
+#include "vm/bcode_disasm.h"
+#include "vm/bcode_asm.h"
 #include "vm/type_error.h"
 
 #include <stdio.h>
@@ -355,4 +357,224 @@ int driver_lex_file(allocator_t *alloc, const char *path, vec_t **out_pool) {
    * text should keep the lexer alive (see driver_run_file). */
   lexer_close(&lexer);
   return 0;
+}
+
+/* ================================================================ */
+/* build --emit-asm：编译到字节码（不执行），供反汇编                  */
+/* ================================================================ */
+
+/* 编译产物 + 其生命周期所需的全部对象句柄。反汇编必须在 dispose 前完成，
+ * 因为 bc->strs 由 bc->alloc 分配，alloc 释放后字符串失效。 */
+typedef struct {
+    allocator_t   *alloc;
+    arena_t       *arena;
+    vm_t          *vm;
+    diag_buf_t    *diag;
+    lexer_t       *lexer;
+    vec_t         *pool;
+    sema_scope_t  *scope_tree;
+    bytecode_t    *bc;
+} driver_compiled_t;
+
+static void driver_compiled_dispose(driver_compiled_t *r) {
+    if (!r) return;
+    if (r->bc)         bcode_destroy(&r->bc);
+    if (r->scope_tree) sema_scope_destroy(&r->scope_tree);
+    if (r->diag)       diag_buf_destroy(&r->diag);
+    if (r->vm)         vm_destroy(&r->vm);
+    if (r->lexer)      lexer_close(&r->lexer);
+    if (r->pool)       vec_free(r->alloc, &r->pool);
+    if (r->arena)      arena_destroy(r->alloc, &r->arena);
+    if (r->alloc)      delete_allocator(&r->alloc);
+    memset(r, 0, sizeof *r);
+}
+
+/* 复用 run 管线 Stage ①-⑤（加载→词法→语法→语义→编译），不执行。
+ * 成功返回 0 并填满 *out（bc 与所有句柄有效）；失败返回非 0 且 *out 全 NULL
+ * （诊断已打印）。调用方负责在反汇编后 driver_compiled_dispose。 */
+static int driver_compile_to_bytecode(const char *path, driver_compiled_t *out) {
+    memset(out, 0, sizeof *out);
+
+    allocator_t *alloc = create_allocator(malloc, free);
+    if (!alloc) {
+        fprintf(stderr, "build: out of memory\n");
+        return 1;
+    }
+    out->alloc = alloc;
+
+    arena_t *arena = arena_new_default(alloc);
+    if (!arena) {
+        fprintf(stderr, "build: out of memory\n");
+        driver_compiled_dispose(out);
+        return 1;
+    }
+    out->arena = arena;
+
+    /* Stage ① + ②：加载 → 词法（词法错误快速失败） */
+    vec_t *pool = NULL;
+    lexer_t *lexer = NULL;
+    int lex_result = driver_lex_into(alloc, path, &pool, &lexer);
+    if (lex_result == -2) {
+        /* 词法错误已输出到 stderr */
+        driver_compiled_dispose(out);
+        return 1;
+    }
+    if (lex_result != 0) {
+        fprintf(stderr, "build: cannot open file '%s'\n", path);
+        driver_compiled_dispose(out);
+        return 1;
+    }
+    out->pool = pool;
+    out->lexer = lexer;
+
+    /* Stage ③：语法分析 */
+    parser_t *parser = parser_create(alloc, arena, pool);
+    if (!parser) {
+        driver_compiled_dispose(out);
+        return 1;
+    }
+    ast_node_t *ast = parser_parse(parser);
+    parser_destroy(&parser);
+    if (!ast || ast->kind == AST_ERROR) {
+        /* 语法错误，诊断已由 parser 输出 */
+        driver_compiled_dispose(out);
+        return 1;
+    }
+
+    /* Stage ④：语义分析 */
+    vm_t *vm = vm_new(alloc);
+    if (!vm) {
+        driver_compiled_dispose(out);
+        return 1;
+    }
+    out->vm = vm;
+
+    diag_buf_t *diag = diag_buf_new(alloc);
+    if (!diag) {
+        driver_compiled_dispose(out);
+        return 1;
+    }
+    out->diag = diag;
+
+    sema_t *sema = sema_create(vm, diag, pool, arena);
+    if (!sema) {
+        driver_compiled_dispose(out);
+        return 1;
+    }
+    bool sema_ok = sema_analyze(sema, ast);
+    sema_scope_t *scope_tree = sema->global_scope;
+    sema_destroy(&sema);
+    if (!sema_ok) {
+        diag_print_all(diag);
+        driver_compiled_dispose(out);
+        return 1;
+    }
+
+    /* Stage ⑤：编译（AST + sema 作用域树 → 字节码模块） */
+    compiler_t *comp = compiler_new(alloc, vm, diag, pool, scope_tree);
+    if (!comp) {
+        driver_compiled_dispose(out);
+        return 1;
+    }
+    bytecode_t *bc = compiler_compile(comp, ast);
+    compiler_destroy(&comp);
+    if (!bc) {
+        diag_print_all(diag);
+        driver_compiled_dispose(out);
+        return 1;
+    }
+
+    out->scope_tree = scope_tree;
+    out->bc = bc;
+    return 0;
+}
+
+int driver_build_asm(const char *src_path, const char *out_path) {
+    if (!src_path || !out_path) return 1;
+
+    driver_compiled_t c;
+    int rc = driver_compile_to_bytecode(src_path, &c);
+    if (rc != 0) return rc; /* 诊断已由管线打印 */
+
+    int dr = bcode_disasm(c.bc, out_path);
+    if (dr != 0) {
+        fprintf(stderr, "build: cannot write asm file '%s'\n", out_path);
+        driver_compiled_dispose(&c);
+        return 1;
+    }
+
+    driver_compiled_dispose(&c);
+    return 0;
+}
+
+/* ================================================================ */
+/* run -asm：汇编 .cxs 文本 → 字节码 → 执行                          */
+/* ================================================================ */
+
+int driver_run_asm(const char *asm_path) {
+    if (!asm_path) {
+        fprintf(stderr, "run: no asm file\n");
+        return 1;
+    }
+
+    allocator_t *alloc = create_allocator(malloc, free);
+    if (!alloc) {
+        fprintf(stderr, "run: out of memory\n");
+        return 1;
+    }
+
+    /* 汇编 .cxs 文本 → bytecode_t（alloc 拥有全部内存） */
+    bytecode_t *bc = NULL;
+    int ar = bcode_asm_from_file(alloc, asm_path, &bc);
+    if (ar != 0) {
+        /* 汇编诊断已打印 */
+        if (bc) bcode_destroy(&bc);
+        delete_allocator(&alloc);
+        return 1;
+    }
+
+    /* 执行（注册函数 → 调用 main），复用 run 的 Stage ⑥ 流程 */
+    vm_t *vm = vm_new(alloc);
+    if (!vm) {
+        fprintf(stderr, "run: out of memory\n");
+        bcode_destroy(&bc);
+        delete_allocator(&alloc);
+        return 1;
+    }
+
+    value_t *er = exec_run(vm, bc);
+    if (value_is_error(vm, er)) {
+        error_data_t *ed = (error_data_t *)value_data(er);
+        fprintf(stderr, "run: %s\n",
+                ed && ed->message ? string_cstr(ed->message) : "execution error");
+        bcode_destroy(&bc);
+        vm_destroy(&vm);
+        delete_allocator(&alloc);
+        return 1;
+    }
+
+    value_t *main_fn = scope_lookup(vm->current_scope, STRSLICE_LIT("main"));
+    if (!main_fn) {
+        fprintf(stderr, "run: no entry function 'main'\n");
+        bcode_destroy(&bc);
+        vm_destroy(&vm);
+        delete_allocator(&alloc);
+        return 1;
+    }
+
+    value_t *mr = value_call(vm, main_fn, NULL, 0);
+    if (value_is_error(vm, mr)) {
+        error_data_t *ed = (error_data_t *)value_data(mr);
+        fprintf(stderr, "run: %s\n",
+                ed && ed->message ? string_cstr(ed->message) : "runtime error");
+        bcode_destroy(&bc);
+        vm_destroy(&vm);
+        delete_allocator(&alloc);
+        return 1;
+    }
+
+    bcode_destroy(&bc);
+    vm_destroy(&vm);
+    delete_allocator(&alloc);
+    return 0;
 }

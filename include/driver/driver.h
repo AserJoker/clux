@@ -63,6 +63,31 @@ int driver_lex_file(allocator_t *alloc, const char *path, vec_t **out_pool);
  */
 int driver_run_file(const char *path);
 
+/**
+ * 编译流水线（加载 → 词法 → 语法 → 语义 → 编译字节码）后停止，**不执行**
+ * 程序，仅将产物 `bytecode_t` 反汇编为字符格式汇编并写出到 `out_path`
+ * （`.cxs` 文本）。
+ *
+ * 返回进程退出码：
+ *   0  —— 编译成功并写出 asm
+ *   1  —— 编译错误 / 文件无法打开 / asm 文件无法写出
+ */
+int driver_build_asm(const char *src_path, const char *out_path);
+
+/**
+ * 逆向流程：将 `.cxs` 汇编文本汇编为字节码并直接执行（等价于
+ * `build --emit-asm` 产物的反过程）。
+ *
+ * 复用 run 的执行阶段（注册函数 → 调用 main）。与 `driver_run_file`
+ * 不同的是这里不经历 lex→parse→sema→compile，而是从已序列化的
+ * 字符格式字节码重新加载。
+ *
+ * 返回进程退出码：
+ *   0  —— 汇编 + 执行成功
+ *   1  —— 汇编错误 / 文件无法打开 / 执行错误 / 无入口 `main`
+ */
+int driver_run_asm(const char *asm_path);
+
 #ifdef __cplusplus
 }
 #endif

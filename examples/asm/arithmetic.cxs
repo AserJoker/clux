@@ -1,0 +1,45 @@
+; arithmetic.cxs — 带参数的函数 add(a, b) 与嵌套调用
+; 引导段先注册 add，再注册 main
+_start:
+    push "i32"
+    push "i32"
+    push "i32"
+    push_bool 0
+    create_func_type 2
+    push_function [add]
+    push_undefined
+    define "add"
+    push "void"
+    push_bool 0
+    create_func_type 0
+    push_function [main]
+    push_undefined
+    define "main"
+    halt
+; add：返回 a + b（形参由 PUSH_UNDEFINED/DEFINE 声明）
+add:
+    push_undefined
+    define "b"
+    push_undefined
+    define "a"
+    push_scope
+    push "a"
+    push "b"
+    add
+    ret
+    pop_scope
+    push_undefined
+    ret
+main:
+    push_scope
+    push "printf"
+    push_string "the answer is %d\n"
+    push "add"
+    push_i32 40
+    push_i32 2
+    call 2
+    call 2
+    pop
+    pop_scope
+    push_undefined
+    ret
