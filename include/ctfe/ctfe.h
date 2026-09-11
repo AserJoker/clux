@@ -4,6 +4,7 @@
 extern "C" {
 #endif
 
+#include "parser/ast_func_def.h"
 #include "parser/ast_node.h"
 #include "sema/sema.h"
 #include "vm/vm.h"
@@ -65,6 +66,47 @@ value_t *ctfe_eval(ctfe_ctx_t *ctx, ast_node_t *node);
  * 失败返回 error value（value_is_error 判定）。
  */
 value_t *ctfe_eval_stmt(ctfe_ctx_t *ctx, ast_node_t *stmt);
+
+/* ===========================================================================
+ * internal（ctfe.c / ctfe_expr.c / ctfe_stmt.c / ctfe_call.c 共享，不对外）
+ * =========================================================================== */
+
+/* ---- 内部工具（ctfe.c 实现） ---- */
+
+/** 构造错误 value。 */
+value_t *ctfe_err(ctfe_ctx_t *ctx, const char *msg);
+
+/** 格式化错误 value（带上下文诊断，如函数名）。 */
+value_t *ctfe_errf(ctfe_ctx_t *ctx, const char *fmt, ...);
+
+/** 兄弟链计数（实参个数等）。 */
+size_t ctfe_count_siblings(const ast_node_t *node);
+
+/** strslice → NUL 结尾临时缓冲区（栈上，仅短名使用）。 */
+const char *ctfe_slice_to_cstr(strslice_t s, char *buf, size_t cap);
+
+/** 按类型宽度构造整数值（i8..u64）。 */
+value_t *ctfe_make_int(ctfe_ctx_t *ctx, const type_t *t, uint64_t v);
+
+/** AST_INT_LIT 类型后缀 → vm 整数类型；空后缀默认 i32。 */
+const type_t *ctfe_int_lit_type(ctfe_ctx_t *ctx, strslice_t suffix);
+
+/** 读取 bool 值（调用方保证类型为 bool）。 */
+bool ctfe_read_bool(vm_t *vm, value_t *v);
+
+/* ---- 作用域上移工具（ctfe.c 实现，stmt/call 在 pop 前调用） ---- */
+
+/** RETURN 控制流下把 ret_value 上移到父作用域（防止 pop 销毁）。 */
+void ctfe_hoist_return(ctfe_ctx_t *ctx);
+
+/** error value 跨作用域传播：pop 前 clone 到父作用域。非 error / 无父作用域时原样返回。 */
+value_t *ctfe_hoist_error(ctfe_ctx_t *ctx, value_t *e);
+
+/* ---- 节点求值入口（各文件实现） ---- */
+
+value_t *ctfe_eval_inner(ctfe_ctx_t *ctx, ast_node_t *node);                     /* ctfe_expr.c */
+value_t *ctfe_call_ast_fn(ctfe_ctx_t *ctx, ast_func_def_t *fn, ast_node_t *args); /* ctfe_call.c */
+value_t *ctfe_call_value(ctfe_ctx_t *ctx, value_t *callee, ast_node_t *args);     /* ctfe_call.c */
 
 #ifdef __cplusplus
 }
