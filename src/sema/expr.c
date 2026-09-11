@@ -98,7 +98,7 @@ value_t *sema_expr(sema_t *sema, ast_node_t **node, sema_scope_t *scope) {
   switch ((*node)->kind) {
     case AST_INT_LIT: {
       ast_int_lit_t *n = (ast_int_lit_t *)*node;
-      const type_t *t = n->type.len ? resolve_type(sema, n->type)
+      const type_t *t = n->type.len ? type_find(sema->vm, n->type)
                                     : sema->vm->type_i32;
       if (!t) {
         diag_error(sema->diag, sema_loc(sema, *node), "unknown type '%.*s'",
@@ -109,7 +109,7 @@ value_t *sema_expr(sema_t *sema, ast_node_t **node, sema_scope_t *scope) {
     }
     case AST_FLOAT_LIT: {
       ast_float_lit_t *n = (ast_float_lit_t *)*node;
-      const type_t *t = n->type.len ? resolve_type(sema, n->type)
+      const type_t *t = n->type.len ? type_find(sema->vm, n->type)
                                     : sema->vm->type_f64;
       if (!t) {
         diag_error(sema->diag, sema_loc(sema, *node), "unknown type '%.*s'",
@@ -249,10 +249,9 @@ value_t *sema_expr(sema_t *sema, ast_node_t **node, sema_scope_t *scope) {
     case AST_CAST: {
       ast_cast_t *n = (ast_cast_t *)*node;
       value_t *expr = sema_expr(sema, &n->expr, scope);
-      const type_t *target = resolve_type_q(sema, n->target_type, n->target_qual);
+      const type_t *target = resolve_type_expr(sema, n->target_expr);
       if (!target) {
-        diag_error(sema->diag, sema_loc(sema, *node), "unknown type '%.*s'",
-                   (int)n->target_type.len, n->target_type.ptr);
+        diag_error(sema->diag, sema_loc(sema, *node), "unknown type");
         return value_make_shadow(sema->vm, sema->vm->type_void);
       }
       value_t *result = value_explicit_cast(sema->vm, expr, target);

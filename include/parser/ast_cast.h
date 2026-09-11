@@ -6,13 +6,11 @@ extern "C" {
 
 #include "core/strslice.h"
 #include "parser/ast_node.h"
-#include "parser/type_qual.h"
 
 typedef struct {
     ast_node_t  base;
     ast_node_t *expr;
-    strslice_t  target_type; /* 目标类型文本 */
-    type_qual_t target_qual; /* 目标类型 const/volatile 限定位 */
+    ast_node_t *target_expr; /* 目标类型表达式（M1：AST_TYPE_NAME） */
 } ast_cast_t;
 
 static inline ast_node_t *ast_cast_new(arena_t *arena,

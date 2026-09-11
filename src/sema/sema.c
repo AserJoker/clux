@@ -3,6 +3,7 @@
 #include "core/string.h"
 #include "parser/ast_func_def.h"
 #include "parser/ast_program.h"
+#include "parser/ast_type_name.h"
 #include "parser/ast_var_def.h"
 #include "parser/lexer.h"
 #include "sema/comptime.h"
@@ -48,22 +49,29 @@ void sema_destroy(sema_t **sema) {
  * 公共工具
  * =========================================================================== */
 
-const type_t *resolve_type(sema_t *sema, strslice_t name) {
-  return type_find(sema->vm, name);
-}
+const type_t *resolve_type_expr(sema_t *sema, ast_node_t *type_expr) {
+  if (!sema || !type_expr) return NULL;
 
-const type_t *resolve_type_q(sema_t *sema, strslice_t name, type_qual_t qual) {
-  const type_t *t = resolve_type(sema, name);
-  if (!t || qual == TYPE_QUAL_NONE) return t;
-  if (qual & TYPE_QUAL_CONST) {
-    t = type_const_intern(sema->vm, t);
-    if (!t) return NULL;
+  /* M1 唯一形式：命名类型引用（带 const/volatile 限定位） */
+  if (type_expr->kind == AST_TYPE_NAME) {
+    ast_type_name_t *tn = (ast_type_name_t *)type_expr;
+    const type_t *t = type_find(sema->vm, tn->name);
+    if (!t || tn->qual == TYPE_QUAL_NONE) return t;
+    if (tn->qual & TYPE_QUAL_CONST) {
+      t = type_const_intern(sema->vm, t);
+      if (!t) return NULL;
+    }
+    if (tn->qual & TYPE_QUAL_VOLATILE) {
+      t = type_volatile_intern(sema->vm, t);
+      if (!t) return NULL;
+    }
+    return t;
   }
-  if (qual & TYPE_QUAL_VOLATILE) {
-    t = type_volatile_intern(sema->vm, t);
-    if (!t) return NULL;
-  }
-  return t;
+
+  /* M2 扩展点：数组/元组/func 类型表达式 + 类型计算 */
+  diag_error(sema->diag, sema_loc(sema, type_expr),
+             "unsupported type expression");
+  return NULL;
 }
 
 location_t sema_loc(sema_t *sema, ast_node_t *node) {
@@ -150,11 +158,10 @@ static void pass2_types(sema_t *sema) {
       size_t j = 0;
       for (ast_node_t *p = fn->params; p; p = p->next, j++) {
         ast_var_def_t *vd = (ast_var_def_t *)p;
-        const type_t *t = resolve_type_q(sema, vd->type_name, vd->type_qual);
+        const type_t *t = resolve_type_expr(sema, vd->type_expr);
         if (!t) {
           diag_error(sema->diag, sema_loc(sema, p),
-                     "unknown type '%.*s' in parameter '%.*s'",
-                     (int)vd->type_name.len, vd->type_name.ptr,
+                     "unknown type in parameter '%.*s'",
                      (int)vd->name.len, vd->name.ptr);
         }
         params[j] = t; /* 失败置 NULL，位置对齐，func_shadow_call 校验时跳过 */
@@ -162,11 +169,11 @@ static void pass2_types(sema_t *sema) {
     }
 
     const type_t *rt = NULL;
-    if (fn->return_type.len) {
-      rt = resolve_type_q(sema, fn->return_type, fn->return_qual);
+    if (fn->return_expr) {
+      rt = resolve_type_expr(sema, fn->return_expr);
       if (!rt) {
-        diag_error(sema->diag, sema_loc(sema, f), "unknown return type '%.*s'",
-                   (int)fn->return_type.len, fn->return_type.ptr);
+        diag_error(sema->diag, sema_loc(sema, f),
+                   "unknown return type");
       }
     }
 

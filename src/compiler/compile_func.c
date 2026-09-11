@@ -53,18 +53,18 @@ size_t compile_func_body(compiler_t *c, ast_func_def_t *fn) {
 void compile_func_reg(compiler_t *c, ast_func_def_t *fn, size_t body) {
   /* 签名弹栈顺序：[return, param1..argc, is_variadic] */
   /* 1. return 类型 */
-  if (strslice_is_empty(fn->return_type)) {
+  if (!fn->return_expr) {
     bcode_write_op(c->bc, BCODE_LOAD);
     bcode_write_str(c->bc, STRSLICE_LIT("void"));
     st_push(c, 1);
   } else {
-    compile_type_expr(c, fn->return_type, fn->return_qual);
+    compile_type_expr(c, fn->return_expr);
   }
   /* 2. 参数类型（按声明顺序） */
   size_t argc = 0;
   for (ast_node_t *p = fn->params; p; p = p->next) {
     ast_var_def_t *vd = (ast_var_def_t *)p;
-    compile_type_expr(c, vd->type_name, vd->type_qual);
+    compile_type_expr(c, vd->type_expr);
     argc++;
   }
   /* 3. is_variadic=false（M1 无用户变参函数） */

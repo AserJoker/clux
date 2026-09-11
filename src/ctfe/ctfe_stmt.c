@@ -5,6 +5,7 @@
 #include "parser/ast_assign.h"
 #include "parser/ast_block.h"
 #include "parser/ast_expr_stmt.h"
+#include "parser/ast_type_name.h"
 #include "parser/ast_for.h"
 #include "parser/ast_if.h"
 #include "parser/ast_return.h"
@@ -72,9 +73,10 @@ value_t *ctfe_eval_stmt(ctfe_ctx_t *ctx, ast_node_t *stmt) {
         ast_var_def_t *vd = (ast_var_def_t *)stmt;
         value_t *init = NULL;
         if (vd->init && vd->init->kind == AST_UNDEF) {
-            /* 声明占位：分配声明类型零值 */
-            const type_t *t = vd->type_name.len
-                                  ? type_find(vm, vd->type_name) : NULL;
+            /* 声明占位：分配声明类型零值（AST_TYPE_NAME → type_find） */
+            const type_t *t = NULL;
+            if (vd->type_expr && vd->type_expr->kind == AST_TYPE_NAME)
+                t = type_find(vm, ((ast_type_name_t *)vd->type_expr)->name);
             if (!t) return ctfe_err(ctx, "ctfe: undefined variable type");
             void *data = value_alloc_data(vm->alloc, t);
             init = value_make(vm, t, data);

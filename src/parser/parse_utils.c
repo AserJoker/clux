@@ -1,4 +1,5 @@
 #include "parser/parse_utils.h"
+#include "parser/ast_type_name.h"
 #include "core/panic.h"
 
 #include <stdarg.h>
@@ -140,15 +141,15 @@ strslice_t token_strslice(const token_t *t) {
     return strslice_from_bytes(ptr, len);
 }
 
-/* ---- 类型标注解析 ---- */
+/* ---- 类型表达式解析 ---- */
 
-bool parse_type_spec(parser_t *p, strslice_t *out_type_name,
-                     type_qual_t *out_qual) {
-    if (!p || !out_type_name || !out_qual) return false;
+ast_node_t *parse_type_expr(parser_t *p) {
+    if (!p) return NULL;
 
+    uint32_t tb = p->pos;
     type_qual_t qual = TYPE_QUAL_NONE;
 
-    /* 可选 const/volatile 前缀：可重复组合，位或合并 */
+    /* 可选 const/volatile 前缀：可重复组合，位或合并（前缀式、右结合） */
     for (;;) {
         if (check_keyword(p, "const")) {
             qual = (type_qual_t)(qual | TYPE_QUAL_CONST);
@@ -168,13 +169,17 @@ bool parse_type_spec(parser_t *p, strslice_t *out_type_name,
     /* 类型名：关键字（i32/bool/...） */
     if (!check_kind(p, TOKEN_TYPE_KEYWORD)) {
         parse_error(p, "expected type name after type qualifier");
-        return false;
+        return NULL;
     }
-    *out_type_name = token_strslice(cur_token(p));
-    *out_qual      = qual;
+    strslice_t name = token_strslice(cur_token(p));
     advance(p);
     skip_trivia(p);
-    return true;
+
+    ast_node_t *node = ast_type_name_new(p->arena, tb, p->pos);
+    if (!node) return NULL;
+    ((ast_type_name_t *)node)->name = name;
+    ((ast_type_name_t *)node)->qual = qual;
+    return node;
 }
 
 /* ---- 字面量解析工具 ---- */

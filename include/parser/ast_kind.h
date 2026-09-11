@@ -36,6 +36,9 @@ typedef enum {
 
     AST_ERROR,           /* 解析错误恢复节点（记录错误位置，占位） */
 
+    /* --- 类型表达式（类型即表达式，M2 关键架构决策 6）--- */
+    AST_TYPE_NAME,       /* 命名类型引用：name [+ const/volatile 前缀] */
+
     AST_KIND_COUNT,      /* 哨兵值，用于数组索引 */
 } ast_kind_t;
 

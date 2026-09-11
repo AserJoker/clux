@@ -173,7 +173,7 @@ void compile_expr(compiler_t *c, ast_node_t *node) {
   case AST_CAST: {
     ast_cast_t *n = (ast_cast_t *)node;
     compile_expr(c, n->expr);        /* 栈: [value] */
-    compile_type_expr(c, n->target_type, n->target_qual); /* 栈: [value, type] */
+    compile_type_expr(c, n->target_expr); /* 栈: [value, type] */
     bcode_write_op(c->bc, BCODE_CAST);    /* 弹 type + value → 结果 */
     st_push(c, -1);
     break;

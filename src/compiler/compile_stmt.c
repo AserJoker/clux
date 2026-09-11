@@ -28,7 +28,7 @@ void compile_stmt(compiler_t *c, ast_node_t *node) {
       bcode_write_op(c->bc, BCODE_PUSH_UNDEFINED); /* 无初始值 → 零值占位（sema 已保证未初始化不可读） */
       st_push(c, 1);
     }
-    compile_type_expr(c, n->type_name, n->type_qual); /* 栈: [value, type-spec]；空类型压 PUSH_UNDEFINED（从值推断） */
+    compile_type_expr(c, n->type_expr); /* 栈: [value, type-spec]；空类型压 PUSH_UNDEFINED（从值推断） */
     bcode_write_op(c->bc, BCODE_DEFINE);
     bcode_write_str(c->bc, n->name);
     /* DEFINE 永远双弹弹掉全部，栈深归零 */

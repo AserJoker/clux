@@ -96,16 +96,18 @@ void sema_destroy(sema_t **sema);
  * internal（sema.c / stmt.c 共享，不对外）
  * =========================================================================== */
 
-/** 类型解析唯一入口：M1 内部 type_find；未来替换为类型表达式求值器。 */
-const type_t *resolve_type(sema_t *sema, strslice_t name);
-
 /**
- * 带限定符的类型解析：`[const|volatile]* name` → 类型
- * 在 resolve_type 基础上应用限定位（m2-design §10 固定组合顺序
- * volatile(const(T))：先 const 后 volatile，volatile 外层）。无修饰
- * 时等价 resolve_type。
+ * 类型表达式求值唯一入口：ast_node_t* → const type_t*
+ * (type is expression, m2-design 关键架构决策 6)
+ *
+ * M1 只接受 AST_TYPE_NAME（命名类型引用）：type_find 解析名字 + 应用
+ * qual 限定位（const/volatile，固定组合顺序 volatile(const(T))）。
+ * M2 扩展：AST_ARRAY_TYPE / AST_TUPLE_TYPE / AST_FUNC_TYPE / 类型计算
+ * 等类型表达式形式在此求值。
+ *
+ * 失败返回 NULL（已报错）。空指针入参返回 NULL 不报错（表示"无类型"）。
  */
-const type_t *resolve_type_q(sema_t *sema, strslice_t name, type_qual_t qual);
+const type_t *resolve_type_expr(sema_t *sema, ast_node_t *type_expr);
 
 /** 将 AST 节点解析为源码位置（经 token pool）。 */
 location_t sema_loc(sema_t *sema, ast_node_t *node);

@@ -129,7 +129,7 @@ static void shadow_var_def(sema_t *sema, ast_var_def_t *vd,
     /* 未初始化声明：var x:T = undefined。要求显式类型（undefined 无类型
        可推断）。flow_init=false（确定性赋值分析 UNKNOWN，TDZ），读取
        编译错误，只可赋值退出。 */
-    if (!vd->type_name.len) {
+    if (!vd->type_expr) {
       diag_error(sema->diag, sema_loc(sema, vd->init),
                  "cannot infer type of uninitialized variable '%.*s'; "
                  "add an explicit type annotation",
@@ -146,7 +146,7 @@ static void shadow_var_def(sema_t *sema, ast_var_def_t *vd,
     /* 错误恢复产物（init 已诊断）不提升确定性 */
     sym->flow_init = !init_bad;
 
-    if (vd->type_name.len) {
+    if (vd->type_expr) {
       /* 显式类型：value_assign 校验 init 可赋给声明类型（单一校验点） */
       if (!init_bad && sym->type) {
         value_t *dst = value_make_shadow(sema->vm, sym->type);
@@ -549,7 +549,7 @@ void sema_walk_function(sema_t *sema, sema_func_t *sf) {
   if (!sf->scope) return; /* 建树失败（结构错误已诊断），不进入 shadow run */
 
   sema->func_return_type =
-      fn->return_type.len ? resolve_type(sema, fn->return_type) : NULL;
+      fn->return_expr ? resolve_type_expr(sema, fn->return_expr) : NULL;
   sema->func_has_return = false;
 
   /* 函数级 VM scope（与 fscope 同构）：参数 shadow value 定义到此处，

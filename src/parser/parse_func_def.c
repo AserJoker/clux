@@ -31,26 +31,24 @@ static ast_node_t *parse_param(parser_t *p) {
     advance(p);
     skip_trivia(p);
 
-    /* 类型标注：:type（必须） */
+    /* 类型标注：:type（必须，类型即表达式） */
     if (!expect_symbol(p, ":")) {
         return ast_error_new(p->arena, tb, p->pos,
                              "expected ':' and type after parameter name");
     }
     skip_trivia(p);
 
-    strslice_t type_name;
-    type_qual_t type_qual;
-    if (!parse_type_spec(p, &type_name, &type_qual)) {
+    ast_node_t *type_expr = parse_type_expr(p);
+    if (!type_expr) {
         return ast_error_new(p->arena, tb, p->pos,
-                             "expected type name after ':'");
+                             "expected type after ':'");
     }
 
     /* 注意：不消费逗号或 )，由调用者处理 */
 
     ast_node_t *node = ast_var_def_new(p->arena, tb, p->pos);
     ((ast_var_def_t *)node)->name      = name;
-    ((ast_var_def_t *)node)->type_name = type_name;
-    ((ast_var_def_t *)node)->type_qual = type_qual;
+    ((ast_var_def_t *)node)->type_expr = type_expr;
     /* init 为 NULL：参数定义无初始化表达式 */
     return node;
 }
@@ -127,16 +125,16 @@ ast_node_t *parse_func_like(parser_t *p, ast_kind_t expected_kind) {
                                  "expected function name after 'func'");
         }
 
-        /* 可选返回类型：:type（省略 = void） */
-        strslice_t return_type = STRSLICE_EMPTY;
-        type_qual_t return_qual = TYPE_QUAL_NONE;
+        /* 可选返回类型：:type（省略 = void；类型即表达式） */
+        ast_node_t *return_expr = NULL;
         if (check_symbol(p, ":")) {
             advance(p);
             skip_trivia(p);
 
-            if (!parse_type_spec(p, &return_type, &return_qual)) {
+            return_expr = parse_type_expr(p);
+            if (!return_expr) {
                 return ast_error_new(p->arena, tb, p->pos,
-                                     "expected return type name after ':'");
+                                     "expected return type after ':'");
             }
         }
 
@@ -155,8 +153,7 @@ ast_node_t *parse_func_like(parser_t *p, ast_kind_t expected_kind) {
         fn->name        = name;
         fn->params      = params;
         fn->params_last = params_last;
-        fn->return_type = return_type;
-        fn->return_qual = return_qual;
+        fn->return_expr = return_expr;
         fn->body        = body;
         return node;
     }

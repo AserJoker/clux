@@ -19,16 +19,16 @@ ast_node_t *parse_var_def(parser_t *p) {
     advance(p);
     skip_trivia(p);
 
-    /* 可选类型标注：:type */
-    strslice_t type_name = STRSLICE_EMPTY;
-    type_qual_t type_qual = TYPE_QUAL_NONE;
+    /* 可选类型标注：:type（类型即表达式） */
+    ast_node_t *type_expr = NULL;
     if (check_symbol(p, ":")) {
         advance(p);
         skip_trivia(p);
 
-        if (!parse_type_spec(p, &type_name, &type_qual)) {
+        type_expr = parse_type_expr(p);
+        if (!type_expr) {
             return ast_error_new(p->arena, tb, p->pos,
-                                 "expected type name after ':'");
+                                 "expected type after ':'");
         }
     }
 
@@ -57,8 +57,7 @@ ast_node_t *parse_var_def(parser_t *p) {
 
     ast_node_t *node = ast_var_def_new(p->arena, tb, p->pos);
     ((ast_var_def_t *)node)->name      = name;
-    ((ast_var_def_t *)node)->type_name = type_name;
-    ((ast_var_def_t *)node)->type_qual = type_qual;
+    ((ast_var_def_t *)node)->type_expr = type_expr;
     ((ast_var_def_t *)node)->init      = init;
     return node;
 }

@@ -7,6 +7,7 @@
 #include "parser/ast_bool_lit.h"
 #include "parser/ast_call.h"
 #include "parser/ast_cast.h"
+#include "parser/ast_type_name.h"
 #include "parser/ast_char_lit.h"
 #include "parser/ast_float_lit.h"
 #include "parser/ast_ident.h"
@@ -132,7 +133,10 @@ value_t *ctfe_eval_inner(ctfe_ctx_t *ctx, ast_node_t *node) {
         ast_cast_t *n = (ast_cast_t *)node;
         value_t *v = ctfe_eval(ctx, n->expr);
         if (value_is_error(vm, v)) return v;
-        const type_t *target = type_find(vm, n->target_type);
+        /* AST_TYPE_NAME → type_find（M1 唯一类型表达式形式） */
+        const type_t *target = NULL;
+        if (n->target_expr && n->target_expr->kind == AST_TYPE_NAME)
+            target = type_find(vm, ((ast_type_name_t *)n->target_expr)->name);
         if (!target) return ctfe_err(ctx, "ctfe: unknown cast target type");
         return value_explicit_cast(vm, v, target);
     }

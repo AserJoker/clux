@@ -147,9 +147,9 @@ bool sema_eval_comptime_var(sema_t *sema, ast_var_def_t *vd,
   /* 2. 类型校验（显式类型 / 推断，与普通 var 一致）。显式类型在 Pass 3a
      未填充（sym->type 为 NULL），此处先 resolve（与 shadow_var_def 的
      "显式类型校验"语义对齐）。 */
-  if (vd->type_name.len) {
+  if (vd->type_expr) {
     if (!sym->type) {
-      sym->type = resolve_type_q(sema, vd->type_name, vd->type_qual);
+      sym->type = resolve_type_expr(sema, vd->type_expr);
     }
     if (sym->type) {
       value_t *dst = value_make_shadow(sema->vm, sym->type);
