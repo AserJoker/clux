@@ -124,7 +124,7 @@ var mat: [2][3]i32 = ...;   // 多维 = [2]([3]i32)
 do { ... } while (cond);    // 后置条件循环
 ```
 
-### 8. sizeof / alignof / typeof
+### 8. sizeof / alignof / typeof（SEMA→CTFE 桥梁）
 
 ```
 sizeof(T)        // 返回 u64
@@ -134,6 +134,11 @@ typeof(expr)     // 返回 type value
 ```
 
 - 参数只做 **shadow 计算**，不作真实执行
+- **这三个运算符本身就是编译期运算，是 SEMA→CTFE 的桥梁**（2026-09-11 补充）：
+  - 操作数只做 shadow 求值（仅取类型），输出**真实编译期常量**（sizeof/alignof → u64，typeof → type value）
+  - `var a:i32 = 1; var b:[sizeof(a)]i32 = .{};` 合法——`a` 是 shadow 值，但 `sizeof(a)` **不是** shadow：从 `a` 的类型 i32 产出真实常量 4，喂给数组边界槽位
+  - 因此这三个运算符**不需要 ctfe 真实求值操作数**：在 sema shadow 路径内即可完成（shadow 操作数 → 真实常量），产物直接消费于类型槽位（数组边界 N、type 计算等），是 shadow 世界 → 真实值世界的天然桥梁
+  - ctfe 遇到这些节点时遵循同一规则：操作数按类型（shadow 语义）求值，结果产生真实常量
 
 ### 9. 位运算复合赋值
 
@@ -325,7 +330,8 @@ sema_expr（shadow 类型检查，全表达式主路径）
    │  需要编译期常量的槽位（M2）：
    │   · 数组边界 [N]T → ctfe 求值 N → u64
    │   · type 别名 = 类型计算表达式 → ctfe → type value
-   │   · sizeof/alignof/typeof 参数 → ctfe → u64 / type value
+   │   · sizeof/alignof/typeof → SEMA 内完成（shadow 操作数 → 真实常量，见 §8），
+   │     不经 ctfe 真实求值，产物直接喂类型槽位
    │   · enum variant 值 → ctfe → 常量
    ▼
 ctfe_eval(sema, ast_node *expr) → value_t*（真实值）
@@ -369,7 +375,7 @@ ctfe_eval(sema, ast_node *expr) → value_t*（真实值）
 - 函数调用：`sema_lookup` 查符号 → 仅当 `sym->ast` 为 `AST_FUNC_DEF`（clux 函数）→ 绑定参数到新临时 scope → `ctfe_eval_stmt` 解释函数体 → 返回 return 值 clone 给调用方；递归共享同一 `ctfe_ctx` budget。非 `AST_FUNC_DEF` 实体（FFI/编译器内置，未来以专门表示存在）不在 CTFE 可调范围
 - 错误统一 `value_make_error` + 语义化消息，sema 调用方翻译为诊断（`compile-time constant required`）
 
-**M2 消费点**：数组边界 N、type 别名计算、sizeof/alignof/typeof、enum 值、`.[N]T{...}` 构造边界——均经 ctfe 求值后读数值或 type value。
+**M2 消费点**：数组边界 N、type 别名计算、enum 值、`.[N]T{...}` 构造边界——经 ctfe 求值后读数值或 type value。sizeof/alignof/typeof **不经 ctfe**（SEMA→CTFE 桥梁，见 §8）：操作数 shadow 求值取类型，运算符自身产出真实常量直接消费。
 
 ---
 
