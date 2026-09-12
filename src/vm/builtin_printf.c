@@ -2,6 +2,7 @@
 #include "vm/value.h"
 #include "vm/function.h"
 #include "vm/type.h"
+#include "vm/type_func.h"
 #include "core/string.h"
 #include "core/strslice.h"
 

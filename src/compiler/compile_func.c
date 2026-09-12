@@ -52,35 +52,38 @@ size_t compile_func_body(compiler_t *c, ast_func_def_t *fn) {
 /** 编译函数注册段（JMP 守卫之后）：签名构造 + PUSH_FUNCTION + push_undefined + DEFINE */
 void compile_func_reg(compiler_t *c, ast_func_def_t *fn, size_t body) {
   /* 签名弹栈顺序：[return, param1..argc, is_variadic] */
-  /* 1. return 类型 */
+  /* 1. PUSH_FUNC_TYPE：分配空 func type，压其 type value（构造起点） */
+  bcode_write_op(c->bc, BCODE_PUSH_FUNC_TYPE);
+  st_push(c, 1);
+
+  /* 2. 参数类型（按声明顺序）：每个参数编译出 type value，FUNC_TYPE_PARAM 追加 */
+  for (ast_node_t *p = fn->params; p; p = p->next) {
+    ast_var_def_t *vd = (ast_var_def_t *)p;
+    compile_type_expr(c, vd->type_expr);
+    bcode_write_op(c->bc, BCODE_FUNC_TYPE_PARAM);
+    st_push(c, 0);  /* 弹参数 type value，追加到 func type（func type 仍在栈） */
+  }
+
+  /* 3. 返回类型：void 兜底用 PUSH "void"，否则编译返回类型表达式 */
   if (!fn->return_expr) {
-    /* 无返回类型兜底：void 类型值注册在 global scope，PUSH 沿当前作用域链
-       命中（与类型名引用同机制，见 compile_type_expr） */
     bcode_write_op(c->bc, BCODE_PUSH);
     bcode_write_str(c->bc, STRSLICE_LIT("void"));
     st_push(c, 1);
   } else {
     compile_type_expr(c, fn->return_expr);
   }
-  /* 2. 参数类型（按声明顺序） */
-  size_t argc = 0;
-  for (ast_node_t *p = fn->params; p; p = p->next) {
-    ast_var_def_t *vd = (ast_var_def_t *)p;
-    compile_type_expr(c, vd->type_expr);
-    argc++;
-  }
-  /* 3. is_variadic=false（M1 无用户变参函数） */
-  bcode_write_op(c->bc, BCODE_PUSH_BOOL);
-  bcode_write_bool(c->bc, false);
-  st_push(c, 1);
+  bcode_write_op(c->bc, BCODE_FUNC_TYPE_RETURN);
+  st_push(c, -1);  /* 弹返回 type value，设为返回类型 */
 
-  bcode_write_op(c->bc, BCODE_CREATE_FUNC_TYPE);
-  bcode_write_u32(c->bc, (uint32_t)argc);
-  st_push(c, -(int)(argc + 1)); /* 弹 argc+2（ret+params+variadic）压 1（sig） */
+  /* M1 无用户变参函数，省略 FUNC_TYPE_VARARG（func type 默认 is_variadic=false） */
+
+  /* 4. 密封 func type（按签名去重 intern，标记 sealed） */
+  bcode_write_op(c->bc, BCODE_FUNC_TYPE_SEAL);
+  st_push(c, 0);  /* 栈顶 func type 不变（已 sealed） */
 
   bcode_write_op(c->bc, BCODE_PUSH_FUNCTION);
   bcode_write_u32(c->bc, (uint32_t)body);
-  st_push(c, 0);
+  st_push(c, 0);  /* 弹 func type，压 func value */
 
   bcode_write_op(c->bc, BCODE_PUSH_UNDEFINED);
   bcode_write_op(c->bc, BCODE_DEFINE);

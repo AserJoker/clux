@@ -1,6 +1,7 @@
 #include "vm/vm.h"
 #include "vm/type.h"
 #include "vm/type_array.h"
+#include "vm/type_func.h"
 #include "vm/value.h"
 #include "vm/function.h"
 #include "core/panic.h"

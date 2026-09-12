@@ -51,7 +51,15 @@ typedef enum {
     BCODE_PUSH_UNDEFINED,  /* 压入 void 类型 value（"类型待推导"） */
 
     BCODE_DEFINE,          /* strtable 索引：弹栈定义（永远双弹 [value, type-spec]） */
-    BCODE_CREATE_FUNC_TYPE,/* argc：弹栈构造签名类型 type value 压栈 */
+
+    /* ---- func type 构造（与 array type 统一：PUSH → SET → SEAL）----
+       仅构造"函数签名类型"（func type）；函数对象由 BCODE_PUSH_FUNCTION 构造。 */
+    BCODE_PUSH_FUNC_TYPE,  /* 分配空 func type 入池 + 压其 type value */
+    BCODE_FUNC_TYPE_PARAM, /* 弹栈 type value → 追加为下一参数 */
+    BCODE_FUNC_TYPE_RETURN,/* 弹栈 type value → 设为返回类型 */
+    BCODE_FUNC_TYPE_VARARG,/* 标记可变参数（无操作数） */
+    BCODE_FUNC_TYPE_SEAL,  /* 密封：按签名去重 intern，标记 sealed */
+
     BCODE_PUSH_FUNCTION,   /* entry pc：构造 bcode_function_t + 签名类型 → func value */
 
     BCODE_ADD, BCODE_SUB, BCODE_MUL, BCODE_DIV, BCODE_MOD,

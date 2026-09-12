@@ -74,8 +74,12 @@ clux 的 VM 以**字节码**作为可执行中间表示。编译期把 AST 降�
 | 助记符 | 操作数 | 语义 |
 |--------|--------|------|
 | `DEFINE` | `STR` | 弹栈定义（永远双弹 `[value, type-spec]`），绑定到名字。 |
-| `CREATE_FUNC_TYPE` | `U32`（argc） | 弹栈 argc 个参数类型，构造**函数签名类型** value 压栈。 |
-| `PUSH_FUNCTION` | `U32`（entry pc，标签） | 构造 `bcode_function_t` + 签名类型 → func value 压栈。 |
+| `PUSH_FUNC_TYPE` | — | 分配空**函数签名类型**（`func_type_t`）入 `vm->sig_types` 池，压其 type value（构造起点）。 |
+| `FUNC_TYPE_PARAM` | — | 弹栈 type value → 追加为 func type 的下一参数类型。 |
+| `FUNC_TYPE_RETURN` | — | 弹栈 type value → 设为 func type 的返回类型。 |
+| `FUNC_TYPE_VARARG` | — | 标记 func type 为可变参数（无操作数）。 |
+| `FUNC_TYPE_SEAL` | — | 密封当前 func type：计算规范名 `func(...)`、按签名去重 intern、标记 `sealed`。 |
+| `PUSH_FUNCTION` | `U32`（entry pc，标签） | 弹栈顶签名类型（`FUNC_TYPE_SEAL` 产物）→ 构造 `bcode_function_t{entry_pc}` → func value 压栈（函数对象，非签名类型）。 |
 
 ### 4.4 算术 / 逻辑 / 位运算（均弹参、压结果，无操作数）
 

@@ -268,11 +268,11 @@ name:                     ; 标签定义（去空白后形如 "name:"，无内�
 
 **标签与前向引用**：跳转/函数入口目标以标签表示，引用用 `[name]`（与裸数字地址区分）。汇编采用**两遍法**——第一遍记录标签 pc 并登记待回填 fixup，第二遍回填全部 fixup，因此支持前向引用；引用未定义标签报错。反汇编侧按"跳转目标 / 函数入口锚点"生成 `L0/L1…` 标签（按 pc 升序确定性命名），并保证 `disasm → asm → disasm` **逐字节稳定往返**。
 
-**指令集**（`BCODE_ASM_TABLE`，按 `bcode_op_t` 枚举值索引）：`PUSH` / `STORE` / `PUSH_STRING` / `PUSH_I8..I64` / `PUSH_U8..U64` / `PUSH_F32` / `PUSH_F64` / `PUSH_BOOL` / `PUSH_VALUE` / `LOAD` / `PUSH_UNDEFINED` / `DEFINE` / `CREATE_FUNC_TYPE` / `PUSH_FUNCTION` / `ADD..MOD` / `EQ..GE` / `AND OR BXOR SHL SHR` / `NEG NOT BNOT` / `CAST CREATE_CONST CREATE_VOLATILE` / `CALL` / `RET` / `JMP JZ JNZ` / `PUSH_SCOPE POP_SCOPE POP` / `HALT`。
+**指令集**（`BCODE_ASM_TABLE`，按 `bcode_op_t` 枚举值索引）：`PUSH` / `STORE` / `PUSH_STRING` / `PUSH_I8..I64` / `PUSH_U8..U64` / `PUSH_F32` / `PUSH_F64` / `PUSH_BOOL` / `PUSH_VALUE` / `LOAD` / `PUSH_UNDEFINED` / `DEFINE` / `PUSH_FUNC_TYPE` / `FUNC_TYPE_PARAM` / `FUNC_TYPE_RETURN` / `FUNC_TYPE_VARARG` / `FUNC_TYPE_SEAL` / `PUSH_FUNCTION` / `ADD..MOD` / `EQ..GE` / `AND OR BXOR SHL SHR` / `NEG NOT BNOT` / `CAST CREATE_CONST CREATE_VOLATILE` / `CALL` / `RET` / `JMP JZ JNZ` / `PUSH_SCOPE POP_SCOPE POP` / `HALT`。
 
 **单一事实源**：`bcode_asm_defs.c` 的 `BCODE_ASM_TABLE`（助记符 + 操作数布局）同时驱动汇编器（反向查表）与反汇编器（正向解码），新增/改名 opcode 只改此表，保证两侧助记符与操作数布局永远一致。
 
-**手写汇编约定**（示例见 `examples/asm/*.cxs`）：程序入口用引导段 `_start:` 显式注册函数（`CREATE_FUNC_TYPE` + `PUSH_FUNCTION [entry]` + `PUSH_UNDEFINED` + `DEFINE`），`HALT` 后由虚拟机调用 `main`；函数体首部按**倒序** `PUSH_UNDEFINED; DEFINE "param"` 绑定参数（与字节码函数定义模板一致）。
+**手写汇编约定**（示例见 `examples/asm/*.cxs`）：程序入口用引导段 `_start:` 显式注册函数（`PUSH_FUNC_TYPE` + 参数 `FUNC_TYPE_PARAM`* + 返回 `FUNC_TYPE_RETURN` + `FUNC_TYPE_SEAL` + `PUSH_FUNCTION [entry]` + `PUSH_UNDEFINED` + `DEFINE`），`HALT` 后由虚拟机调用 `main`；函数体首部按**倒序** `PUSH_UNDEFINED; DEFINE "param"` 绑定参数（与字节码函数定义模板一致）。
 
 **测试**：`tests/bcode_disasm_test.cpp`（段格式/转义/变长操作数/标签生成/坏路径）、`tests/bcode_asm_test.cpp`（文本往返/操作数往返/字符串转义/大小写无关/标签前向引用/未定义标签/非法输入）、`tests/bcode_serial_test.cpp`（二进制往返/空模块/内嵌控制字节/文件往返/坏 magic·版本·截断拒绝）、`tests/driver_test.cpp`（`Driver.DetectInputByContent` 内容嗅探全类型、`Driver.AsmBinRoundTripStable` 往返字节稳定、`Driver.ConvByContentSniffing` 非标准扩展名互转、`Driver.ConvErrorPaths` 失败路径），并覆盖 5 个 `examples/asm/*.cxs` 示例。
 
@@ -432,7 +432,7 @@ construct 1          ; 弹出 1 个元素值 + 类型位，完成数组值构造
 load "Point"; push 1; push 0; construct 2   ; y 缺失 → 补 i32 0 值
 ```
 - **类型引用**：命名类型统一 `load "Test"`；内联类型表达式（`[N]T`/`<T1,T2>`）在类型槽位直接构造类型值。与类型定义（push_xxx）解耦
-- **`define` 是唯一绑定指令**（`define_struct`/`DEFINE_FUNCTION` 已删除），**永远双弹 `[value, type-spec]`**（value 在底、类型说明符在顶，**无单弹分支**）：type-spec = type value（`load "T"`，显式类型）或 undefined（`push_undefined`，无标注 → define 从值推断类型）。`var a = 5` → `push_i32 5; push_undefined; define "a"`；`var a:i32 = 5` → `push_i32 5; load "i32"; define "a"`；**函数定义** → `CREATE_FUNC_TYPE argc; PUSH_FUNCTION entry_pc; push_undefined; define "add"`（函数值自带签名类型）；**函数参数绑定**（函数体开头倒序）→ 每参数 `push_undefined; define name`（从值推断，与 var 定义完全一致）。**两个变体完全等价**：`struct Test {...}` 与 `type Test = struct {...}` 字节码相同（`push_struct...seal; push_undefined; define "Test"`）
+- **`define` 是唯一绑定指令**（`define_struct`/`DEFINE_FUNCTION` 已删除），**永远双弹 `[value, type-spec]`**（value 在底、类型说明符在顶，**无单弹分支**）：type-spec = type value（`load "T"`，显式类型）或 undefined（`push_undefined`，无标注 → define 从值推断类型）。`var a = 5` → `push_i32 5; push_undefined; define "a"`；`var a:i32 = 5` → `push_i32 5; load "i32"; define "a"`；**函数定义** → `push_func_type; [load "T"; func_type_param]*; load "R"; func_type_return; [func_type_vararg]; func_type_seal; push_function entry_pc; push_undefined; define "add"`（函数值自带签名类型）；**函数参数绑定**（函数体开头倒序）→ 每参数 `push_undefined; define name`（从值推断，与 var 定义完全一致）。**两个变体完全等价**：`struct Test {...}` 与 `type Test = struct {...}` 字节码相同（`push_struct...seal; push_undefined; define "Test"`）
 - 类型构造与值构造走同一套构造器求值协议
 - 为类型计算打基础：`type T = <表达式>` 右值就是普通表达式求值
 
@@ -450,7 +450,7 @@ load "Point"; push 1; push 0; construct 2   ; y 缺失 → 补 i32 0 值
 
 ### 7. 复合类型
 
-`struct_type_t`/`array_type_t`/`tuple_type_t`/`enum_type_t` 全跟 `func_type_t` C 继承，各列 interning 池 + 独立 vtable。
+`struct_type_t`/`array_type_t`/`tuple_type_t`/`enum_type_t` 全跟 `func_type_t` C 继承，各列 interning 池 + 独立 vtable。`func_type_t` 额外带 `sealed` 标志：构造期（`PUSH_FUNC_TYPE` + `FUNC_TYPE_PARAM/RETURN/VARARG`）可分步 set，`FUNC_TYPE_SEAL` 后才锁定并去重 intern；构造 API 与访问器集中于 `include/vm/type_func.h`（对标 `type_array.h`）。
 
 - `VTABLE_STRUCT.implicit_cast`：鸭子类型检查（成员名/类型/顺序一致）
 - `VTABLE_ARRAY.implicit_cast`：Array↔Tuple，同元素数+类型

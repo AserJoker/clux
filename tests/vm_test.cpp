@@ -11,6 +11,7 @@ extern "C" {
 #include "vm/type_error.h"
 #include "vm/type_interrupt.h"
 #include "vm/function.h"
+#include "vm/type_func.h"
 #include "core/allocator.h"
 #include "core/string.h"
 #include "core/strslice.h"

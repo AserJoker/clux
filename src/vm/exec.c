@@ -2,6 +2,7 @@
 #include "vm/vm.h"
 #include "vm/value.h"
 #include "vm/type.h"
+#include "vm/type_func.h"
 #include "vm/type_type.h"
 #include "vm/type_interrupt.h"
 #include "vm/bcode_function.h"
@@ -235,22 +236,57 @@ static value_t *op_create_volatile(vm_t *vm, bytecode_t *bc, size_t *pc) {
     return type_as_value(vm, vt);
 }
 
-/* ---- 函数 ---- */
+/* ---- func type 构造（与 array type 统一：PUSH → SET → SEAL） ---- */
 
-static value_t *op_create_func_type(vm_t *vm, bytecode_t *bc, size_t *pc) {
-    /* 弹栈格式 [return, param1..argc, is_variadic]（压栈序，docs 2.7.6）：
-       栈顶 is_variadic（PUSH_BOOL false）→ 倒序取参数 → 返回值类型 */
-    uint32_t argc = bcode_read_u32(bc, pc);
-    value_t *variadic_v = exec_stack_pop(vm);
-    bool is_variadic = *(const bool *)value_data(variadic_v);
-    const type_t *params[argc > 0 ? argc : 1];
-    for (uint32_t i = argc; i-- > 0; ) {
-        params[i] = *(const type_t **)value_data(exec_stack_pop(vm));
-    }
-    const type_t *ret = *(const type_t **)value_data(exec_stack_pop(vm));
-    /* intern 签名类型（按签名去重，同签名共享一个 type_t） */
-    const type_t *sig = type_func_sig(vm, params, argc, ret, is_variadic);
-    return type_as_value(vm, sig);
+/* PUSH_FUNC_TYPE：分配空 func type 入池并压其 type value */
+static value_t *op_push_func_type(vm_t *vm, bytecode_t *bc, size_t *pc) {
+    (void)bc; (void)pc;
+    func_type_push(vm);  /* 压入 func type 的 type value（见 func_type_push） */
+    return NULL;
+}
+
+/* 取栈顶的 func type（调用前已确保其为当前构造目标，位于栈顶） */
+static const type_t *stack_top_func_type(vm_t *vm) {
+    value_t *ftv = exec_stack_peek(vm, 0);
+    return (ftv && value_type(ftv) == vm->type_type)
+               ? value_as(ftv, const type_t *)
+               : NULL;
+}
+
+/* FUNC_TYPE_PARAM：弹栈 type value → 追加为下一参数 */
+static value_t *op_func_type_param(vm_t *vm, bytecode_t *bc, size_t *pc) {
+    (void)bc; (void)pc;
+    value_t *pv = exec_stack_pop(vm);
+    const type_t *param = *(const type_t **)value_data(pv);
+    const type_t *ft = stack_top_func_type(vm);
+    func_type_add_param(vm, ft, param);
+    return NULL;
+}
+
+/* FUNC_TYPE_RETURN：弹栈 type value → 设为返回类型 */
+static value_t *op_func_type_return(vm_t *vm, bytecode_t *bc, size_t *pc) {
+    (void)bc; (void)pc;
+    value_t *rv = exec_stack_pop(vm);
+    const type_t *ret = *(const type_t **)value_data(rv);
+    const type_t *ft = stack_top_func_type(vm);
+    func_type_set_return(vm, ft, ret);
+    return NULL;
+}
+
+/* FUNC_TYPE_VARARG：标记可变参数 */
+static value_t *op_func_type_vararg(vm_t *vm, bytecode_t *bc, size_t *pc) {
+    (void)bc; (void)pc;
+    const type_t *ft = stack_top_func_type(vm);
+    func_type_set_variadic(vm, ft, true);
+    return NULL;
+}
+
+/* FUNC_TYPE_SEAL：密封当前 func type（去重 intern，标记 sealed） */
+static value_t *op_func_type_seal(vm_t *vm, bytecode_t *bc, size_t *pc) {
+    (void)bc; (void)pc;
+    const type_t *ft = stack_top_func_type(vm);
+    func_type_seal(vm, ft);  /* 内部在去重复用时已重定向栈中 type value */
+    return NULL;
 }
 
 static value_t *op_push_function(vm_t *vm, bytecode_t *bc, size_t *pc) {
@@ -381,7 +417,11 @@ static const bcode_handler_t HANDLERS[] = {
     [BCODE_CAST]           = op_cast,
     [BCODE_CREATE_CONST]   = op_create_const,
     [BCODE_CREATE_VOLATILE]= op_create_volatile,
-    [BCODE_CREATE_FUNC_TYPE] = op_create_func_type,
+    [BCODE_PUSH_FUNC_TYPE]   = op_push_func_type,
+    [BCODE_FUNC_TYPE_PARAM]  = op_func_type_param,
+    [BCODE_FUNC_TYPE_RETURN] = op_func_type_return,
+    [BCODE_FUNC_TYPE_VARARG] = op_func_type_vararg,
+    [BCODE_FUNC_TYPE_SEAL]   = op_func_type_seal,
     [BCODE_PUSH_FUNCTION]  = op_push_function,
     [BCODE_CALL]           = op_call,
     [BCODE_RET]            = op_ret,

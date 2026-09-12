@@ -1,4 +1,5 @@
 #include "sema/sema.h"
+#include "vm/type_func.h"
 #include "core/panic.h"
 #include "core/string.h"
 #include "parser/ast_const.h"

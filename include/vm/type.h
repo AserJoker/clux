@@ -68,18 +68,6 @@ typedef struct type_t {
 } type_t;
 
 /**
- * func_type_t: 函数签名类型（type_t 的扩展）
- *
- * 首成员 base 必须为 type_t（向上转型安全）。sig 携带参数/返回值信息，
- * 由 vm 类型池 intern（type_func_sig），vm 拥有生命周期。vm->type_func
- * 是无签名的 func 基类，也是 func_type_t 布局（sig 为空），向下转型安全。
- */
-typedef struct func_type_t {
-    type_t      base;
-    func_sig_t  sig;
-} func_type_t;
-
-/**
  * const_type_t / volatile_type_t: 前导修饰类型（type_t 的扩展）
  *
  * 真实类型（const i32 != i32），持 sub 指针指向被修饰的底层类型。
@@ -173,17 +161,12 @@ value_t *type_as_value(vm_t *vm, const type_t *t);
  */
 const type_t *type_promote(const vm_t *vm, const type_t *a, const type_t *b);
 
-/**
- * 函数签名类型 intern（按签名去重）
- *
- * 以 params（可为 NULL 或含 NULL 元素 = 无类型约束）、param_count、
- * return_type、is_variadic 标识一个函数签名。相同签名返回同一个
- * type_t（vm 类型池持有，vm_destroy 时释放）。params 数组会被复制，
- * 调用方的临时数组可自行释放。
- */
-const type_t *type_func_sig(vm_t *vm, const type_t *const *params,
-                            size_t param_count, const type_t *return_type,
-                            bool is_variadic);
+/* 函数签名类型构造 API（func_type_push / func_type_add_param /
+ * func_type_set_return / func_type_set_variadic / func_type_seal /
+ * type_func_sig 一次性快捷）与访问器（func_type_return / func_type_param /
+ * func_type_param_count / func_type_is_variadic / func_type_is_sealed）见
+ * vm/type_func.h。func type 仅描述签名；函数对象由 func_new /
+ * bcode_function_new / BCODE_PUSH_FUNCTION 构造，二者不可混淆。 */
 
 #ifdef __cplusplus
 }
