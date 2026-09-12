@@ -367,9 +367,10 @@ TEST(Driver, ConvByContentSniffing) {
     FILE *fp = fopen(weird.c_str(), "wb");
     const char *code =
         "_start:\n"
+        "    push_func_type\n"
         "    push \"void\"\n"
-        "    push_bool 0\n"
-        "    create_func_type 0\n"
+        "    func_type_return\n"
+        "    func_type_seal\n"
         "    push_function [main]\n"
         "    push_undefined\n"
         "    define \"main\"\n"

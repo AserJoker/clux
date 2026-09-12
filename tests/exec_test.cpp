@@ -522,7 +522,7 @@ TEST_F(ExecTest, ErrorPropagatesThroughBinary) {
 }
 
 /* ================================================================ */
-/* 5. 函数（CREATE_FUNC_TYPE / PUSH_FUNCTION / define 统一绑定 /     */
+/* 5. 函数（PUSH_FUNC_TYPE / FUNC_TYPE_* / PUSH_FUNCTION / define 统一绑定 / */
 /*    CALL / RET）                                                  */
 /* ================================================================ */
 
@@ -549,7 +549,7 @@ TEST_F(ExecTest, FunctionRegisterAndCallMain) {
     bcode_write_op(bc, BCODE_ADD);
     bcode_write_op(bc, BCODE_RET);
 
-    /* 注册段：[ret, is_variadic] → CREATE_FUNC_TYPE → PUSH_FUNCTION → push_undefined + DEFINE */
+    /* 注册段：PUSH_FUNC_TYPE → FUNC_TYPE_RETURN → FUNC_TYPE_SEAL → PUSH_FUNCTION → push_undefined + DEFINE */
     size_t end = bcode_tell(bc);
     bcode_write_op(bc, BCODE_PUSH_FUNC_TYPE);
     bcode_write_op(bc, BCODE_LOAD); bcode_write_str(bc, STRSLICE_LIT("i32"));

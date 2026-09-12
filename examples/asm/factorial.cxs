@@ -1,15 +1,18 @@
 ; factorial.cxs — 递归求阶乘（fact(10) = 3628800）
 _start:
+    push_func_type
     push "i32"
+    func_type_param
     push "i32"
-    push_bool 0
-    create_func_type 1
+    func_type_return
+    func_type_seal
     push_function [fact]
     push_undefined
     define "fact"
+    push_func_type
     push "void"
-    push_bool 0
-    create_func_type 0
+    func_type_return
+    func_type_seal
     push_function [main]
     push_undefined
     define "main"

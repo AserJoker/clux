@@ -1,17 +1,21 @@
 ; arithmetic.cxs — 带参数的函数 add(a, b) 与嵌套调用
 ; 引导段先注册 add，再注册 main
 _start:
+    push_func_type
     push "i32"
+    func_type_param
     push "i32"
+    func_type_param
     push "i32"
-    push_bool 0
-    create_func_type 2
+    func_type_return
+    func_type_seal
     push_function [add]
     push_undefined
     define "add"
+    push_func_type
     push "void"
-    push_bool 0
-    create_func_type 0
+    func_type_return
+    func_type_seal
     push_function [main]
     push_undefined
     define "main"
