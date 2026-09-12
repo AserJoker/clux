@@ -17,3 +17,6 @@ third_party/icu/download/
 
 # Test run artifacts (transient logs kept locally, not tracked)
 test_all.txt
+
+# Transient commit-message files
+.git-commit-msg.tmp
