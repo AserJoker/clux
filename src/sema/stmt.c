@@ -1,5 +1,6 @@
 #include "sema/sema.h"
 #include "parser/ast_assign.h"
+#include "parser/ast_ident.h"
 #include "parser/ast_block.h"
 #include "parser/ast_expr_stmt.h"
 #include "parser/ast_for.h"
@@ -192,8 +193,17 @@ static value_t *(*compound_binop(const token_t *op))(vm_t *, value_t *,
 
 static void shadow_assign(sema_t *sema, ast_assign_t *as,
                           sema_scope_t *scope) {
+  /* 左值必须是标识符表达式（目前仅支持 ID_LIT） */
+  if (as->target->kind != AST_IDENT) {
+    diag_error(sema->diag, sema_loc(sema, as->target),
+               "invalid assignment target");
+    sema_expr(sema, &as->value, scope);
+    return;
+  }
+  strslice_t name = ((ast_ident_t *)as->target)->name;
+
   /* 显式丢弃：_ = expr（不查符号表，直接求值右值） */
-  if (strslice_eq(as->name, STRSLICE_LIT("_"))) {
+  if (strslice_eq(name, STRSLICE_LIT("_"))) {
     if (!token_is(as->op, "=")) {
       diag_error(sema->diag, sema_loc(sema, &as->base),
                  "discard '_' only supports simple assignment '='");
@@ -203,19 +213,19 @@ static void shadow_assign(sema_t *sema, ast_assign_t *as,
   }
 
   /* 左值从 VM scope 链 lookup（与 sema 作用域树同构） */
-  value_t *lhs = scope_lookup(sema->vm->current_scope, as->name);
+  value_t *lhs = scope_lookup(sema->vm->current_scope, name);
   if (!lhs) {
     /* comptime var 不在 VM scope：赋值给编译期常量 → 编译错误 */
-    sema_symbol_t *sym = sema_lookup(scope, as->name);
+    sema_symbol_t *sym = sema_lookup(scope, name);
     if (sym && sym->is_comptime && sym->ct_valid) {
       diag_error(sema->diag, sema_loc(sema, &as->base),
                  "cannot assign to compile-time constant '%.*s'",
-                 (int)as->name.len, as->name.ptr);
+                 (int)name.len, name.ptr);
       return;
     }
     diag_error(sema->diag, sema_loc(sema, &as->base),
-               "undefined variable '%.*s' in assignment", (int)as->name.len,
-               as->name.ptr);
+               "undefined variable '%.*s' in assignment", (int)name.len,
+               name.ptr);
     return;
   }
 
@@ -230,11 +240,11 @@ static void shadow_assign(sema_t *sema, ast_assign_t *as,
        的变量不可再赋值；flow_init=false（未初始化声明 var a:const T =
        undefined）时的赋值是首次初始化，豁免（const 变量的 TDZ 赋值 =
        初始化，仅一次）。经 value 层接口查询 const（type is value）。 */
-    sema_symbol_t *sym = sema_lookup(scope, as->name);
+    sema_symbol_t *sym = sema_lookup(scope, name);
     if (sym && value_has_const(lhs) && sym->flow_init) {
       diag_error(sema->diag, sema_loc(sema, &as->base),
                  "cannot assign to const variable '%.*s'",
-                 (int)as->name.len, as->name.ptr);
+                 (int)name.len, name.ptr);
       return;
     }
 
@@ -247,7 +257,7 @@ static void shadow_assign(sema_t *sema, ast_assign_t *as,
       sema_type_name(value_type(rhs), rn, sizeof(rn));
       diag_error(sema->diag, sema_loc(sema, as->value),
                  "cannot assign %s to variable '%.*s' of type %s", rn,
-                 (int)as->name.len, as->name.ptr, tn);
+                 (int)name.len, name.ptr, tn);
     } else {
       if (sym) sym->flow_init = true;
     }
@@ -257,11 +267,11 @@ static void shadow_assign(sema_t *sema, ast_assign_t *as,
   /* const 检查：复合赋值是读+写，const 变量已初始化后禁止
      （经 value 层接口查询 const，type is value） */
   {
-    sema_symbol_t *sym = sema_lookup(scope, as->name);
+    sema_symbol_t *sym = sema_lookup(scope, name);
     if (sym && value_has_const(lhs) && sym->flow_init) {
       diag_error(sema->diag, sema_loc(sema, &as->base),
                  "cannot assign to const variable '%.*s'",
-                 (int)as->name.len, as->name.ptr);
+                 (int)name.len, name.ptr);
       return;
     }
   }
@@ -296,10 +306,10 @@ static void shadow_assign(sema_t *sema, ast_assign_t *as,
     sema_type_name(value_type(result), rn, sizeof(rn));
     diag_error(sema->diag, sema_loc(sema, &as->base),
                "cannot assign %s to variable '%.*s' of type %s", rn,
-               (int)as->name.len, as->name.ptr, tn);
+               (int)name.len, name.ptr, tn);
   } else {
     /* 复合赋值等价于读+写：变量确定已初始化 */
-    sema_symbol_t *sym = sema_lookup(scope, as->name);
+    sema_symbol_t *sym = sema_lookup(scope, name);
     if (sym) sym->flow_init = true;
   }
 }

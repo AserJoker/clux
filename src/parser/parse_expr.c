@@ -343,7 +343,7 @@ ast_node_t *parse_expr_prec(parser_t *p, int min_prec) {
         skip_trivia(p);
 
         /* 2a. 赋值运算符：最低优先级，右结合
-         *     左值必须是标识符，_ = expr 也是 AST_ASSIGN(name="_")
+         *     左值必须是标识符表达式节点，_ = expr 也是 AST_ASSIGN(target=IDENT "_")
          *     discard 语义由 Sema 处理 */
         if (is_assign_op_token(cur_token(p))) {
             if (ASSIGN_LEFT_PREC < min_prec) break;
@@ -351,13 +351,12 @@ ast_node_t *parse_expr_prec(parser_t *p, int min_prec) {
             const token_t *op_tok = cur_token(p);
             uint32_t op_pos = p->pos;
 
-            /* 左值必须是标识符 */
+            /* 左值必须是标识符（目前仅支持 ID_LIT） */
             if (left->kind != AST_IDENT) {
                 return ast_error_new(p->arena, left->tok_begin, p->pos,
                                      "invalid assignment target");
             }
 
-            strslice_t name = ((ast_ident_t *)left)->name;
             advance(p);
             skip_trivia(p);
 
@@ -371,9 +370,9 @@ ast_node_t *parse_expr_prec(parser_t *p, int min_prec) {
             }
 
             ast_node_t *node = ast_assign_new(p->arena, left->tok_begin, p->pos);
-            ((ast_assign_t *)node)->name  = name;
-            ((ast_assign_t *)node)->op    = op_tok;
-            ((ast_assign_t *)node)->value = value;
+            ((ast_assign_t *)node)->target = left;
+            ((ast_assign_t *)node)->op     = op_tok;
+            ((ast_assign_t *)node)->value  = value;
             left = node;
             continue;
         }

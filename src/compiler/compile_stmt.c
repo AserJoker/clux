@@ -1,5 +1,6 @@
 #include "compiler/compiler.h"
 #include "parser/ast_assign.h"
+#include "parser/ast_ident.h"
 #include "parser/ast_block.h"
 #include "parser/ast_expr_stmt.h"
 #include "parser/ast_for.h"
@@ -37,7 +38,9 @@ void compile_stmt(compiler_t *c, ast_node_t *node) {
   }
   case AST_ASSIGN: {
     ast_assign_t *n = (ast_assign_t *)node;
-    if (token_is(n->op, "=") && strslice_eq(n->name, STRSLICE_LIT("_"))) {
+    /* 左值标识符名（目前仅支持 AST_IDENT，由 parser/sema 保证） */
+    strslice_t name = ((ast_ident_t *)n->target)->name;
+    if (token_is(n->op, "=") && strslice_eq(name, STRSLICE_LIT("_"))) {
       /* 显式丢弃：_ = expr → 只求值右值并 POP（不 STORE，_ 不是变量）。
          sema 已校验 op 必须是 '='。 */
       compile_expr(c, n->value);               /* 栈: [value] */
@@ -49,7 +52,7 @@ void compile_stmt(compiler_t *c, ast_node_t *node) {
       /* 直接赋值：value → STORE name */
       compile_expr(c, n->value);               /* 栈: [value] */
       bcode_write_op(c->bc, BCODE_STORE);
-      bcode_write_str(c->bc, n->name);         /* STORE 压回结果，栈: [result] */
+      bcode_write_str(c->bc, name);            /* STORE 压回结果，栈: [result] */
       bcode_write_op(c->bc, BCODE_POP);        /* 赋值是语句：丢弃结果 */
       st_push(c, -1);
     } else {
@@ -57,7 +60,7 @@ void compile_stmt(compiler_t *c, ast_node_t *node) {
          x += v 等价于 x = x + v；栈序 [old, v] 保证 BINARY_OP
          弹 b=v、弹 a=old → value_fn(old, v)） */
       bcode_write_op(c->bc, BCODE_PUSH);
-      bcode_write_str(c->bc, n->name);       /* 栈: [old] */
+      bcode_write_str(c->bc, name);           /* 栈: [old] */
       compile_expr(c, n->value);             /* 栈: [old, v] */
       if (token_is(n->op, "+="))      bcode_write_op(c->bc, BCODE_ADD);
       else if (token_is(n->op, "-=")) bcode_write_op(c->bc, BCODE_SUB);
@@ -67,7 +70,7 @@ void compile_stmt(compiler_t *c, ast_node_t *node) {
       else { c_error(c, node, "unsupported compound assignment"); return; }
       /* 栈: [result] */
       bcode_write_op(c->bc, BCODE_STORE);
-      bcode_write_str(c->bc, n->name);       /* 压回结果，栈: [result] */
+      bcode_write_str(c->bc, name);           /* 压回结果，栈: [result] */
       bcode_write_op(c->bc, BCODE_POP);      /* 赋值是语句：丢弃结果 */
       st_push(c, -2);
     }

@@ -4,13 +4,12 @@
 extern "C" {
 #endif
 
-#include "core/strslice.h"
 #include "parser/ast_node.h"
 #include "parser/lexer.h"
 
 typedef struct {
     ast_node_t     base;
-    strslice_t     name;        /* 赋值目标标识符 */
+    ast_node_t    *target;      /* 左值表达式子节点（目前仅支持 AST_IDENT） */
     const token_t *op;          /* 赋值运算符 token（= / += / -= / *= / /= / %=） */
     ast_node_t    *value;       /* 右值 */
 } ast_assign_t;

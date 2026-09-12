@@ -214,8 +214,10 @@ TEST_F(ParseStmtTest, Assign_Simple) {
     ASSERT_EQ(node->kind, AST_ASSIGN);
 
     auto *assign = (ast_assign_t *)node;
-    EXPECT_EQ(assign->name.len, 1u);
-    EXPECT_EQ(assign->name.ptr[0], 'x');
+    ASSERT_EQ(assign->target->kind, AST_IDENT);
+    auto *lid = (ast_ident_t *)assign->target;
+    EXPECT_EQ(lid->name.len, 1u);
+    EXPECT_EQ(lid->name.ptr[0], 'x');
     expect_token_text(assign->op, "=");
     ASSERT_NE(assign->value, nullptr);
     EXPECT_EQ(assign->value->kind, AST_INT_LIT);
@@ -381,8 +383,9 @@ TEST_F(ParseStmtTest, UnderscoreAssign_FunctionCall) {
     ASSERT_EQ(node->kind, AST_ASSIGN);
 
     auto *assign = (ast_assign_t *)node;
-    EXPECT_EQ(assign->name.len, 1u);
-    EXPECT_EQ(assign->name.ptr[0], '_');
+    ASSERT_EQ(assign->target->kind, AST_IDENT);
+    EXPECT_EQ(((ast_ident_t *)assign->target)->name.len, 1u);
+    EXPECT_EQ(((ast_ident_t *)assign->target)->name.ptr[0], '_');
     expect_token_text(assign->op, "=");
     ASSERT_NE(assign->value, nullptr);
     EXPECT_EQ(assign->value->kind, AST_CALL);
@@ -403,8 +406,9 @@ TEST_F(ParseStmtTest, UnderscoreAssign_IntLiteral) {
     ASSERT_EQ(node->kind, AST_ASSIGN);
 
     auto *assign = (ast_assign_t *)node;
-    EXPECT_EQ(assign->name.len, 1u);
-    EXPECT_EQ(assign->name.ptr[0], '_');
+    ASSERT_EQ(assign->target->kind, AST_IDENT);
+    EXPECT_EQ(((ast_ident_t *)assign->target)->name.len, 1u);
+    EXPECT_EQ(((ast_ident_t *)assign->target)->name.ptr[0], '_');
     ASSERT_NE(assign->value, nullptr);
     EXPECT_EQ(assign->value->kind, AST_INT_LIT);
     EXPECT_EQ(((ast_int_lit_t *)assign->value)->value, 42ULL);
@@ -425,8 +429,9 @@ TEST_F(ParseStmtTest, UnderscoreAssign_BinaryExpr) {
     ASSERT_EQ(node->kind, AST_ASSIGN);
 
     auto *assign = (ast_assign_t *)node;
-    EXPECT_EQ(assign->name.len, 1u);
-    EXPECT_EQ(assign->name.ptr[0], '_');
+    ASSERT_EQ(assign->target->kind, AST_IDENT);
+    EXPECT_EQ(((ast_ident_t *)assign->target)->name.len, 1u);
+    EXPECT_EQ(((ast_ident_t *)assign->target)->name.ptr[0], '_');
     ASSERT_NE(assign->value, nullptr);
     EXPECT_EQ(assign->value->kind, AST_BINARY);
 
@@ -474,8 +479,9 @@ TEST_F(ParseStmtTest, UnderscoreAssign_CompoundAssign) {
     ASSERT_EQ(node->kind, AST_ASSIGN);
 
     auto *assign = (ast_assign_t *)node;
-    EXPECT_EQ(assign->name.len, 1u);
-    EXPECT_EQ(assign->name.ptr[0], '_');
+    ASSERT_EQ(assign->target->kind, AST_IDENT);
+    EXPECT_EQ(((ast_ident_t *)assign->target)->name.len, 1u);
+    EXPECT_EQ(((ast_ident_t *)assign->target)->name.ptr[0], '_');
     expect_token_text(assign->op, "+=");
 
     cleanup_parser(p);

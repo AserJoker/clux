@@ -3,6 +3,7 @@
 #include "core/string.h"
 #include "core/strslice.h"
 #include "parser/ast_assign.h"
+#include "parser/ast_ident.h"
 #include "parser/ast_block.h"
 #include "parser/ast_expr_stmt.h"
 #include "parser/ast_for.h"
@@ -25,7 +26,10 @@
 
 static value_t *ctfe_assign(ctfe_ctx_t *ctx, ast_assign_t *n) {
     vm_t *vm = ctx->vm;
-    value_t *dst = scope_lookup(vm->current_scope, n->name);
+    if (n->target->kind != AST_IDENT)
+        return ctfe_err(ctx, "ctfe: invalid assignment target");
+    value_t *dst = scope_lookup(vm->current_scope,
+                                ((ast_ident_t *)n->target)->name);
     if (!dst) return ctfe_err(ctx, "ctfe: assignment to undefined variable");
     value_t *src = ctfe_eval(ctx, n->value);
     if (value_is_error(vm, src)) return src;
