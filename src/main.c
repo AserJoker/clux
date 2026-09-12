@@ -18,8 +18,16 @@
 static const cmd_t g_cmds[] = {
     {
         .name = "format",
-        .usage = "clux format [options]",
-        .help = "Format source code.",
+        .usage = "clux format <file.cx> [-o PATH]",
+        .help =
+            "Format clux source code.\n"
+            "\n"
+            "  clux format <file.cx>          format in place\n"
+            "  clux format <file.cx> -o PATH  write result to PATH\n"
+            "  clux format -                  read stdin, write stdout\n"
+            "\n"
+            "Style: 4-space indent, K&R braces ('{' on the same line,\n"
+            "'}' on its own line, empty block stays '{}'), newline after ';'.",
         .handler = cmd_format,
     },
     {

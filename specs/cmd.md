@@ -116,6 +116,8 @@ Options:
 ```
 include/cmd/   cmd.h, path.h, format.h, build.h, run.h, bc.h, test.h, version.h, eval.h
 src/cmd/       cmd.c, path.c, format.c, build.c, run.c, bc.c, test.c, version.c, eval.c
+include/parser/ fmt.h（格式化核心）
+src/parser/     fmt.c
 ```
 
 `path.h/path.c` 提供输出路径推导（`cmd_derive_out_path`）与选项/推导解析（`cmd_resolve_output`），供需要产出文件的子命令复用，避免各命令重复实现扩展名替换逻辑。
@@ -188,8 +190,18 @@ clux 的选项语法统一为 GNU 风格 `--key` / `--key=value` / `--key value`
 | `bc asm <file.cxs>` | 汇编文本 → 字节码 | `.cxb` |
 | `bc disasm <file.cxb>` | 字节码 → 汇编文本 | `.cxs` |
 | `run <file>` | 运行（按内容判定源码/字节码） | — |
+| `format <file.cx>` | 源码格式化（原地 / `-o` / stdin） | 格式化后的源码 |
 
 **理由**：`build` 是编译器的对外主入口，语义应聚焦"产出可执行的机器码"。若把字节码/汇编产出塞进 `build`，会让它看起来像字节码工具，掩盖其真正的目标。
+
+### 6.2.1 format 的实现策略与风格
+
+`format` 走 **token 流规整** 路线（`src/parser/fmt.c`），不遍历 AST、不重排代码结构：
+- 输入是 lexer 产出的**完整 token 池**（含 WHITESPACE / COMMENT / MULTILINE_COMMENT），故注释天然被保留——这是不走"AST 打印"路线的根本原因（AST 不含注释）
+- 空白 token 中是否含换行/空行，用于保留用户的分行与分组意图
+- 风格规则：4 空格缩进（TAB 被替换）、`{` 跟随前行、`{` 后换行（空块 `{}` 紧凑）、`}` 单独一行、`;` 后换行（`()` 内除外）、`} else {` 同行
+- **必须幂等**：格式化结果再格式化不变（由 `tests/fmt_test.cpp` 保证）
+- **必须语义等价**：格式化后代码运行结果不变（测试覆盖 + 示例回归验证）
 
 ### 6.3 `run` 的输入判定：按内容，不按扩展名
 

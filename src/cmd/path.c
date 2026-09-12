@@ -46,3 +46,26 @@ int cmd_resolve_output(const cmd_args_t *args, const char *key,
     *out_owned = derived;
     return 0;
 }
+
+int cmd_take_short_output(const cmd_args_t *args,
+                          const char **opt_out,
+                          const char **out_pos, size_t *out_posn,
+                          size_t out_cap) {
+    *opt_out = NULL;
+    *out_posn = 0;
+
+    for (size_t i = 0; i < args->posc; i++) {
+        const char *a = args->posargs[i];
+        if (strcmp(a, "-o") == 0) {
+            if (i + 1 < args->posc) *opt_out = args->posargs[++i];
+            else return 1;   /* -o 缺值 */
+            continue;
+        }
+        if (strncmp(a, "-o=", 3) == 0) {
+            *opt_out = a + 3;
+            continue;
+        }
+        if (*out_posn < out_cap) out_pos[(*out_posn)++] = a;
+    }
+    return 0;
+}

@@ -29,6 +29,26 @@ int cmd_resolve_output(const cmd_args_t *args, const char *key,
                        const char *in_path, const char *ext,
                        const char **out_path, char **out_owned);
 
+/**
+ * 解析单横线 `-o PATH` / `-o=PATH`（唯一允许的短选项）。
+ *
+ * `cmd_args_parse` 只把 `--` 前缀识别为选项，故 `-o` 会落入位置参数，
+ * 需由 handler 显式扫描。本函数扫描位置参数并返回 `-o` 的取值，同时
+ * 通过 `out_pos` / `out_posn` 交回**过滤掉 `-o` 及其取值后**的位置参数
+ * 序列，供 handler 按语义取用（如 pos[0]=子操作、pos[1]=输入…）。
+ *
+ * @param args      解析结果
+ * @param opt_out   `-o` 的值；未出现为 NULL，出现但缺值为缺值标记（见返回）
+ * @param out_pos   输出：过滤后的位置参数数组（调用方提供，容量足够）
+ * @param out_posn  输出：过滤后的位置参数个数
+ * @param out_cap   `out_pos` 容量
+ * @return 0 正常；1 出现 `-o` 但缺值
+ */
+int cmd_take_short_output(const cmd_args_t *args,
+                          const char **opt_out,
+                          const char **out_pos, size_t *out_posn,
+                          size_t out_cap);
+
 #ifdef __cplusplus
 }
 #endif

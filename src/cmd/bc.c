@@ -36,29 +36,13 @@ static const char *op_out_ext(const char *op) {
 int cmd_bc(const cmd_args_t *args) {
     if (!args) return 1;
 
-    /* cmd_args_parse 只把 `--` 前缀识别为选项，故 `-o` 会落入位置参数。
-     * 这里按出现顺序扫描位置参数，识别 `-o PATH` / `-o=PATH`，其余作为
-     * 普通位置参数（子操作 / 输入 / 输出）依次收集。 */
+    /* 解析单横线 -o（cmd_args_parse 只识别 --，故落入位置参数）；
+     * 过滤后 pos[0]=子操作、pos[1]=输入、pos[2]=输出。 */
     const char *pos[8];
     size_t np = 0;
-    const char *opt_out = NULL;   /* -o 指定的输出路径 */
-    bool o_missing_val = false;   /* 出现 -o 但其后无值 */
+    const char *opt_out = NULL;
 
-    for (size_t i = 0; i < args->posc; i++) {
-        const char *a = args->posargs[i];
-        if (strcmp(a, "-o") == 0) {
-            if (i + 1 < args->posc) opt_out = args->posargs[++i];
-            else o_missing_val = true;
-            continue;
-        }
-        if (strncmp(a, "-o=", 3) == 0) {
-            opt_out = a + 3;
-            continue;
-        }
-        if (np < 8) pos[np++] = a;
-    }
-
-    if (o_missing_val) {
+    if (cmd_take_short_output(args, &opt_out, pos, &np, 8)) {
         fprintf(stderr, "bc: -o requires a path\n");
         fputs(USAGE, stderr);
         return 1;

@@ -1,0 +1,362 @@
+#include "parser/fmt.h"
+#include "parser/lexer.h"
+#include "core/allocator.h"
+#include "core/vec.h"
+
+#include <string.h>
+
+/* ================================================================ */
+/* clux 源码格式化（最小版）：基于 token 流规整 trivia                */
+/* ================================================================ */
+/*
+ * 策略：不重排代码结构，只规整 token 之间的空白与缩进。
+ *
+ * 步骤：
+ *   ① 过滤 trivia：把 WHITESPACE / COMMENT / MULTILINE_COMMENT 之外
+ *      的实义 token 收集成数组，同时记录每个实义 token 之前遇到的
+ *      trivia 信息（是否含换行、注释文本序列）。
+ *   ② 按 token 序列 + 简单上下文规则输出：
+ *        - '{' 跟随前行；非空块：'{' 后换行、缩进 +1；空块：紧凑 {}
+ *        - '}' 单独一行；'}' 后 token 为 'else' 时同行（} else）
+ *        - ';' 后换行（() 内除外）；',' 后一个空格
+ *        - 运算符两侧空格；标识符/关键字/字面量之间空格
+ *        - 注释原样保留在它出现的位置
+ *   ③ 缩进一律 4 空格；输出以换行结束。
+ */
+
+#define CLUX_INDENT "    "
+
+/* ---- 增长式输出缓冲 ---- */
+
+typedef struct {
+    allocator_t *alloc;
+    char        *buf;
+    size_t       len;
+    size_t       cap;
+} sb_t;
+
+static void sb_reserve(sb_t *sb, size_t extra) {
+    if (sb->len + extra + 1 <= sb->cap) return;
+    size_t nc = sb->cap ? sb->cap : 256;
+    while (nc < sb->len + extra + 1) nc *= 2;
+    char *nb = (char *)allocator_new_ex(
+        sb->alloc, "clux.parser.fmt.buf", nc, NULL, NULL, NULL, 1);
+    if (sb->buf) {
+        memcpy(nb, sb->buf, sb->len);
+        allocator_free(sb->alloc, (void **)&sb->buf);
+    }
+    sb->buf = nb;
+    sb->cap = nc;
+}
+
+static void sb_put(sb_t *sb, const char *s, size_t n) {
+    if (n == 0) return;
+    sb_reserve(sb, n);
+    memcpy(sb->buf + sb->len, s, n);
+    sb->len += n;
+}
+
+static void sb_str(sb_t *sb, const char *s) { sb_put(sb, s, strlen(s)); }
+static void sb_ch(sb_t *sb, char c)         { sb_put(sb, &c, 1); }
+
+static void sb_indent(sb_t *sb, int level) {
+    for (int i = 0; i < level; i++) sb_str(sb, CLUX_INDENT);
+}
+
+/* ---- token 分类辅助 ---- */
+
+static bool sym_is(const token_t *t, char c) {
+    if (token_get_kind(t) != TOKEN_TYPE_SYMBOL) return false;
+    size_t n = 0;
+    const char *s = token_get_text(t, &n);
+    return n == 1 && s && s[0] == c;
+}
+
+static bool kw_is(const token_t *t, const char *kw) {
+    if (token_get_kind(t) != TOKEN_TYPE_KEYWORD) return false;
+    return token_is(t, kw);
+}
+
+/* 词法上类似"值"的 token（标识符/关键字/字面量） */
+static bool is_word_like(token_kind_t k) {
+    return k == TOKEN_TYPE_IDENTIFIER || k == TOKEN_TYPE_KEYWORD ||
+           k == TOKEN_TYPE_NUMERIC    || k == TOKEN_TYPE_STRING  ||
+           k == TOKEN_TYPE_CHARACTER;
+}
+
+/* 前一个 token 后是否禁用空格 */
+static bool no_space_after(const token_t *t) {
+    return sym_is(t, '(') || sym_is(t, '[') || sym_is(t, '.') ||
+           sym_is(t, ':');
+}
+
+/* 当前 token 前是否禁用空格 */
+static bool no_space_before(const token_t *t) {
+    return sym_is(t, ')') || sym_is(t, ']') || sym_is(t, ',') ||
+           sym_is(t, ';') || sym_is(t, '.') || sym_is(t, '(') ||
+           sym_is(t, ':');
+}
+
+/* 运算符（两侧留空格） */
+static bool is_operator(const token_t *t) {
+    if (token_get_kind(t) != TOKEN_TYPE_SYMBOL) return false;
+    static const char *ops[] = {
+        "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=",
+        "+", "-", "*", "/", "%",
+        "==", "!=", "<", ">", "<=", ">=",
+        "&&", "||", "&", "|", "^", "<<", ">>",
+        "!", "~", "->", "=>",
+        NULL,
+    };
+    for (size_t i = 0; ops[i]; i++) {
+        if (token_is(t, ops[i])) return true;
+    }
+    return false;
+}
+
+/* 该实义 token 之前是否有换行（来自其前导空白） */
+typedef struct {
+    const token_t *tok;
+    bool           leading_newline;   /* 前面是否出现过换行 */
+    bool           leading_blank;     /* 前面是否出现过空行（>=2 换行） */
+} fmt_item_t;
+
+/* ---- 预看：tok[i+1] 是否为 '}'（用于空块判定） ---- */
+
+char *fmt_format(allocator_t *alloc, const vec_t *tokens, size_t *out_len) {
+    if (!alloc || !tokens) return NULL;
+    if (out_len) *out_len = 0;
+
+    size_t n = vec_len(tokens);
+
+    /* ① 收集实义 token + 前导换行信息（用 alloc 临时数组） */
+    fmt_item_t *items = (fmt_item_t *)allocator_new_ex(
+        alloc, "clux.parser.fmt.items", (n ? n : 1) * sizeof(fmt_item_t),
+        NULL, NULL, NULL, 1);
+    size_t count = 0;
+
+    bool pending_newline = false;
+    size_t pending_nl_count = 0;
+
+    for (size_t i = 0; i < n; i++) {
+        const token_t *tok = (const token_t *)vec_get(tokens, i);
+        if (!tok) continue;
+        token_kind_t kind = token_get_kind(tok);
+        if (kind == TOKEN_TYPE_EOF) break;
+
+        if (kind == TOKEN_TYPE_WHITESPACE) {
+            size_t wl = 0;
+            const char *w = token_get_text(tok, &wl);
+            for (size_t k = 0; k < wl; k++) {
+                if (w[k] == '\n') {
+                    pending_newline = true;
+                    pending_nl_count++;
+                }
+            }
+            continue;
+        }
+        if (kind == TOKEN_TYPE_COMMENT || kind == TOKEN_TYPE_MULTILINE_COMMENT) {
+            /* 注释也作为 item 保留（需原样输出） */
+            items[count].tok = tok;
+            items[count].leading_newline = pending_newline;
+            items[count].leading_blank = pending_nl_count >= 2;
+            count++;
+            pending_newline = false;
+            pending_nl_count = 0;
+            continue;
+        }
+
+        items[count].tok = tok;
+        items[count].leading_newline = pending_newline;
+        items[count].leading_blank = pending_nl_count >= 2;
+        count++;
+        pending_newline = false;
+        pending_nl_count = 0;
+    }
+
+    /* ② 逐 item 输出 */
+    sb_t sb = { alloc, NULL, 0, 0 };
+    int  indent = 0;
+    int  paren_depth = 0;
+    bool at_line_start = true;
+    const token_t *prev = NULL;   /* 上一个输出过的实义 token（注释不计） */
+
+    for (size_t i = 0; i < count; i++) {
+        const token_t *tok = items[i].tok;
+        token_kind_t kind = token_get_kind(tok);
+        size_t tlen = 0;
+        const char *text = token_get_text(tok, &tlen);
+
+        /* ---- 注释：原样保留 ---- */
+        if (kind == TOKEN_TYPE_COMMENT || kind == TOKEN_TYPE_MULTILINE_COMMENT) {
+            /* 关键：区分行内注释（源码中与前一 token 同行）与独立行注释。
+             *   - 行内：紧跟前一 token，中间一个空格，注释归属前一语句；
+             *   - 独立行：换行后按当前缩进输出（保留源码的空行分组）。 */
+            bool inline_comment = !at_line_start &&
+                                  !items[i].leading_newline;
+            if (inline_comment) {
+                sb_ch(&sb, ' ');
+            } else {
+                /* 独立行注释：若源码中其前有换行/空行，则换行输出 */
+                if (!at_line_start) sb_ch(&sb, '\n');
+                /* 源码中的空行 → 输出一个空行（保留用户分组意图） */
+                if (items[i].leading_blank) sb_ch(&sb, '\n');
+                sb_indent(&sb, indent);
+                at_line_start = false;
+            }
+            sb_put(&sb, text, tlen);
+
+            if (kind == TOKEN_TYPE_COMMENT) {
+                sb_ch(&sb, '\n');
+                at_line_start = true;
+            } else if (i + 1 < count && items[i + 1].leading_newline) {
+                /* 块注释后源码中有换行 → 换行 */
+                sb_ch(&sb, '\n');
+                at_line_start = true;
+            }
+            /* 行内块注释后无换行 → 保持同行，由后续 token 接续 */
+            continue;
+        }
+
+        bool is_open  = sym_is(tok, '{');
+        bool is_close = sym_is(tok, '}');
+        bool is_semi  = sym_is(tok, ';');
+        bool is_comma = sym_is(tok, ',');
+        bool is_else  = kw_is(tok, "else");
+
+        /* ---- '}' ---- */
+        if (is_close) {
+            bool empty = prev && sym_is(prev, '{');
+            if (empty) {
+                /* 空块：紧接 '{' 输出 '}'（'{' 处未换行、未增缩进） */
+                sb_ch(&sb, '}');
+                at_line_start = false;
+                prev = tok;
+                /* 空块后：若不是 ; , ) 则换行 */
+                bool next_glue = (i + 1 < count) &&
+                                 (sym_is(items[i + 1].tok, ';') ||
+                                  sym_is(items[i + 1].tok, ',') ||
+                                  sym_is(items[i + 1].tok, ')') ||
+                                  kw_is(items[i + 1].tok, "else"));
+                if (!next_glue) {
+                    sb_ch(&sb, '\n');
+                    at_line_start = true;
+                }
+                continue;
+            }
+            if (indent > 0) indent--;
+            if (!at_line_start) sb_ch(&sb, '\n');
+            sb_indent(&sb, indent);
+            sb_ch(&sb, '}');
+            at_line_start = false;
+            prev = tok;
+            /* '}' 后若为 else 则同行；否则换行（由下一个 token 决定） */
+            if (i + 1 < count && !kw_is(items[i + 1].tok, "else") &&
+                !sym_is(items[i + 1].tok, ';') && !sym_is(items[i + 1].tok, ',') &&
+                !sym_is(items[i + 1].tok, ')') && !sym_is(items[i + 1].tok, '.')) {
+                sb_ch(&sb, '\n');
+                at_line_start = true;
+            }
+            continue;
+        }
+
+        /* ---- '{' ---- */
+        if (is_open) {
+            /* 空块判定：下一个实义/注释 item 是否为 '}' */
+            bool empty_block = false;
+            for (size_t j = i + 1; j < count; j++) {
+                const token_t *nt = items[j].tok;
+                token_kind_t nk = token_get_kind(nt);
+                if (nk == TOKEN_TYPE_COMMENT || nk == TOKEN_TYPE_MULTILINE_COMMENT)
+                    break; /* 有注释 → 非空块 */
+                empty_block = sym_is(nt, '}');
+                break;
+            }
+
+            if (at_line_start) {
+                sb_indent(&sb, indent);
+                at_line_start = false;
+            } else if (prev) {
+                /* '{' 跟随前行：前面补一个空格 */
+                sb_ch(&sb, ' ');
+            }
+            sb_ch(&sb, '{');
+            prev = tok;
+
+            if (empty_block) {
+                at_line_start = false;  /* '}' 将紧跟输出 */
+            } else {
+                sb_ch(&sb, '\n');
+                at_line_start = true;
+                indent++;
+            }
+            continue;
+        }
+
+        /* ---- 其余实义 token ---- */
+
+        /* `else` 紧跟 `}` 同行：`} else`（一个空格分隔） */
+        bool glue_else = is_else && prev && sym_is(prev, '}');
+
+        if (at_line_start) {
+            /* 源码中此 token 前有空行 → 保留一个空行（用户分组意图） */
+            if (items[i].leading_blank && sb.len > 0 &&
+                sb.buf[sb.len - 1] == '\n') {
+                sb_ch(&sb, '\n');
+            }
+            sb_indent(&sb, indent);
+            at_line_start = false;
+        } else if (glue_else) {
+            sb_ch(&sb, ' ');
+        } else {
+            bool need = false;
+            if (prev) {
+                if (!no_space_before(tok) && !no_space_after(prev)) {
+                    need = true;   /* 运算符/字面量/标识符等均以单空格分隔 */
+                }
+            }
+            if (need) sb_ch(&sb, ' ');
+        }
+
+        sb_put(&sb, text, tlen);
+        at_line_start = false;
+
+        if (sym_is(tok, '(')) paren_depth++;
+        else if (sym_is(tok, ')') && paren_depth > 0) paren_depth--;
+
+        prev = tok;
+
+        if (is_semi) {
+            /* 行内注释保护：若源码中紧跟一个"同行注释"（其前无换行），
+             * 则不在此处换行——注释归属本条语句，须与之同行。 */
+            bool trailing_comment = (i + 1 < count) &&
+                                    !items[i + 1].leading_newline &&
+                                    (token_get_kind(items[i + 1].tok) == TOKEN_TYPE_COMMENT ||
+                                     token_get_kind(items[i + 1].tok) == TOKEN_TYPE_MULTILINE_COMMENT);
+
+            if (paren_depth > 0) {
+                /* for (a; b; c)：不在此处补空格，交给下一个 token 的
+                 * 常规空格判定（避免与它重复插入两个空格） */
+                at_line_start = false;
+            } else if (trailing_comment) {
+                at_line_start = false;   /* 注释将紧随其后，保持同行 */
+            } else {
+                sb_ch(&sb, '\n');
+                at_line_start = true;
+                prev = NULL;           /* 换行后不参与跨行空格判定 */
+            }
+        } else if (is_comma) {
+            /* 逗号后同样交给下一个 token 判定 */
+            at_line_start = false;
+        }
+    }
+
+    /* ③ 收尾：以换行结束 */
+    if (sb.len > 0 && sb.buf[sb.len - 1] != '\n') sb_ch(&sb, '\n');
+    sb_reserve(&sb, 0);
+    sb.buf[sb.len] = '\0';
+
+    allocator_free(alloc, (void **)&items);
+    if (out_len) *out_len = sb.len;
+    return sb.buf;
+}
