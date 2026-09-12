@@ -1,5 +1,6 @@
 #include "vm/vm.h"
 #include "vm/type.h"
+#include "vm/type_array.h"
 #include "vm/value.h"
 #include "vm/function.h"
 #include "core/panic.h"
@@ -162,6 +163,21 @@ void vm_destroy(vm_t **pvm) {
             allocator_free(vm->alloc, (void **)&vt);
         }
         vec_free(vm->alloc, &vm->volatile_types);
+    }
+
+    /* 数组类型池：释放 name + 结构体（elem_type 归底层类型，不在此释放） */
+    if (vm->array_types) {
+        size_t n = vec_len(vm->array_types);
+        for (size_t i = 0; i < n; i++) {
+            array_type_t *at = (array_type_t *)vec_get(vm->array_types, i);
+            if (!at) continue;
+            if (at->base.name.ptr) {
+                char *np = (char *)at->base.name.ptr;
+                allocator_free(vm->alloc, (void **)&np);
+            }
+            allocator_free(vm->alloc, (void **)&at);
+        }
+        vec_free(vm->alloc, &vm->array_types);
     }
 
     allocator_free(vm->alloc, (void **)pvm);

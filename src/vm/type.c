@@ -260,6 +260,9 @@ void vm_init_builtins(vm_t *vm) {
        vec 只持有指针数组（与 scope owned 同一模式） */
     vm->sig_types = vec_new(vm->alloc, /*owns_element=*/false);
 
+    /* 数组类型池（type_array_intern intern 用）；元素由 vm_destroy 手动释放 */
+    vm->array_types = vec_new(vm->alloc, /*owns_element=*/false);
+
     g_type_i8   = (type_t){ &VTABLE_INT_SIGNED,  STRSLICE_LIT(S_I8),  sizeof(int8_t),   alignof(int8_t),   TYPE_KIND_INT };
     g_type_i16  = (type_t){ &VTABLE_INT_SIGNED,  STRSLICE_LIT(S_I16), sizeof(int16_t),  alignof(int16_t),  TYPE_KIND_INT };
     g_type_i32  = (type_t){ &VTABLE_INT_SIGNED,  STRSLICE_LIT(S_I32), sizeof(int32_t),  alignof(int32_t),  TYPE_KIND_INT };

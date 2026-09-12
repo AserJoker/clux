@@ -286,6 +286,35 @@ value_t *value_call(vm_t *vm, value_t *callee, value_t **args, size_t argc) {
     return callee->type->vtable->call(vm, callee, args, argc);
 }
 
+/* ---- 索引 / 容器运算 ---- */
+
+value_t *value_get_index(vm_t *vm, value_t *self, value_t *index) {
+    if (value_is_error(vm, self)) return self;
+    if (value_is_error(vm, index)) return index;
+    if (!self->type || !self->type->vtable || !self->type->vtable->get_index) {
+        return value_make_error(vm, "type does not support indexing");
+    }
+    return self->type->vtable->get_index(vm, self, index);
+}
+
+value_t *value_set_index(vm_t *vm, value_t *self, value_t *index, value_t *val) {
+    if (value_is_error(vm, self)) return self;
+    if (value_is_error(vm, index)) return index;
+    if (value_is_error(vm, val)) return val;
+    if (!self->type || !self->type->vtable || !self->type->vtable->set_index) {
+        return value_make_error(vm, "type does not support indexing");
+    }
+    return self->type->vtable->set_index(vm, self, index, val);
+}
+
+value_t *value_length(vm_t *vm, value_t *self) {
+    if (value_is_error(vm, self)) return self;
+    if (!self->type || !self->type->vtable || !self->type->vtable->length) {
+        return value_make_error(vm, "type does not support length");
+    }
+    return self->type->vtable->length(vm, self);
+}
+
 /* ---- 生命周期 ---- */
 
 void value_dispose(vm_t *vm, value_t *v) {

@@ -97,6 +97,9 @@ typedef struct volatile_type_t {
     const type_t *sub;
 } volatile_type_t;
 
+/* 数组类型 array_type_t 的定义、构造 API 与访问器见 vm/type_array.h
+ * （array_type_t 继承 type_t：首成员 base 为 type_t，向上转型安全）。 */
+
 /**
  * 按名从当前作用域链解析类型（类型即表达式）
  *
@@ -151,6 +154,11 @@ const type_t *type_const_intern(vm_t *vm, const type_t *sub);
 
 /** volatile 类型 intern（按 sub 指针去重，vm 拥有生命周期） */
 const type_t *type_volatile_intern(vm_t *vm, const type_t *sub);
+
+/* 数组类型构造 API（array_type_push / array_type_set_elem / array_type_set_count /
+ * array_type_seal / type_array_intern）与访问器（array_type_elem / array_type_len /
+ * array_type_is_sealed / array_type_layout_size / array_type_layout_align）见
+ * vm/type_array.h。 */
 
 /** 将 type 转为 value_t*（type 作为 first-class value） */
 value_t *type_as_value(vm_t *vm, const type_t *t);

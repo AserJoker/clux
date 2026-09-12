@@ -137,6 +137,17 @@ value_t *value_lnot(vm_t *vm, value_t *a);
 
 value_t *value_call(vm_t *vm, value_t *callee, value_t **args, size_t argc);
 
+/* ---- 索引 / 容器运算（分派到 vtable 的 get_index / set_index / length） ---- */
+
+/** self[index]：index 为运行时 value（整数），返回元素副本或 error */
+value_t *value_get_index(vm_t *vm, value_t *self, value_t *index);
+
+/** self[index] = val：下标写入，返回 self 或 error */
+value_t *value_set_index(vm_t *vm, value_t *self, value_t *index, value_t *val);
+
+/** 长度查询：返回表示元素个数的整数 value（i64） */
+value_t *value_length(vm_t *vm, value_t *self);
+
 /* ---- 生命周期 ---- */
 
 /** 销毁 value 的堆载荷（dispose data，不释放 value_t 结构体） */

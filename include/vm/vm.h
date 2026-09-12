@@ -52,6 +52,9 @@ typedef struct vm_t {
     vec_t *const_types;    /* const_type_t*，元素为 const 修饰类型 */
     vec_t *volatile_types; /* volatile_type_t*，元素为 volatile 修饰类型 */
 
+    /* ---- 数组类型池（按 elem_type + length 去重 intern，vm 拥有生命周期） ---- */
+    vec_t *array_types;    /* array_type_t*，元素为数组类型 */
+
     /* ---- 函数对象池（func_t / bcode_function_t*，vm 统一持有生命周期） ---- */
     /* 所有函数值共享同一 func_t*（clone 浅拷贝指针），因此 func_t 不能由
      * 某个 value dispose 释放（double free）；归本池统一释放。 */

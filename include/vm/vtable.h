@@ -53,6 +53,14 @@ typedef struct vtable_t {
     /* ---- 调用（函数类型） ---- */
     value_t *(*call)(vm_t *vm, value_t *callee, value_t **args, size_t argc);
 
+    /* ---- 索引 / 容器运算 ---- */
+    /* 下标读取 self[index]：index 为运行时 value（整数），返回元素副本或 error */
+    value_t *(*get_index)(vm_t *vm, value_t *self, value_t *index);
+    /* 下标写入 self[index] = val：返回 self 或 error */
+    value_t *(*set_index)(vm_t *vm, value_t *self, value_t *index, value_t *val);
+    /* 长度查询：返回表示元素个数的整数 value（i64） */
+    value_t *(*length)(vm_t *vm, value_t *self);
+
     /* ---- 类型运算（鸭子类型，type value 的 extends 运算符） ---- */
     value_t *(*extends)(vm_t *vm, value_t *a, value_t *b);
 
