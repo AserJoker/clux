@@ -82,6 +82,11 @@ typedef enum {
     BCODE_POP_SCOPE,       /* 销毁当前 scope */
     BCODE_POP,             /* 丢弃栈顶引用（不释放，归 scope） */
     BCODE_HALT,            /* 停止执行 */
+
+    /* ---- array type 构造（与 func type 统一：PUSH → SET → SEAL）----
+       仅构造"数组类型"（array type）；数组值由 CONSTRUCT 指令构造。 */
+    BCODE_PUSH_ARRAY,      /* 分配空 array type（开放，暂不入池） + 压其 type value */
+    BCODE_DEFINE_BOUND,   /* U32：弹栈顶元素 type value → 设为元素类型 + 边界立即数 N（编译期常量） */
 } bcode_op_t;
 
 /* ================================================================ */

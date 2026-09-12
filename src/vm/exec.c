@@ -3,6 +3,7 @@
 #include "vm/value.h"
 #include "vm/type.h"
 #include "vm/type_func.h"
+#include "vm/type_array.h"
 #include "vm/type_type.h"
 #include "vm/type_interrupt.h"
 #include "vm/bcode_function.h"
@@ -290,6 +291,29 @@ static value_t *op_seal(vm_t *vm, bytecode_t *bc, size_t *pc) {
     return NULL;
 }
 
+/* ---- array type 构造（与 func type 统一：PUSH → SET → SEAL） ---- */
+
+/* PUSH_ARRAY：分配空 array type（开放，暂不入池）+ 压其 type value 到栈 */
+static value_t *op_push_array(vm_t *vm, bytecode_t *bc, size_t *pc) {
+    (void)bc; (void)pc;
+    array_type_push(vm);  /* 压入 array type 的 type value（见 array_type_push） */
+    return NULL;
+}
+
+/* DEFINE_BOUND N：弹栈顶元素 type value → 设为元素类型，边界立即数 N 设为长度。
+ * 弹元素类型后，栈顶即当前构造的 array type（由 PUSH_ARRAY 压入）。 */
+static value_t *op_define_bound(vm_t *vm, bytecode_t *bc, size_t *pc) {
+    uint32_t count = bcode_read_u32(bc, pc);
+    value_t *elem_v = exec_stack_pop(vm);
+    const type_t *elem = *(const type_t **)value_data(elem_v);
+    value_t *arr_v = exec_stack_peek(vm, 0);
+    const type_t *arr = (arr_v && value_type(arr_v) == vm->type_type)
+                            ? value_as(arr_v, const type_t *) : NULL;
+    array_type_set_elem(vm, arr, elem);
+    array_type_set_count(vm, arr, count);
+    return NULL;
+}
+
 static value_t *op_push_function(vm_t *vm, bytecode_t *bc, size_t *pc) {
     /* entry_pc 立即数；弹栈顶签名类型（CREATE_FUNC_TYPE 产物），
        构造 bcode_function_t（封装在 bcode_function 模块内） */
@@ -433,6 +457,8 @@ static const bcode_handler_t HANDLERS[] = {
     [BCODE_POP_SCOPE]      = op_pop_scope,
     [BCODE_POP]            = op_pop,
     [BCODE_HALT]           = op_halt,
+    [BCODE_PUSH_ARRAY]      = op_push_array,
+    [BCODE_DEFINE_BOUND]    = op_define_bound,
 };
 
 /* ================================================================ */

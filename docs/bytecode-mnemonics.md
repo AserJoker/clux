@@ -78,6 +78,8 @@ clux 的 VM 以**字节码**作为可执行中间表示。编译期把 AST 降�
 | `FUNC_TYPE_PARAM` | — | 弹栈 type value → 追加为 func type 的下一参数类型。 |
 | `FUNC_TYPE_RETURN` | — | 弹栈 type value → 设为 func type 的返回类型。 |
 | `FUNC_TYPE_VARARG` | — | 标记 func type 为可变参数（无操作数）。 |
+| `PUSH_ARRAY` | — | 分配空**数组类型**（`array_type_t`，处于开放态、暂不入池），压其 type value（构造起点）。 |
+| `DEFINE_BOUND` | `U32`（长度立即数 N） | 弹栈顶元素 type value → 设为 array type 的元素类型，并把立即数 N 设为长度，构造出 `[elem; N]`。 |
 | `SEAL` | — | 密封栈顶 type value（统一 SEAL 命令，func/array/struct/tuple 通用）：经 `value_seal` 代理到 `data->vtable->type_seal`，按类型各自池查重 intern（首次成功入池并置基类 `sealed=true`；去重复用则回收开放类型并重定向栈引用）。 |
 | `PUSH_FUNCTION` | `U32`（entry pc，标签） | 弹栈顶签名类型（`SEAL` 产物）→ 构造 `bcode_function_t{entry_pc}` → func value 压栈（函数对象，非签名类型）。 |
 

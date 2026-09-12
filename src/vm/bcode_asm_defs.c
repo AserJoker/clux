@@ -65,6 +65,9 @@ const bcode_asm_entry_t BCODE_ASM_TABLE[] = {
     [BCODE_POP_SCOPE]      = { "POP_SCOPE",      { BCODE_ASM_OP_NONE } },
     [BCODE_POP]            = { "POP",            { BCODE_ASM_OP_NONE } },
     [BCODE_HALT]           = { "HALT",           { BCODE_ASM_OP_NONE } },
+
+    [BCODE_PUSH_ARRAY]     = { "PUSH_ARRAY",     { BCODE_ASM_OP_NONE } },
+    [BCODE_DEFINE_BOUND]   = { "DEFINE_BOUND",   { BCODE_ASM_OP_U32 } },
 };
 
 const size_t BCODE_ASM_TABLE_COUNT =
