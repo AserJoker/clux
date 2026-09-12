@@ -106,6 +106,25 @@ static bool no_space_after(const token_t *t) {
     return sym_is(t, '(') || sym_is(t, '[') || sym_is(t, '.');
 }
 
+/* 当前 token 是否为**一元前缀**运算符。
+ *  - `!` / `~` 永远是一元；
+ *  - `-` / `+` 仅当其前置 token 处于"期待一元操作数"上下文时视为一元，
+ *    例如 `= -x`、`(-x)`、`, -x`、`; -x`、行首、另一运算符之后、`return -x`。
+ * 一元前缀运算符紧贴其后操作数，不插入空格（`-x` / `~x` / `!x` / `+(...)` 等）。
+ * 这与二元 `+`/`-`（两侧留空格，如 `a + b`）区分开来。 */
+static bool is_unary_prefix(const token_t *prev, const token_t *t) {
+    if (token_get_kind(t) != TOKEN_TYPE_SYMBOL) return false;
+    if (token_is(t, "!") || token_is(t, "~")) return true;
+    if (!token_is(t, "-") && !token_is(t, "+")) return false;
+    /* `-` / `+`：依靠上下文区分一元/二元 */
+    if (!prev) return true;                 /* 行首 / 表达式起始 */
+    if (sym_is(prev, '=') || sym_is(prev, ':') || sym_is(prev, ',') ||
+        sym_is(prev, ';') || sym_is(prev, '(') || sym_is(prev, '[') ||
+        is_operator(prev) || kw_is(prev, "return"))
+        return true;
+    return false;
+}
+
 /* 当前 token 前是否禁用空格（闭合符 / 分隔符 / 类型标注冒号） */
 static bool no_space_before(const token_t *t) {
     return sym_is(t, ')') || sym_is(t, ']') || sym_is(t, ',') ||
@@ -127,13 +146,17 @@ static bool is_control_keyword(const token_t *t) {
            token_is(t, "switch");
 }
 
-/* `(` 之前是否需要空格：仅当它是控制流关键字调用括号（`if (`）时为真；
- * 函数调用/泛型实例化的 `name(` 紧贴（`main(`, `foo(`）。 */
+/* `(` 之前是否需要空格：
+ *  - 控制流关键字调用括号 `if (` / `while (` / `foreach (` / `switch (` 须空格；
+ *  - 运算符后的括号 `a + (b)` / `x = (y)` 须空格（否则 `+(` / `=(` 紧贴破坏可读性）；
+ *  - 函数调用 / 泛型实例化的 `name(` 紧贴（`main(`, `foo(`）。
+ * 注意：clux 软关键字（foreach / switch 等）以标识符身份产出，故控制流判定
+ * 按文本而非 kind。 */
 static bool need_space_before_paren(const token_t *prev,
                                     const token_t *cur) {
     if (!sym_is(cur, '(')) return false;
     if (!prev) return false;
-    return is_control_keyword(prev);
+    return is_control_keyword(prev) || is_operator(prev);
 }
 
 /* 两个 token 在源码中是否紧贴（无任何字符间隔）。
@@ -232,6 +255,7 @@ char *fmt_format(allocator_t *alloc, const vec_t *tokens, size_t *out_len) {
     int  paren_depth = 0;
     bool at_line_start = true;
     const token_t *prev = NULL;   /* 上一个输出过的实义 token（注释不计） */
+    bool prev_unary_prefix = false; /* 上一 token 是否一元前缀（其操作数须紧贴） */
 
     for (size_t i = 0; i < count; i++) {
         const token_t *tok = items[i].tok;
@@ -358,11 +382,16 @@ char *fmt_format(allocator_t *alloc, const vec_t *tokens, size_t *out_len) {
             }
             sb_indent(&sb, indent);
             at_line_start = false;
+            prev_unary_prefix = false;   /* 换行后一元前缀标志失效 */
         } else if (glue_else) {
             sb_ch(&sb, ' ');
         } else {
             bool need = false;
-            if (prev) {
+            if (prev_unary_prefix) {
+                /* 上一 token 是一元前缀运算符：其操作数须紧贴，不插空格 */
+                need = false;
+                prev_unary_prefix = false;
+            } else if (prev) {
                 if (is_numeric_suffix(prev, tok)) {
                     need = false;   /* 数字类型后缀紧贴：7i8 / 2.5f32 */
                 } else if (sym_is(tok, '(')) {
@@ -382,6 +411,7 @@ char *fmt_format(allocator_t *alloc, const vec_t *tokens, size_t *out_len) {
         if (sym_is(tok, '(')) paren_depth++;
         else if (sym_is(tok, ')') && paren_depth > 0) paren_depth--;
 
+        prev_unary_prefix = is_unary_prefix(prev, tok);
         prev = tok;
 
         if (is_semi) {
@@ -402,6 +432,7 @@ char *fmt_format(allocator_t *alloc, const vec_t *tokens, size_t *out_len) {
                 sb_ch(&sb, '\n');
                 at_line_start = true;
                 prev = NULL;           /* 换行后不参与跨行空格判定 */
+                prev_unary_prefix = false;
             }
         } else if (is_comma) {
             /* 逗号后同样交给下一个 token 判定 */

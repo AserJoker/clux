@@ -8,9 +8,9 @@
    /* 内层块注释 */
    外层继续 */
 
-func main():i32 {
+func main(): i32 {
     /* 函数体中的块注释 */
-    var x:i32 = 1; // 行尾注释
+    var x: i32 = 1; // 行尾注释
     printf("%d\n", x);
     return 0;
 }

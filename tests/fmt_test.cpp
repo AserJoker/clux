@@ -224,6 +224,52 @@ TEST(Fmt, NumericTypeSuffixStaysGlued) {
     EXPECT_EQ(out, twice);
 }
 
+/* 运算符后的括号须与运算符以空格分隔（`a + (b)` / `x = (y)`），
+ * 不得紧贴成 `+(` / `=(`，否则破坏可读性。函数调用 `name(` 仍紧贴。 */
+TEST(Fmt, SpaceBeforeParenAfterOperator) {
+    std::string out = fmt(
+        "func main():void{\n"
+        "var r:f64=(a as f64)+b;\n"
+        "_ =dec+hex+oct+bin+(v8 as i32)+(vU8 as i32);\n"
+        "}\n");
+    EXPECT_EQ(out,
+              "func main(): void {\n"
+              "    var r: f64 = (a as f64) + b;\n"
+              "    _ = dec + hex + oct + bin + (v8 as i32) + (vU8 as i32);\n"
+              "}\n");
+
+    /* 幂等性 */
+    EXPECT_EQ(out, fmt(out.c_str()));
+}
+
+/* 一元前缀运算符紧贴其后操作数（`-x` / `~x` / `!x` / `-(a+b)`），
+ * 区别于二元运算符两侧留空格（`a + b`）。 */
+TEST(Fmt, UnaryPrefixOperatorNoTrailingSpace) {
+    std::string out = fmt(
+        "func main():void{\n"
+        "var neg:i32=-sum;\n"
+        "var bnot:i32=~a;\n"
+        "var notb:bool=!yes;\n"
+        "y=-(a+b);\n"
+        "if(-x>0){return;}\n"
+        "printf(!ok);\n"
+        "}\n");
+    EXPECT_EQ(out,
+              "func main(): void {\n"
+              "    var neg: i32 = -sum;\n"
+              "    var bnot: i32 = ~a;\n"
+              "    var notb: bool = !yes;\n"
+              "    y = -(a + b);\n"
+              "    if (-x > 0) {\n"
+              "        return;\n"
+              "    }\n"
+              "    printf(!ok);\n"
+              "}\n");
+
+    /* 幂等性 */
+    EXPECT_EQ(out, fmt(out.c_str()));
+}
+
 /* 输出总以换行结束（非空输入）。 */
 TEST(Fmt, EndsWithNewline) {
     std::string out = fmt("func f():void{}");

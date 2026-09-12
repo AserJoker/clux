@@ -1,7 +1,7 @@
 // control_flow.cx — M1 样例：if/else、while、for、break、continue、return
-func main():i32 {
-    var sum:i32 = 0;
-    var i:i32 = 0;
+func main(): i32 {
+    var sum: i32 = 0;
+    var i: i32 = 0;
 
     // while 循环
     while (i < 5) {
@@ -10,15 +10,15 @@ func main():i32 {
     }
 
     // for 循环（C 风格三元头：init; cond; update）
-    for (var j:i32 = 0; j < 5; j = j + 1) {
+    for (var j: i32 = 0; j < 5; j = j + 1) {
         if (j == 3) {
-            continue;        // 跳过本次迭代
+            continue; // 跳过本次迭代
         }
         sum = sum + j;
     }
 
     // break 提前退出循环
-    for (var k:i32 = 0; k < 10; k = k + 1) {
+    for (var k: i32 = 0; k < 10; k = k + 1) {
         if (k == 7) {
             break;
         }
