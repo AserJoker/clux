@@ -58,7 +58,7 @@ typedef enum {
     BCODE_FUNC_TYPE_PARAM, /* 弹栈 type value → 追加为下一参数 */
     BCODE_FUNC_TYPE_RETURN,/* 弹栈 type value → 设为返回类型 */
     BCODE_FUNC_TYPE_VARARG,/* 标记可变参数（无操作数） */
-    BCODE_FUNC_TYPE_SEAL,  /* 密封：按签名去重 intern，标记 sealed */
+    BCODE_SEAL,            /* 密封栈顶 type value：经 value_seal 分派 vtable->type_seal（func/array/struct/tuple 通用） */
 
     BCODE_PUSH_FUNCTION,   /* entry pc：构造 bcode_function_t + 签名类型 → func value */
 

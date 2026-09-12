@@ -78,7 +78,7 @@ void compile_func_reg(compiler_t *c, ast_func_def_t *fn, size_t body) {
   /* M1 无用户变参函数，省略 FUNC_TYPE_VARARG（func type 默认 is_variadic=false） */
 
   /* 4. 密封 func type（按签名去重 intern，标记 sealed） */
-  bcode_write_op(c->bc, BCODE_FUNC_TYPE_SEAL);
+  bcode_write_op(c->bc, BCODE_SEAL);
   st_push(c, 0);  /* 栈顶 func type 不变（已 sealed） */
 
   bcode_write_op(c->bc, BCODE_PUSH_FUNCTION);

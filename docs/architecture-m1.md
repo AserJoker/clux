@@ -636,8 +636,8 @@ void exec_run(exec_t *e) {
 | `FUNC_TYPE_PARAM` | — | 弹栈 type value → 追加为栈顶 func type 的下一参数类型（`func_type_add_param`） | `func_type_add_param` |
 | `FUNC_TYPE_RETURN` | — | 弹栈 type value → 设为栈顶 func type 的返回类型（`func_type_set_return`） | `func_type_set_return` |
 | `FUNC_TYPE_VARARG` | — | 标记栈顶 func type 为可变参数（`func_type_set_variadic`，M1 无用户变参函数省略） | `func_type_set_variadic` |
-| `FUNC_TYPE_SEAL` | — | 经统一 `value_seal` 代理到 `func_type_seal`：计算规范名 `func(...)`、按签名查重 intern（首次成功才 `vec_push(vm->sig_types, ...)` 入池并置 `sealed=true`）；若已有完全一致的实现则手工回收当前开放类型并改写操作数栈中对它的引用为缓存类型（无悬空、零泄漏）。`type_func_sig` 仍保留为 C 侧一次性快捷（不向 VM 栈压 type value） | `value_seal` → `func_type_seal` / `type_func_sig` |
-| `PUSH_FUNCTION` | 入口 pc | 读入口 pc 立即数 → **`bcode_function_new` 构造 `bcode_function_t{entry_pc}`**（自封装：建孤立 closure_scope + 注册 vm->functions 池）→ 弹栈顶签名类型（`FUNC_TYPE_SEAL` 产物）→ 组装 **func value** 压栈（函数定义模板见 2.7.6） | `bcode_function_new` |
+| `SEAL` | — | 经统一 `value_seal` 代理到 `func_type_seal`：计算规范名 `func(...)`、按签名查重 intern（首次成功才 `vec_push(vm->sig_types, ...)` 入池并置 `sealed=true`）；若已有完全一致的实现则手工回收当前开放类型并改写操作数栈中对它的引用为缓存类型（无悬空、零泄漏）。`type_func_sig` 仍保留为 C 侧一次性快捷（不向 VM 栈压 type value） | `value_seal` → `func_type_seal` / `type_func_sig` |
+| `PUSH_FUNCTION` | 入口 pc | 读入口 pc 立即数 → **`bcode_function_new` 构造 `bcode_function_t{entry_pc}`**（自封装：建孤立 closure_scope + 注册 vm->functions 池）→ 弹栈顶签名类型（`SEAL` 产物）→ 组装 **func value** 压栈（函数定义模板见 2.7.6） | `bcode_function_new` |
 | `ADD SUB MUL DIV MOD` | — | 弹两引用 → 运算 → 压结果引用 | `value_add` 等 |
 | `EQ NE LT LE GT GE` | — | 同上 | `value_eq` 等 |
 | `AND OR` | — | 同上 | `value_band` 等 |
@@ -746,7 +746,7 @@ L_FUNC_END:                       ; 构造签名类型 + 函数值，DEFINE 注�
   FUNC_TYPE_PARAM                 ; 追加为参数
   LOAD "i32"                      ; 返回值类型
   FUNC_TYPE_RETURN                ; 设为返回类型
-  FUNC_TYPE_SEAL                  ; 密封 → 经 value_seal 代理 func_type_seal，去重 intern 入池并置 sealed
+  SEAL                  ; 密封 → 经 value_seal 代理 func_type_seal，去重 intern 入池并置 sealed
   PUSH_FUNCTION L_FUNC_START      ; 构造 bcode_function_t{entry_pc} + 弹栈顶签名类型 → func value
   PUSH_UNDEFINED                  ; 函数定义无类型说明符 → push_undefined
   DEFINE "add"                    ; 单弹 value（函数名固定，绑定到名字）
@@ -754,10 +754,10 @@ L_FUNC_END:                       ; 构造签名类型 + 函数值，DEFINE 注�
 ```
 
 - **参数不按名绑定，由函数体内弹栈 DEFINE**：`bcode_call_cfunc` 把 local_args 按序压操作数栈（压栈顺序 `a, b` → 栈顶是 `b`），函数体头部编译期生成倒序 `DEFINE "b"; DEFINE "a"` 依次弹栈定义。参数名只在编译期用于生成 DEFINE 指令，运行时函数值不含参数名。
-- **func type 构造（PUSH → SET → SEAL，与 array type 统一）**：`PUSH_FUNC_TYPE` 分配空 `func_type_t`（开放类型，暂不入池）并压其 type value；随后每参数 `LOAD "T"; FUNC_TYPE_PARAM` 按声明顺序追加为参数类型；`LOAD "T"; FUNC_TYPE_RETURN` 设为返回类型；`FUNC_TYPE_VARARG` 标记可变参数（M1 无用户变参函数省略该指令）；`FUNC_TYPE_SEAL` 经统一 `value_seal` 代理到 `func_type_seal`，计算规范名 `func(...)`、按签名查重 intern（首次成功才入 `vm->sig_types` 池并置 `sealed=true`；去重复用则回收开放类型并重定向栈引用）。构造全程只操作栈顶的 func type type value，func type 本身始终留在栈上（仅 `PUSH_FUNCTION` 弹栈顶签名类型组装 func value）。`type_func_sig` 仍保留为 C 侧一次性快捷构造（不向 VM 栈压 type value，供 builtin_printf/sema/测试使用）。
+- **func type 构造（PUSH → SET → SEAL，与 array type 统一）**：`PUSH_FUNC_TYPE` 分配空 `func_type_t`（开放类型，暂不入池）并压其 type value；随后每参数 `LOAD "T"; FUNC_TYPE_PARAM` 按声明顺序追加为参数类型；`LOAD "T"; FUNC_TYPE_RETURN` 设为返回类型；`FUNC_TYPE_VARARG` 标记可变参数（M1 无用户变参函数省略该指令）；`SEAL` 经统一 `value_seal` 代理到 `func_type_seal`，计算规范名 `func(...)`、按签名查重 intern（首次成功才入 `vm->sig_types` 池并置 `sealed=true`；去重复用则回收开放类型并重定向栈引用）。构造全程只操作栈顶的 func type type value，func type 本身始终留在栈上（仅 `PUSH_FUNCTION` 弹栈顶签名类型组装 func value）。`type_func_sig` 仍保留为 C 侧一次性快捷构造（不向 VM 栈压 type value，供 builtin_printf/sema/测试使用）。
 - **void 函数返回 undefined**：为统一性，void 类型函数实际 `return undefined`——函数体末尾（或显式 `return;`）编译为 `PUSH_UNDEFINED; RET;`。`RET` 语义统一为"栈顶即返回值"：非 void 函数返回表达式求值结果，void 函数返回 void 类型的 undefined value。`return expr;` => `...expr...; RET`。
 - **clux 函数不支持可变参数**（可变是 FFI 的）：`argc` 固定等于签名参数个数，sema 已静态校验，运行时无需变参处理。
-- **PUSH_FUNCTION 构造 bcode_function_t**：操作数为**入口 pc 立即数**（编译期把 `L_FUNC_START` 标签回填为绝对字节偏移），回调调 **`bcode_function_new(vm, sig, entry_pc, vm->root_scope)`**（bcode_function 模块自封装创建：`base.cfunc = bcode_call_cfunc`、自建孤立 closure_scope、注册 `vm->functions` 池），再**弹栈顶签名类型**（`FUNC_TYPE_SEAL` 产物）组装 func value（type = 签名类型，data = bcode_function_t）压栈，随后 `PUSH_UNDEFINED; DEFINE "add"` 把函数注册进当前 scope——函数是一等值。**不查任何函数表**。
+- **PUSH_FUNCTION 构造 bcode_function_t**：操作数为**入口 pc 立即数**（编译期把 `L_FUNC_START` 标签回填为绝对字节偏移），回调调 **`bcode_function_new(vm, sig, entry_pc, vm->root_scope)`**（bcode_function 模块自封装创建：`base.cfunc = bcode_call_cfunc`、自建孤立 closure_scope、注册 `vm->functions` 池），再**弹栈顶签名类型**（`SEAL` 产物）组装 func value（type = 签名类型，data = bcode_function_t）压栈，随后 `PUSH_UNDEFINED; DEFINE "add"` 把函数注册进当前 scope——函数是一等值。**不查任何函数表**。
 - **函数定义用 DEFINE（无 DEFINE_FUNCTION）**：函数值本身携带签名类型（value.type），且函数名固定不可重命名（定义语句非变量赋值），所以注册段压 `PUSH_UNDEFINED`（无类型说明符）+ `DEFINE "name"` 单值弹栈；普通变量定义走 value, type 双弹。
 
 `bcode_function_t` **不是编译期预建的表**，由 `PUSH_FUNCTION` 执行时构造——除基类 `func_t` 外只多一个入口字节偏移 `entry_pc`，不含参数名、不含 AST 节点指针；区别于运行时 `func_t`（C 函数值）与 AST 层 `ast_func_def_t`（AST 节点）。`CALL` 只需 `value_call`，scope/frame 处理在 `func_vcall` 通用流程 + `bcode_call_cfunc` 执行回调内。
@@ -766,7 +766,7 @@ L_FUNC_END:                       ; 构造签名类型 + 函数值，DEFINE 注�
 
 **closure_scope = 孤立作用域（parent=NULL）**：clux 用**显式闭包捕获**——函数对象创建时 `scope_new(alloc, NULL)` 建孤立 scope，不挂任何作用域树（不随定义点作用域销毁）；`func_vcall` 调用期间临时让 `closure_scope->parent = root_scope` 使函数体可查看到模块变量，调用结束恢复原 parent。该作用域跟随函数对象销毁（`vm_destroy` 释放 functions 时处理）。
 
-**exec_run 只注册不执行（clux 无顶层语句）**：`exec_run` 只驱动函数注册段（`JMP` 守卫跳过的 `PUSH_FUNC_TYPE` / `FUNC_TYPE_PARAM*` / `FUNC_TYPE_RETURN` / `FUNC_TYPE_SEAL` / `PUSH_FUNCTION` / `DEFINE` 序列），入口函数由调用方在 `exec_run` 之后 `scope_lookup(vm->current_scope, "main")` + `value_call(vm, fn, NULL, 0)` 显式触发（driver 职责）。
+**exec_run 只注册不执行（clux 无顶层语句）**：`exec_run` 只驱动函数注册段（`JMP` 守卫跳过的 `PUSH_FUNC_TYPE` / `FUNC_TYPE_PARAM*` / `FUNC_TYPE_RETURN` / `SEAL` / `PUSH_FUNCTION` / `DEFINE` 序列），入口函数由调用方在 `exec_run` 之后 `scope_lookup(vm->current_scope, "main")` + `value_call(vm, fn, NULL, 0)` 显式触发（driver 职责）。
 
 #### 2.7.7 控制流编译模板
 

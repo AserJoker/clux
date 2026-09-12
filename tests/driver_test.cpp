@@ -370,7 +370,7 @@ TEST(Driver, ConvByContentSniffing) {
         "    push_func_type\n"
         "    push \"void\"\n"
         "    func_type_return\n"
-        "    func_type_seal\n"
+        "    seal\n"
         "    push_function [main]\n"
         "    push_undefined\n"
         "    define \"main\"\n"
