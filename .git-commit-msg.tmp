@@ -1,0 +1,33 @@
+refactor(cmd): 字节码工具收拢为 bc 子命令，build 回归机器码主线
+
+定位修正：build 是编译器对外主入口，职责是产出机器码二进制（未来
+M7 转译 C 后端 / M12 原生后端）；字节码 .cxb 与汇编 .cxs 都是非主线
+的中间/调试产物，不应挂到 build 下，否则会掩盖其真正目标。
+
+命令面重构：
+- 新增 bc 子命令（字节码工具，非主线）：
+    bc emit   <file.cx>  [-o PATH]  源码 -> .cxb 二进制字节码
+    bc asm    <file.cxs> [-o PATH]  .cxs 汇编文本 -> .cxb 二进制
+    bc disasm <file.cxb> [-o PATH]  .cxb 二进制 -> .cxs 汇编文本
+  汇编/反汇编功能完整保留，作为 bc 的子操作集成（不再是顶层命令）
+- build 恢复为机器码后端占位：报 not implemented 并指引到 clux bc
+- run 彻底简化：无任何模式选项，按内容判定（有 CXBC 头当字节码，
+  否则当源码），扩展名不参与；不感知 .cxs 中间态
+
+实现：
+- 新增 include/cmd/bc.h + src/cmd/bc.c
+- 新增 include/cmd/path.h + src/cmd/path.c：输出路径推导（扩展名替换）
+  与选项解析，供各子命令复用，消除重复实现
+- bc 输出路径优先级：-o PATH / -o=PATH > --output=PATH > 位置参数 >
+  按输入同名换扩展名
+- -o 为唯一允许的单横线短选项（cmd_args_parse 只识别 --，故由 bc
+  handler 自行扫描）；已在 specs/cmd.md 登记为例外
+
+文档：
+- specs/cmd.md：新增「6.2 命令职责划分（主线 vs 非主线）」「6.3 run
+  按内容判定」「6.4 bc 输出路径」；6.1 登记 -o 例外；4 节更新文件清单
+- m2-design §11：CLI 部分重写为主线/非主线职责表；范围表条目更新
+- milestones：工具链条目同步
+
+验证：835 测试全通过；bc emit -> disasm -> asm 往返两次 .cxb SHA256
+一致；run 对源码与 .cxb 均正确执行

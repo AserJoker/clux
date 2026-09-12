@@ -2,6 +2,7 @@
 #include "cmd/format.h"
 #include "cmd/build.h"
 #include "cmd/run.h"
+#include "cmd/bc.h"
 #include "cmd/test.h"
 #include "cmd/version.h"
 #include "cmd/eval.h"
@@ -23,32 +24,37 @@ static const cmd_t g_cmds[] = {
     },
     {
         .name = "build",
-        .usage = "clux build <file> [options]",
+        .usage = "clux build <file.cx>",
         .help =
-            "Compile clux source or convert bytecode artifacts.\n"
+            "Compile clux source into a native machine-code binary.\n"
             "\n"
-            "Source compile (input is clux source):\n"
-            "  --emit-asm[=PATH]    compile and emit .cxs text assembly\n"
-            "  --emit-bin[=PATH]    compile and emit .cxb binary bytecode\n"
-            "\n"
-            "Format conversion (no source front end):\n"
-            "  --to-bin[=PATH]      .cxs text  -> .cxb binary\n"
-            "  --to-asm[=PATH]      .cxb binary -> .cxs text\n"
-            "\n"
-            "Other:\n"
-            "  --input=<cx|cxs|cxb> force input kind (skip content sniffing)",
+            "Not implemented yet (planned: M7 C backend / M12 native backend).\n"
+            "For bytecode artifacts, use `clux bc`.",
         .handler = cmd_build,
     },
     {
         .name = "run",
-        .usage = "clux run <file.cx> | --asm <file.cxs> | --bin <file.cxb>",
+        .usage = "clux run <file>",
         .help =
-            "Run clux source or prebuilt bytecode.\n"
+            "Run a clux program.\n"
             "\n"
-            "  clux run <file.cx>        compile and run source\n"
-            "  clux run --asm <file.cxs> run .cxs text assembly\n"
-            "  clux run --bin <file.cxb> run .cxb binary bytecode",
+            "The input kind is decided by CONTENT, not by extension:\n"
+            "  - starts with the CXBC binary header -> run as bytecode\n"
+            "  - otherwise                           -> compile as clux source",
         .handler = cmd_run,
+    },
+    {
+        .name = "bc",
+        .usage = "clux bc <emit|asm|disasm> <file> [-o PATH]",
+        .help =
+            "Bytecode tools (non-mainline; debug / distribution).\n"
+            "\n"
+            "  emit    <file.cx>   compile source into .cxb binary bytecode\n"
+            "  asm     <file.cxs>  assemble text assembly into .cxb binary\n"
+            "  disasm  <file.cxb>  disassemble binary bytecode into .cxs text\n"
+            "\n"
+            "PATH omitted => same name as input with the new extension.",
+        .handler = cmd_bc,
     },
     {
         .name = "test",

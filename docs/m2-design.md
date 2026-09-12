@@ -25,7 +25,7 @@
 | 三元表达式 `? :` | 纳入 |
 | comptime 关键字（`comptime var` / `comptime func`） | **纳入**（2026-09-11，见 §9） |
 | const / volatile 前导修饰类型 | **纳入**（2026-09-11，见 §10；指针仍排除，示例仅作语义说明） |
-| 字节码可执行产物 `.cxb` / `.cxs`（`build --emit-bin` / `--emit-asm`，`run --bin` / `--asm`） | **纳入**（2026-09-12，见 §11；工具链已完成） |
+| 字节码产物 `.cxb` / `.cxs`（`bc emit` / `bc asm` / `bc disasm`；`run` 按内容判定） | **纳入**（2026-09-12，见 §11；工具链已完成，非主线） |
 | tagged union / cunion | **移出 M2**（鸭子类型协议复杂，后续里程碑） |
 | slice | **移出 M2**（前导判定语法示例，不实现） |
 | 指针 `*T` | **移出 M2**（const 前后缀语义示例用，后续里程碑实现） |
@@ -182,22 +182,28 @@ clux 类型是**前导判定**（前缀式）的：`[N]i32` 数组、`[]i32` 切
 | `.cxb` | clux bytecode（二进制） | 直存机器形态，体积小、加载快（无需解析），用于分发 / 缓存 |
 | `.cxs` | clux assembly source（文本） | 可读文本，用于调试 / 手写 / 回归比对 |
 
-**双向工具**：
+**底层工具**（`.cxs` 与 `.cxb` 互为同一 `bytecode_t` 的两种落盘形态）：
 
 | 方向 | API | CLI | 产物 |
 |------|-----|-----|------|
-| 反汇编 | `bcode_disasm(bc, path)` / `bcode_disasm_mem(alloc, bc, len)` | `clux build <file.cx> --emit-asm[=PATH]` | `.cxs` 文本 |
-| 汇编 | `bcode_asm_parse(alloc, text, len, &bc)` / `bcode_asm_from_file(alloc, path, &bc)` | `clux build <file.cxs> --to-bin[=PATH]` / `clux run --asm <file.cxs>` | `bytecode_t` |
-| 序列化 | `bcode_serial(bc, path)` / `bcode_serial_mem(alloc, bc, len)` | `clux build <file.cx> --emit-bin[=PATH]` | `.cxb` 二进制 |
-| 反序列化 | `bcode_deserial(alloc, data, len, &bc)` / `bcode_deserial_from_file(alloc, path, &bc)` | `clux build <file.cxb> --to-asm[=PATH]` / `clux run --bin <file.cxb>` | `bytecode_t` |
+| 反汇编 | `bcode_disasm(bc, path)` / `bcode_disasm_mem(alloc, bc, len)` | `clux bc disasm <file.cxb> [-o PATH]` | `.cxs` 文本 |
+| 汇编 | `bcode_asm_parse(alloc, text, len, &bc)` / `bcode_asm_from_file(alloc, path, &bc)` | `clux bc asm <file.cxs> [-o PATH]` | `bytecode_t` |
+| 序列化 | `bcode_serial(bc, path)` / `bcode_serial_mem(alloc, bc, len)` | `clux bc emit <file.cx> [-o PATH]` | `.cxb` 二进制 |
+| 反序列化 | `bcode_deserial(alloc, data, len, &bc)` / `bcode_deserial_from_file(alloc, path, &bc)` | `clux run <file.cxb>`（内容判定） | `bytecode_t` |
 
-**CLI 参数约定**（2026-09-12 统一）：
+**CLI 命令职责划分**（2026-09-12 定稿）：
 
-- **`build` 分两组，互不混用**：
-  - `--emit-asm[=PATH]` / `--emit-bin[=PATH]`：**源码编译**（输入须为 clux 源码），省略 PATH 时按输入推导同名 `.cxs` / `.cxb`；两者可同时给出，一次编译产出两种格式
-  - `--to-bin[=PATH]` / `--to-asm[=PATH]`：**落盘格式互转**（不经过源码前端），`.cxs ⇄ .cxb`
-- **`run` 按输入形态选择载体**：`clux run <file.cx>`（源码）/ `clux run --asm <file.cxs>` / `clux run --bin <file.cxb>`；选项一律 `--xxx[=PATH]` 或 `--xxx PATH`，**不支持单横线 `-xxx`**（与项目其余命令一致）
-- `--asm` / `--bin` 在 `build`（作为输出格式）与 `run`（作为输入形态）中语义对称：都指"`.cxs` 文本" / "`.cxb` 二进制"
+**主线 vs 非主线**是这套命令设计的核心：
+
+| 命令 | 定位 | 职责 |
+|------|------|------|
+| `build <file.cx>` | **主线** | 编译为**机器码二进制**（原生可执行文件）；由 M7 转译 C 后端 / M12 原生后端实现，**当前未实现**（报 `not implemented`） |
+| `bc <op> <file> [-o PATH]` | 非主线 | 字节码工具：`emit`（源码→`.cxb`）/ `asm`（`.cxs`→`.cxb`）/ `disasm`（`.cxb`→`.cxs`） |
+| `run <file>` | 运行 | 按**内容**判定：有 `CXBC` 头当字节码执行，否则当源码编译执行 |
+
+- **`build` 不承载字节码产出**：`.cxb` / `.cxs` 都是调试/分发用的非主线中间产物，若挂在 `build` 下会掩盖其"产出机器码"的真正目标
+- **`bc` 的输出路径**：`-o PATH` / `-o=PATH` → `--output=PATH` → 位置参数 → 按输入同名换扩展名（`.cxb` / `.cxs`）。`-o` 是唯一允许的单横线短选项（`cmd_args_parse` 只识别 `--`，故由 `bc` handler 自行扫描）
+- **`run` 无模式选项**：不感知 `.cxs` 中间态——传入汇编文本会按其内容走源码路径并报编译错误，需显式经 `bc asm` 转成 `.cxb` 再运行
 
 **输入类型判定：内容嗅探，不依赖扩展名**（`driver_detect_input`，2026-09-12）：
 
@@ -208,8 +214,7 @@ clux 类型是**前导判定**（前缀式）的：`[N]i32` 数组、`[]i32` 切
 | 3 | 全文含 clux 关键字（`func`/`var`/`if`/`while`/`return`/`struct`/`enum`/... 含词边界） | `source`（源码） |
 | 4 | 其余（空文件 / 纯空白 / 不可识别） | `unknown` |
 
-- `.cxb` 靠 magic 100% 判定；`.cxs` 与 `.cx` 同为文本，靠"汇编形状 vs 源码关键字"区分
-- 判定失败（`unknown`）或需强制指定时，用 `--input=<cx|cxs|cxb>` **显式覆盖**（跳过嗅探）
+- `run` 只用第 1 条（`CXBC` magic → 字节码，否则源码）；第 2/3 条供 `bc` 与诊断使用
 - 嗅探仅读文件头部（前 4 KiB）足以判定，避免大文件全量读入
 
 **`.cxb` 二进制格式**（全部小端，见 `bcode_serial.h`）：
@@ -271,7 +276,7 @@ name:                     ; 标签定义（去空白后形如 "name:"，无内�
 
 **测试**：`tests/bcode_disasm_test.cpp`（段格式/转义/变长操作数/标签生成/坏路径）、`tests/bcode_asm_test.cpp`（文本往返/操作数往返/字符串转义/大小写无关/标签前向引用/未定义标签/非法输入）、`tests/bcode_serial_test.cpp`（二进制往返/空模块/内嵌控制字节/文件往返/坏 magic·版本·截断拒绝）、`tests/driver_test.cpp`（`Driver.DetectInputByContent` 内容嗅探全类型、`Driver.AsmBinRoundTripStable` 往返字节稳定、`Driver.ConvByContentSniffing` 非标准扩展名互转、`Driver.ConvErrorPaths` 失败路径），并覆盖 5 个 `examples/asm/*.cxs` 示例。
 
-**端到端验证**：`clux run <file.cx>` ≡ `clux build <file.cx> --emit-bin && clux run --bin <file.cxb>`；且 `.cxs → .cxb → .cxs → .cxb` 两次二进制 SHA256 一致（往返字节级稳定）。
+**端到端验证**：`clux run <file.cx>` ≡ `clux bc emit <file.cx> && clux run <file.cxb>`；且 `.cxs → .cxb → .cxs → .cxb` 两次二进制 SHA256 一致（往返字节级稳定）。
 
 ---
 
@@ -645,6 +650,7 @@ Phase 0 是基础（新关键字 + `parse_type_expr`）；Phase 3 是枢纽（`r
 - 新增 `src/vm/bcode_asm.c`、`src/vm/bcode_asm_defs.c`、`src/vm/bcode_disasm.c`、`src/vm/bcode_serial.c`
 - 修改 `src/vm/bcode.c`（`bcode_str_at` 改用真实字节长度，支持内嵌 `\0`）
 - 修改 `include/driver/driver.h` + `src/driver/driver.c`（新增 `driver_build_asm` / `driver_run_asm` / `driver_build_bin` / `driver_run_bin` / `driver_asm_to_bin` / `driver_bin_to_asm` / `driver_detect_input`，抽出执行阶段 `driver_execute_bytecode`）
-- 修改 `src/cmd/build.c`（`--emit-asm[=PATH]` / `--emit-bin[=PATH]` / `--to-bin[=PATH]` / `--to-asm[=PATH]` / `--input=<cx|cxs|cxb>`）、`src/cmd/run.c`（`--asm` / `--bin`，已移除单横线兼容）
+- 新增 `include/cmd/bc.h` + `src/cmd/bc.c`（字节码工具：`emit` / `asm` / `disasm`）；新增 `include/cmd/path.h` + `src/cmd/path.c`（输出路径推导，各命令复用）
+- 修改 `src/cmd/run.c`（按内容判定源码/字节码，无模式选项）、`src/cmd/build.c`（恢复为机器码后端占位，报 `not implemented`）、`src/main.c`（注册 `bc` 子命令）
 - 新增 `tests/bcode_asm_test.cpp`、`tests/bcode_disasm_test.cpp`、`tests/bcode_serial_test.cpp`
 - 新增 `examples/asm/`（hello / arithmetic / fib / factorial / loop，共 5 个 `.cxs`）

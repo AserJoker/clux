@@ -143,8 +143,10 @@ clux_target_warnings(clux_driver)
 add_library(clux_cmd STATIC
     src/cmd/cmd.c
     src/cmd/format.c
+    src/cmd/path.c
     src/cmd/build.c
     src/cmd/run.c
+    src/cmd/bc.c
     src/cmd/test.c
     src/cmd/version.c
     src/cmd/eval.c

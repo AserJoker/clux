@@ -1,0 +1,115 @@
+#include "cmd/bc.h"
+#include "cmd/path.h"
+#include "driver/driver.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* clux bc：字节码工具（非主线）。
+ *
+ * 字节码（.cxb）与汇编文本（.cxs）都是非主线产物——主线产物是 build 未来
+ * 输出的机器码二进制。本命令把一切字节码相关的产出与互转集中于此：
+ *
+ *   clux bc emit   <file.cx>  [-o PATH]   源码 → .cxb 二进制字节码
+ *   clux bc asm    <file.cxs> [-o PATH]   .cxs 汇编文本 → .cxb 二进制
+ *   clux bc disasm <file.cxb> [-o PATH]   .cxb 二进制 → .cxs 汇编文本
+ *
+ * 输出路径省略时按输入同名换扩展名；亦可用第二位置参数代替 -o。 */
+
+static const char *USAGE =
+    "usage: clux bc <emit|asm|disasm> <file> [-o PATH]\n"
+    "\n"
+    "  emit    <file.cx>   compile source into .cxb binary bytecode\n"
+    "  asm     <file.cxs>  assemble .cxs text assembly into .cxb binary\n"
+    "  disasm  <file.cxb>  disassemble .cxb binary bytecode into .cxs text\n"
+    "\n"
+    "Output defaults to the input name with .cxb / .cxs extension.\n";
+
+/* 子操作 → 输出扩展名；未知返回 NULL。 */
+static const char *op_out_ext(const char *op) {
+    if (strcmp(op, "emit") == 0 || strcmp(op, "asm") == 0) return ".cxb";
+    if (strcmp(op, "disasm") == 0) return ".cxs";
+    return NULL;
+}
+
+int cmd_bc(const cmd_args_t *args) {
+    if (!args) return 1;
+
+    /* cmd_args_parse 只把 `--` 前缀识别为选项，故 `-o` 会落入位置参数。
+     * 这里按出现顺序扫描位置参数，识别 `-o PATH` / `-o=PATH`，其余作为
+     * 普通位置参数（子操作 / 输入 / 输出）依次收集。 */
+    const char *pos[8];
+    size_t np = 0;
+    const char *opt_out = NULL;   /* -o 指定的输出路径 */
+    bool o_missing_val = false;   /* 出现 -o 但其后无值 */
+
+    for (size_t i = 0; i < args->posc; i++) {
+        const char *a = args->posargs[i];
+        if (strcmp(a, "-o") == 0) {
+            if (i + 1 < args->posc) opt_out = args->posargs[++i];
+            else o_missing_val = true;
+            continue;
+        }
+        if (strncmp(a, "-o=", 3) == 0) {
+            opt_out = a + 3;
+            continue;
+        }
+        if (np < 8) pos[np++] = a;
+    }
+
+    if (o_missing_val) {
+        fprintf(stderr, "bc: -o requires a path\n");
+        fputs(USAGE, stderr);
+        return 1;
+    }
+
+    const char *op = (np > 0) ? pos[0] : NULL;
+    if (!op) {
+        fprintf(stderr, "bc: missing subcommand\n");
+        fputs(USAGE, stderr);
+        return 1;
+    }
+
+    const char *ext = op_out_ext(op);
+    if (!ext) {
+        fprintf(stderr, "bc: unknown subcommand '%s'\n", op);
+        fputs(USAGE, stderr);
+        return 1;
+    }
+
+    const char *in_path = (np > 1) ? pos[1] : NULL;
+    if (!in_path) {
+        fprintf(stderr, "bc: missing input file\n");
+        fputs(USAGE, stderr);
+        return 1;
+    }
+
+    /* 输出路径优先级：-o/--output > 第三位置参数 > 按输入推导。 */
+    const char *out_path = opt_out;
+    if (!out_path) out_path = cmd_args_get(args, "output");
+    if (!out_path && np > 2) out_path = pos[2];
+
+    char *owned = NULL;
+    if (!out_path) {
+        owned = cmd_derive_out_path(in_path, ext);
+        if (!owned) {
+            fprintf(stderr, "bc: out of memory\n");
+            return 1;
+        }
+        out_path = owned;
+    }
+
+    int rc;
+    if (strcmp(op, "emit") == 0) {
+        rc = driver_build_bin(in_path, out_path);   /* 源码 → .cxb */
+    } else if (strcmp(op, "asm") == 0) {
+        rc = driver_asm_to_bin(in_path, out_path);  /* .cxs → .cxb */
+    } else {
+        rc = driver_bin_to_asm(in_path, out_path);  /* .cxb → .cxs */
+    }
+
+    if (rc == 0) fprintf(stdout, "wrote %s\n", out_path);
+    free(owned);
+    return rc;
+}

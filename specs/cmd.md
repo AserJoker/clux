@@ -114,9 +114,11 @@ Options:
 ## 4. 子命令文件组织
 
 ```
-include/cmd/   cmd.h, format.h, build.h, run.h, test.h, version.h
-src/cmd/       cmd.c, format.c, build.c, run.c, test.c, version.c
+include/cmd/   cmd.h, path.h, format.h, build.h, run.h, bc.h, test.h, version.h, eval.h
+src/cmd/       cmd.c, path.c, format.c, build.c, run.c, bc.c, test.c, version.c, eval.c
 ```
+
+`path.h/path.c` 提供输出路径推导（`cmd_derive_out_path`）与选项/推导解析（`cmd_resolve_output`），供需要产出文件的子命令复用，避免各命令重复实现扩展名替换逻辑。
 
 ### 4.1 约定
 
@@ -171,21 +173,42 @@ clux 的选项语法统一为 GNU 风格 `--key` / `--key=value` / `--key value`
 - `cmd_args_parse` **只识别 `--` 前缀**为选项；单横线 `-key` 会落入位置参数
 - **禁止**在 handler 中为单横线形式手写特判（历史上 `run` 曾特判 `-asm`/`-bin`，已移除）——这会造成各命令风格分裂，且与 `cmd_args_parse` 的契约冲突
 - 若首个位置参数以 `-` 开头（用户误用单横线），handler 应给出"unknown option (clux options use '--')"类明确诊断，而非将其当作文件名尝试打开
+- **唯一例外**：`-o`（输出路径）是业界通用短选项，`bc` handler 可显式扫描识别 `-o PATH` / `-o=PATH`。除 `-o` 外不得再引入单横线选项
 
-### 6.2 语义对称的键名
+### 6.2 命令职责划分（主线 vs 非主线）
 
-同一概念在不同子命令中应使用同名键：
+**`build` 的唯一职责是产出机器码二进制（主线产物）**，由未来的转译/原生后端实现（M7 / M12）。当前未实现，命令直接报 `not implemented`。
 
-| 键 | 含义 | 出现于 |
-|----|------|--------|
-| `--asm` | `.cxs` 文本汇编 | `build`（输出格式）/ `run`（输入形态） |
-| `--bin` | `.cxb` 二进制字节码 | `build`（输出格式）/ `run`（输入形态） |
+字节码（`.cxb`）与汇编文本（`.cxs`）都是**非主线**的中间/调试产物，归入独立的 `bc`（bytecode）子命令，**不得挂到 `build` 下**：
 
-`build` 用 `--emit-asm` / `--emit-bin` 表达"源码编译产出"，用 `--to-bin` / `--to-asm` 表达"落盘格式互转"；两组语义不同，**禁止混用**（handler 须校验并报错）。
+| 命令 | 职责 | 产物 |
+|------|------|------|
+| `build <file.cx>` | 编译为机器码二进制（**未实现**） | 原生可执行文件 |
+| `bc emit <file.cx>` | 源码 → 字节码 | `.cxb` |
+| `bc asm <file.cxs>` | 汇编文本 → 字节码 | `.cxb` |
+| `bc disasm <file.cxb>` | 字节码 → 汇编文本 | `.cxs` |
+| `run <file>` | 运行（按内容判定源码/字节码） | — |
 
-### 6.3 输入类型判定
+**理由**：`build` 是编译器的对外主入口，语义应聚焦"产出可执行的机器码"。若把字节码/汇编产出塞进 `build`，会让它看起来像字节码工具，掩盖其真正的目标。
 
-字节码工具链的输入类型由 **内容嗅探**（`driver_detect_input`）判定，**不以扩展名为判据**（扩展名可被任意改名，不可靠）。嗅探无法确定时，用 `--input=<cx|cxs|cxb>` 显式覆盖。
+### 6.3 `run` 的输入判定：按内容，不按扩展名
+
+`run` **不感知汇编文本（`.cxs`）这一中间态**，只认两种输入：
+
+| 判定 | 行为 |
+|------|------|
+| 文件以 `"CXBC"` 二进制头开头 | 当字节码加载执行（`driver_run_bin`） |
+| 否则 | 当 clux 源码编译执行（`driver_run_file`） |
+
+- 判定依据是**内容**（`driver_detect_input` 的 magic 检查），扩展名完全不参与
+- 传入 `.cxs` 时会走源码路径并按其真实内容报编译错误，**不会**隐式汇编执行——汇编是独立的中间态，需要显式经 `bc asm` 转成 `.cxb` 再运行
+- 因此 `run` **没有任何模式选项**（无 `--asm` / `--bin` / `--input`）
+
+### 6.4 `bc` 的输出路径
+
+`bc` 的输出路径按优先级取：`-o PATH` / `-o=PATH` → `--output=PATH` → 第二位置参数 → 按输入同名换扩展名（`.cxb` / `.cxs`）。
+
+`-o` 是**单横线短选项**，`cmd_args_parse` 只识别 `--` 前缀，故会落入位置参数，由 `bc` handler 自行扫描识别（见 6.1 例外说明）。
 
 ---
 

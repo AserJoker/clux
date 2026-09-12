@@ -35,7 +35,7 @@
 - Phase 4: 构造 + 访问（`.<type>{...}` + 字段访问 + enum variant + 新字节码）
 - Phase 5: 控制流 + 表达式补全（switch desugar + do-while + 三元 + 位运算复合赋值）
 - Phase 6: 集成 + 测试（examples + 全测试通过 + 文档更新）
-- 工具链: 字节码可执行产物（`.cxs` 文本 / `.cxb` 二进制），编译 `build --emit-asm` / `--emit-bin`，互转 `build --to-bin` / `--to-asm`（内容嗅探，不依赖扩展名，`--input=` 可强制），执行 `run --asm` / `--bin` ✅ 已完成（2026-09-12）
+- 工具链（非主线）: 字节码 `.cxb` 与汇编 `.cxs`，统一由 `bc` 子命令提供（`bc emit` 源码→字节码 / `bc asm` 汇编 / `bc disasm` 反汇编，`-o` 指定输出）；`run` 按内容判定（有 `CXBC` 头当字节码，否则源码）；`build` 专责未来的机器码二进制（未实现）✅ 已完成（2026-09-12）
 
 ---
 
