@@ -220,9 +220,10 @@ static value_t *func_vcall(vm_t *vm, value_t *callee, value_t **args, size_t arg
 }
 
 const vtable_t VTABLE_FUNC = {
-    .dispose = func_dispose,
-    .clone   = func_clone,
-    .call    = func_vcall,
+    .dispose   = func_dispose,
+    .clone     = func_clone,
+    .call      = func_vcall,
+    .type_seal = func_type_seal,
 };
 
 /* ================================================================ */
@@ -275,7 +276,8 @@ static char *func_sig_name(allocator_t *alloc, const type_t *const *params,
     return buf;
 }
 
-/* 内部：分配开放 func_type，注册进 vm->sig_types 池（不压栈），返回非 const 指针 */
+/* 内部：分配开放 func_type（不压栈、不入池），返回非 const 指针。
+ * 入池动作已移至 func_type_seal（去重 intern 时完成）。 */
 static func_type_t *func_type_create_open(vm_t *vm) {
     func_type_t *ft = (func_type_t *)allocator_new_ex(
         vm->alloc, "func_type_t", sizeof(func_type_t), NULL, NULL, NULL, 1);
@@ -286,9 +288,7 @@ static func_type_t *func_type_create_open(vm_t *vm) {
     ft->base.size   = sizeof(func_t *);
     ft->base.align  = alignof(func_t *);
     ft->base.kind   = TYPE_KIND_FUNC;
-    ft->sealed      = false;
-    if (!vm->sig_types) vm->sig_types = vec_new(vm->alloc, /*owns_element=*/false);
-    vec_push(vm->sig_types, vm->alloc, ft);
+    /* sealed 由 memset 置 0；密封在 func_type_seal 中置位 */
     return ft;
 }
 
@@ -303,7 +303,7 @@ const type_t *func_type_push(vm_t *vm) {
 void func_type_add_param(vm_t *vm, const type_t *t, const type_t *param) {
     if (!vm || !t || t->kind != TYPE_KIND_FUNC) return;
     func_type_t *ft = (func_type_t *)t;
-    if (ft->sealed) return;  /* 密封后不可再修改 */
+    if (type_is_sealed(t)) return;  /* 密封后不可再修改 */
     const type_t **pcopy = (const type_t **)allocator_new_ex(
         vm->alloc, "type_t*", sizeof(type_t *), NULL, NULL, NULL,
         ft->sig.param_count + 1);
@@ -321,7 +321,7 @@ void func_type_set_return(vm_t *vm, const type_t *t, const type_t *ret) {
     (void)vm;
     if (!t || t->kind != TYPE_KIND_FUNC) return;
     func_type_t *ft = (func_type_t *)t;
-    if (ft->sealed) return;
+    if (type_is_sealed(t)) return;
     ft->sig.return_type = ret;
 }
 
@@ -329,49 +329,32 @@ void func_type_set_variadic(vm_t *vm, const type_t *t, bool variadic) {
     (void)vm;
     if (!t || t->kind != TYPE_KIND_FUNC) return;
     func_type_t *ft = (func_type_t *)t;
-    if (ft->sealed) return;
+    if (type_is_sealed(t)) return;
     ft->sig.is_variadic = variadic;
 }
 
 const type_t *func_type_seal(vm_t *vm, const type_t *t) {
     if (!vm || !t || t->kind != TYPE_KIND_FUNC) return NULL;
+    if (type_is_sealed(t)) return t;  /* 已密封直接返回（幂等） */
+
     func_type_t *ft = (func_type_t *)t;
-    if (ft->sealed) return &ft->base;  /* 已密封直接返回（幂等） */
 
     if (!vm->sig_types) vm->sig_types = vec_new(vm->alloc, /*owns_element=*/false);
 
-    /* 去重 intern（按签名）：命中已有 sealed 类型则复用并释放本开放类型 */
+    /* 去重 intern（按签名）：命中已有 sealed 类型则复用并手工回收本开放类型 */
     size_t n = vec_len(vm->sig_types);
     for (size_t i = 0; i < n; i++) {
         const func_type_t *other = (const func_type_t *)vec_get(vm->sig_types, i);
-        if (other && other != ft && other->sealed &&
+        if (other && other != ft && type_is_sealed(&other->base) &&
             func_sig_eq(&other->sig, &ft->sig)) {
             /* 本开放类型与已有 sealed 类型重复：复用 other。
-             * 把操作数栈中所有引用本开放类型 ft 的 type value（如 push 压入者）
-             * 就地重指向 other（改写其 data 指针，不新分配，避免泄漏），
-             * 释放 ft 后不留下悬空指针。 */
-            size_t sp = vec_len(vm->stack);
-            for (size_t k = 0; k < sp; k++) {
-                value_t *sv = (value_t *)vec_get(vm->stack, k);
-                if (sv && value_type(sv) == vm->type_type &&
-                    value_as(sv, const type_t *) == (const type_t *)ft) {
-                    *(const type_t **)value_data(sv) = &other->base;
-                    break;
-                }
-            }
+             * 操作数栈中引用本开放类型 ft 的 type value 由 value_seal 负责
+             * 重定向到 other（避免悬空）；此处仅手工回收 ft。 */
             if (ft->base.name.ptr) {
                 char *np = (char *)ft->base.name.ptr;
                 allocator_free(vm->alloc, (void **)&np);
             }
             if (ft->sig.params) allocator_free(vm->alloc, (void **)&ft->sig.params);
-            /* 从池中移除本开放类型（顺序无关，用 swap_remove） */
-            size_t m = vec_len(vm->sig_types);
-            for (size_t j = 0; j < m; j++) {
-                if (vec_get(vm->sig_types, j) == ft) {
-                    vec_swap_remove(vm->sig_types, j);
-                    break;
-                }
-            }
             allocator_free(vm->alloc, (void **)&ft);
             return &other->base;
         }
@@ -382,7 +365,8 @@ const type_t *func_type_seal(vm_t *vm, const type_t *t) {
                                ft->sig.return_type, ft->sig.is_variadic);
     if (!name) panic("vm: out of memory allocating function signature name");
     ft->base.name = (strslice_t){ name, strlen(name) };
-    ft->sealed = true;
+    ft->base.sealed = true;
+    vec_push(vm->sig_types, vm->alloc, ft);  /* 密封后入池（去重 intern） */
     return &ft->base;
 }
 
@@ -390,9 +374,9 @@ const type_t *type_func_sig(vm_t *vm, const type_t *const *params,
                             size_t param_count, const type_t *return_type,
                             bool is_variadic) {
     /* 一次性快捷（func_type_push + add_param* + set_return + set_variadic +
-     * seal）；内部走 create_open（不向 vm 栈压入 type value，供 C 侧直接用）。 */
+     * seal）；内部走 create_open（不向 vm 栈压入 type value，供 C 侧直接用）。
+     * 入池由 func_type_seal 完成。 */
     if (!vm) return NULL;
-    if (!vm->sig_types) vm->sig_types = vec_new(vm->alloc, /*owns_element=*/false);
     func_type_t *ft = func_type_create_open(vm);
     if (param_count > 0 && params) {
         const type_t **pcopy = (const type_t **)allocator_new_ex(

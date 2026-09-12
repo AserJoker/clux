@@ -65,6 +65,7 @@ typedef struct type_t {
     size_t          size;       /* 该类型数据的字节大小 */
     size_t          align;      /* 该类型数据的对齐要求 */
     type_kind_t     kind;       /* 粗粒度分类（鸭子类型判断用） */
+    bool            sealed;     /* 是否已密封（构造完成后置位；内置基础类型创建即 true） */
 } type_t;
 
 /**
@@ -101,6 +102,11 @@ const type_t *type_lookup(const vm_t *vm, strslice_t name);
 /** 判断两个类型是否相同（指针比较，因为类型是单例） */
 static inline bool type_eq(const type_t *a, const type_t *b) {
     return a == b;
+}
+
+/** 类型是否已密封（构造完成，不可再修改签名/布局）。内置基础类型创建即 sealed。 */
+static inline bool type_is_sealed(const type_t *t) {
+    return t && t->sealed;
 }
 
 /**

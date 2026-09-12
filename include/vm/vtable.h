@@ -79,6 +79,14 @@ typedef struct vtable_t {
        复合类型（struct/array/tuple，M2）按成员结构递归判断。 */
     bool    (*type_equal)(vm_t *vm, const type_t *a, const type_t *b);
     bool    (*type_extends)(vm_t *vm, const type_t *sub, const type_t *sup);
+
+    /* ---- 类型密封（SEAL 命令归一：type value 构造收尾） ---- */
+    /* 由 value_seal(vm, type_value) 代理调用：type_value->data 即 const type_t*，
+       分派 data->vtable->type_seal。回调负责：计算规范名 + 标记 sealed +
+       按类型池去重 intern（命中已有密封实现则手工回收当前 type 并返回缓存）+ 入池。
+       NULL 槽位 = 该类型无开放构造阶段（如内置基础类型已 sealed），value_seal
+       直接原样返回。返回密封后的 const type（可能 != self，表示复用缓存）。 */
+    const type_t *(*type_seal)(vm_t *vm, const type_t *self);
 } vtable_t;
 
 /** 全零 vtable（所有函数指针为 NULL） */

@@ -40,13 +40,14 @@ extern const vtable_t VTABLE_FUNC;
 typedef struct func_type_t {
     type_t      base;
     func_sig_t  sig;
-    bool        sealed;     /* 是否已密封（密封后不可再修改） */
+    /* sealed 已提升到基类 type_t（见 type.h）；密封后不可再修改 sig */
 } func_type_t;
 
 /**
  * PUSH_FUNC_TYPE（对应字节码 PUSH_FUNC_TYPE）：
- *   分配空 func_type（sig 全零）加入 vm->sig_types 池（vm 拥有生命周期），
- *   把其 type value（type_as_value）压入 vm->stack，返回该 type（const type_t*）。
+ *   分配空 func_type（sig 全零），把其 type value（type_as_value）压入
+ *   vm->stack，返回该 type（const type_t*）。注意：此时尚未入池，仅密封
+ *   （func_type_seal，vtable type_seal）后才加入 vm->sig_types 池（去重 intern）。
  * 返回的 type 处「未密封」状态，需经 add_param / set_return / set_variadic /
  * seal 收尾。外部永远只持有 type_t*，不感知 func_type_t 子类。
  */
@@ -102,11 +103,9 @@ static inline bool func_type_is_variadic(const type_t *t) {
                : false;
 }
 
-/** func type 是否已密封（非 func type 返回 false） */
+/** func type 是否已密封（非 func type 返回 false；sealed 定义在基类 type_t） */
 static inline bool func_type_is_sealed(const type_t *t) {
-    return (t && t->kind == TYPE_KIND_FUNC)
-               ? ((const func_type_t *)t)->sealed
-               : false;
+    return type_is_sealed(t);
 }
 
 #ifdef __cplusplus

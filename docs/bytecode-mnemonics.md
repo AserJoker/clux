@@ -78,7 +78,7 @@ clux 的 VM 以**字节码**作为可执行中间表示。编译期把 AST 降�
 | `FUNC_TYPE_PARAM` | — | 弹栈 type value → 追加为 func type 的下一参数类型。 |
 | `FUNC_TYPE_RETURN` | — | 弹栈 type value → 设为 func type 的返回类型。 |
 | `FUNC_TYPE_VARARG` | — | 标记 func type 为可变参数（无操作数）。 |
-| `FUNC_TYPE_SEAL` | — | 密封当前 func type：计算规范名 `func(...)`、按签名去重 intern、标记 `sealed`。 |
+| `FUNC_TYPE_SEAL` | — | 经统一 `value_seal` 代理到 `func_type_seal`：计算规范名 `func(...)`、按签名查重 intern（首次成功才入 `vm->sig_types` 池并置基类 `sealed=true`；去重复用则回收开放类型并重定向栈引用）。 |
 | `PUSH_FUNCTION` | `U32`（entry pc，标签） | 弹栈顶签名类型（`FUNC_TYPE_SEAL` 产物）→ 构造 `bcode_function_t{entry_pc}` → func value 压栈（函数对象，非签名类型）。 |
 
 ### 4.4 算术 / 逻辑 / 位运算（均弹参、压结果，无操作数）

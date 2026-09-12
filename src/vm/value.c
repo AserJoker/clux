@@ -171,6 +171,33 @@ interrupt_kind_t value_interrupt_kind(vm_t *vm, const value_t *v) {
  * 鸭子类型判断）。NULL 槽位 → 默认指针比较（type.c 的默认入口处理）。
  * 返回 bool value（shadow 输入 → shadow 输出，与其余 vtable 一致）。
  */
+
+const value_t *value_seal(vm_t *vm, value_t *src) {
+    if (!vm || !src) return src;
+    /* 仅 type value 可密封；非 type value 原样返回 */
+    if (value_type(src) != vm->type_type) return src;
+
+    const type_t *t = value_as(src, const type_t *);
+    if (!t || !t->vtable || !t->vtable->type_seal)
+        return src;  /* 无开放构造阶段（如内置基础类型已 sealed） */
+
+    const type_t *sealed = t->vtable->type_seal(vm, t);
+    if (sealed && sealed != t) {
+        /* 去重：当前 t 已被 vtable 手工回收，重定向所有引用 t 的 type value
+         * 到缓存 sealed（先更新自身，再扫描操作数栈以防多处引用）。 */
+        *(const type_t **)value_data(src) = sealed;
+        size_t sp = vec_len(vm->stack);
+        for (size_t k = 0; k < sp; k++) {
+            value_t *sv = (value_t *)vec_get(vm->stack, k);
+            if (sv && value_type(sv) == vm->type_type &&
+                value_as(sv, const type_t *) == t) {
+                *(const type_t **)value_data(sv) = sealed;
+            }
+        }
+    }
+    return src;
+}
+
 value_t *value_type_eq(vm_t *vm, value_t *a, value_t *b) {
     if (value_is_error(vm, a)) return a;
     if (value_is_error(vm, b)) return b;

@@ -86,7 +86,7 @@ static void array_type_init_base(array_type_t *at) {
     at->elem_type   = NULL;
     at->length      = SIZE_MAX;   /* 未成形：元素数量待定 */
     at->formed      = false;      /* 未定长成形 */
-    at->sealed      = false;
+    /* sealed 由 memset 置 0；密封在 array_type_seal 中置位 */
     at->layout_size = 0;
     at->layout_align= 0;
 }
@@ -96,16 +96,13 @@ static void array_type_init_base(array_type_t *at) {
 const type_t *array_type_push(vm_t *vm) {
     if (!vm) return NULL;
 
-    /* 分配空 array_type 并加入类型池（vm 拥有生命周期） */
+    /* 分配空 array_type（不入池，密封时才加入 vm->array_types） */
     array_type_t *at = (array_type_t *)allocator_new_ex(
         vm->alloc, "array_type_t", sizeof(array_type_t), NULL, NULL, NULL, 1);
     if (!at) panic("vm: out of memory allocating array type");
     memset(at, 0, sizeof(array_type_t));
 
     array_type_init_base(at);  /* 未成形、未密封：等 set_elem / set_count / seal */
-
-    if (!vm->array_types) vm->array_types = vec_new(vm->alloc, /*owns_element=*/false);
-    vec_push(vm->array_types, vm->alloc, at);
 
     /* 把该 type 对应的 type value 压入操作数栈（对应字节码 push_array） */
     vec_push(vm->stack, vm->alloc, type_as_value(vm, &at->base));
@@ -117,7 +114,7 @@ void array_type_set_elem(vm_t *vm, const type_t *t, const type_t *elem_type) {
     (void)vm;
     if (!t || t->kind != TYPE_KIND_ARRAY) return;
     array_type_t *at = (array_type_t *)t;
-    if (at->sealed || at->formed) return;  /* 密封/已成形后不可再设 */
+    if (type_is_sealed(t) || at->formed) return;  /* 密封/已成形后不可再设 */
     at->elem_type = elem_type;
 }
 
@@ -125,7 +122,7 @@ void array_type_set_count(vm_t *vm, const type_t *t, size_t count) {
     (void)vm;
     if (!t || t->kind != TYPE_KIND_ARRAY) return;
     array_type_t *at = (array_type_t *)t;
-    if (at->sealed) return;
+    if (type_is_sealed(t)) return;
     if (at->formed) return;            /* 重复 set_count 是错误，静默忽略 */
     if (!at->elem_type) return;        /* 未 set_elem 即 set_count 是错误 */
     at->length = count;
@@ -134,43 +131,27 @@ void array_type_set_count(vm_t *vm, const type_t *t, size_t count) {
 
 const type_t *array_type_seal(vm_t *vm, const type_t *t) {
     if (!vm || !t || t->kind != TYPE_KIND_ARRAY) return NULL;
+    if (type_is_sealed(t)) return t;  /* 已密封直接返回（幂等） */
+
     array_type_t *at = (array_type_t *)t;
-    if (at->sealed) return &at->base;  /* 已密封直接返回（幂等） */
 
     /* 必须已设元素类型（动态切片可省略 set_count，length 保持 SIZE_MAX） */
     if (!at->elem_type) return NULL;
 
     if (!vm->array_types) vm->array_types = vec_new(vm->alloc, /*owns_element=*/false);
 
-    /* 去重 intern（按 elem_type + length）：命中已有 sealed 类型则复用并释放本开放类型 */
+    /* 去重 intern（按 elem_type + length）：命中已有 sealed 类型则复用并手工回收本开放类型 */
     size_t n = vec_len(vm->array_types);
     for (size_t i = 0; i < n; i++) {
         const array_type_t *other = (const array_type_t *)vec_get(vm->array_types, i);
-        if (other && other != at && other->sealed &&
+        if (other && other != at && type_is_sealed(&other->base) &&
             other->elem_type == at->elem_type && other->length == at->length) {
             /* 本开放类型与已有 sealed 类型重复：复用 other。
-             * 先把操作数栈中所有引用本开放类型 at 的 type value（如 push_array
-             * 压入者）重定向到 other，避免释放 at 后留下悬空指针。 */
-            size_t sp = vec_len(vm->stack);
-            for (size_t k = 0; k < sp; k++) {
-                value_t *sv = (value_t *)vec_get(vm->stack, k);
-                if (sv && value_type(sv) == vm->type_type &&
-                    value_as(sv, const type_t *) == (const type_t *)at) {
-                    vec_set(vm->stack, k, type_as_value(vm, &other->base));
-                    break;
-                }
-            }
+             * 操作数栈中引用本开放类型 at 的 type value 由 value_seal 负责
+             * 重定向到 other（避免悬空）；此处仅手工回收 at。 */
             if (at->base.name.ptr) {
                 char *np = (char *)at->base.name.ptr;
                 allocator_free(vm->alloc, (void **)&np);
-            }
-            /* 从池中移除本开放类型（顺序无关，用 swap_remove） */
-            size_t m = vec_len(vm->array_types);
-            for (size_t j = 0; j < m; j++) {
-                if (vec_get(vm->array_types, j) == at) {
-                    vec_swap_remove(vm->array_types, j);
-                    break;
-                }
             }
             allocator_free(vm->alloc, (void **)&at);
             return &other->base;
@@ -182,13 +163,14 @@ const type_t *array_type_seal(vm_t *vm, const type_t *t) {
     at->layout_size  = (at->length == SIZE_MAX)
                           ? 0
                           : at->elem_type->size * at->length;
-    at->sealed = true;
+    at->base.sealed  = true;
 
     /* 重建类型名（含 length：固定长度 [elem; N]，未定长 [elem]） */
     char *name = array_type_name(vm->alloc, at->elem_type, at->length);
     if (!name) panic("vm: out of memory allocating array type name");
     at->base.name = (strslice_t){ name, strlen(name) };
 
+    vec_push(vm->array_types, vm->alloc, at);  /* 密封后入池（去重 intern） */
     return &at->base;
 }
 
@@ -331,6 +313,7 @@ const vtable_t VTABLE_ARRAY = {
     .dispose   = array_dispose,
     .clone     = array_clone,
     .assign    = array_assign,
+    .type_seal = array_type_seal,
 };
 
 /* ================================================================ */

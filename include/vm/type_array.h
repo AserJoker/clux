@@ -52,15 +52,16 @@ typedef struct array_type_t {
     const type_t *elem_type;  /* 元素类型（引用，不拥有）；由 set_elem 设定 */
     size_t        length;     /* 编译期元素数量；SIZE_MAX = 动态/未定长切片 */
     bool          formed;     /* 是否已定长成形（set_elem + set_count 后为真） */
-    bool          sealed;     /* 是否已密封（密封后不可再修改） */
+    /* sealed 已提升到基类 type_t（见 type.h）；密封后不可再修改 elem/length */
     size_t        layout_size;  /* 密封后：元素总字节数 = elem_type->size*length */
     size_t        layout_align; /* 密封后：对齐 = elem_type->align */
 } array_type_t;
 
 /**
  * push_array（对应字节码 push_array）：
- *   分配空 array_type 加入 vm->array_types 池（vm 拥有生命周期），把其 type
- *   value（type_as_value）压入 vm->stack，返回该 type（const type_t*）。
+ *   分配空 array_type，把其 type value（type_as_value）压入 vm->stack，返回该
+ *   type（const type_t*）。注意：此时尚未入池，仅密封（array_type_seal，vtable
+ *   type_seal）后才加入 vm->array_types 池（去重 intern）。
  * 返回的 type 处「未成形、未密封」状态，需经 set_elem / set_count / seal 收尾。
  * 外部永远只持有 type_t*，不感知 array_type_t 子类。
  */
@@ -93,10 +94,9 @@ static inline size_t array_type_len(const type_t *t) {
     return (t && t->kind == TYPE_KIND_ARRAY) ? ((const array_type_t *)t)->length : 0;
 }
 
-/** 数组类型是否已密封（非数组类型返回 false） */
+/** 数组类型是否已密封（非数组类型返回 false；sealed 定义在基类 type_t） */
 static inline bool array_type_is_sealed(const type_t *t) {
-    return (t && t->kind == TYPE_KIND_ARRAY) ? ((const array_type_t *)t)->sealed
-                                             : false;
+    return type_is_sealed(t) && t->kind == TYPE_KIND_ARRAY;
 }
 
 /** 取数组类型的编译期内存布局总字节数（未密封/非数组返回 0） */

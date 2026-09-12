@@ -318,11 +318,11 @@ struct value_t {
 
 ### 3. 复合类型/值构造统一多步协议（非一次构造）
 
-所有复合类型构造与值构造（初始化）都是**多步字节码协议**，不是一次完成。统一模式：`push_xxx`（压构造器，**无参数，一律注册全局 type 表**）→ 成分逐步定义（成分本身是表达式，`load` 可以是任意构造表达式的结果，嵌套天然支持）→ `seal`（冻结 + 布局计算）。
+所有复合类型构造与值构造（初始化）都是**多步字节码协议**，不是一次完成。统一模式：`push_xxx`（压构造器，**开放类型暂不入池**，仅压 type value 到栈）→ 成分逐步定义（成分本身是表达式，`load` 可以是任意构造表达式的结果，嵌套天然支持）→ `seal`（经 `value_seal` 去重 intern 入池 + 冻结 + 布局计算）。
 
 **struct 类型** `struct Test { a:i32; b:i32; };`
 ```asm
-push_struct          ; 压入 struct 构造器，注册全局 type 表
+push_struct          ; 压入 struct 构造器（开放类型，暂不入池）
 load "i32"           ; 字段类型表达式入栈
 define_field "a"     ; 消费栈顶类型值，追加字段 a
 load "i32"
@@ -333,7 +333,7 @@ push_undefined; define "Test"   ; define 永远双弹 [value, type-spec]；undef
 
 **数组类型** `[3]i32`
 ```asm
-push_array           ; 压入 array 构造器，注册全局 type 表
+push_array           ; 压入 array 类型构造器（开放类型，暂不入池，仅压 type value 到栈）
 load "i32"           ; 元素类型表达式入栈
 define_bound 3       ; 一次性确定数组类型：消费栈顶元素类型 + 边界立即数 3（编译期常量）
 seal                 ; 冻结 + 布局（size = bound * elem_size）
@@ -343,7 +343,7 @@ seal                 ; 冻结 + 布局（size = bound * elem_size）
 
 **元组类型** `<i32, i32>`
 ```asm
-push_tuple           ; 压入 tuple 构造器，注册全局 type 表
+push_tuple           ; 压入 tuple 构造器（开放类型，暂不入池）
 load "i32"
 append_elem          ; 追加元组成员（位置 0）——只消费栈顶类型值，长度按追加次数增长
 load "i32"
@@ -407,13 +407,13 @@ construct 2          ; 弹出 2 个值 + 类型位，完成元组值构造
 
 数组值构造 `.[1]i32{ 0 }`：
 ```asm
-push_array; load "i32"; define_bound 1; seal  ; 内联构造数组类型 [1]i32（类型值留栈顶）
+push_array; load "i32"; define_bound 1; seal  ; 内联构造数组类型 [1]i32（SEAL 去重 intern 入池，类型值留栈顶）
 push 0
 construct 1          ; 弹出 1 个元素值 + 类型位，完成数组值构造
 ```
 
 **统一规则**：
-- `push_struct`/`push_array`/`push_tuple`：压**类型**构造器，**无参数，一律注册全局 type 表**（构造期间即被登记，类型引用可解析）
+- `push_struct`/`push_array`/`push_tuple`：压**类型**构造器（开放类型，**暂不入池**，仅压 type value 到栈）；`SEAL` 时才按结构去重 intern 入对应池并标记 `sealed` 锁定，构造期间类型以栈顶 type value 形式被引用/解析
 - **三条成分定义指令，按类型结构各自唯一**（互不重叠，均消费栈顶类型值）：
 
   | 指令 | 适用类型 | 参数 | 语义 | 可重复 |
@@ -450,7 +450,7 @@ load "Point"; push 1; push 0; construct 2   ; y 缺失 → 补 i32 0 值
 
 ### 7. 复合类型
 
-`struct_type_t`/`array_type_t`/`tuple_type_t`/`enum_type_t` 全跟 `func_type_t` C 继承，各列 interning 池 + 独立 vtable。`func_type_t` 额外带 `sealed` 标志：构造期（`PUSH_FUNC_TYPE` + `FUNC_TYPE_PARAM/RETURN/VARARG`）可分步 set，`FUNC_TYPE_SEAL` 后才锁定并去重 intern；构造 API 与访问器集中于 `include/vm/type_func.h`（对标 `type_array.h`）。
+`struct_type_t`/`array_type_t`/`tuple_type_t`/`enum_type_t` 全跟 `func_type_t` C 继承，各列 interning 池 + 独立 vtable。`sealed` 已上移至基类 `type_t`（所有类型统一经 `type_is_sealed` 访问），不再由 `func_type_t` 私有持有；构造期（`PUSH_FUNC_TYPE` + `FUNC_TYPE_PARAM/RETURN/VARARG`）可分步 set，`FUNC_TYPE_SEAL` 时才按签名去重 intern 入 `vm->sig_types` 池并标记 `sealed` 锁定。SEAL 经统一 `value_seal(vm, src)` 代理到 `src->data->vtable->type_seal` 回调：seal 中先查重，若已有完全一致的实现则手工回收当前开放类型（`allocator_free`）并改写操作数栈中对它的引用为缓存类型，避免悬空；内置基础类型（i32 等）创建时即 `sealed=true`（无开放构造期、`type_seal` 为 NULL）。构造 API 与访问器集中于 `include/vm/type_func.h`（对标 `type_array.h`）。
 
 - `VTABLE_STRUCT.implicit_cast`：鸭子类型检查（成员名/类型/顺序一致）
 - `VTABLE_ARRAY.implicit_cast`：Array↔Tuple，同元素数+类型
@@ -600,9 +600,9 @@ var arr:[N]i32 = .{};                // N 是 comptime var（全局/局部），
 **新字节码**
 
 类型构造（多步协议，见「关键架构决策 3」）：
-- `BCODE_PUSH_STRUCT` / `BCODE_PUSH_ARRAY` / `BCODE_PUSH_TUPLE`（压类型构造器，注册全局 type 表）
+- `BCODE_PUSH_STRUCT` / `BCODE_PUSH_ARRAY` / `BCODE_PUSH_TUPLE`（压类型构造器，开放类型**暂不入池**，仅压 type value 到栈）
 - `BCODE_DEFINE_FIELD`（struct：追加具名字段） / `BCODE_APPEND_ELEM`（tuple：追加匿名成员） / `BCODE_DEFINE_BOUND`（array：一次性设定元素类型 + 边界）
-- `BCODE_SEAL`（冻结类型 + C 布局计算）
+- `BCODE_SEAL`（经统一 `value_seal` 代理到各类型 `type_seal`：去重 intern 入对应池、标记 `sealed` 锁定 + 布局计算）
 - `BCODE_CONSTRUCT`（值构造：弹 N 个字段/元素值 + 类型位 → 按布局分配写值）
 
 访问与运算：

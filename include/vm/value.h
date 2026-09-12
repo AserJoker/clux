@@ -161,6 +161,15 @@ value_t *value_assign(vm_t *vm, value_t *dst, value_t *src);
 
 /* ---- 类型运算（鸭子类型，type value 的 == / extends） ---- */
 
+/**
+ * 密封一个 type value：代理到 value->data 指向的 type_t 的 vtable->type_seal。
+ * 仅对 type value（value_type == vm->type_type）有意义；非 type value 原样返回。
+ * 若 type_seal 因去重复用已有缓存类型，则把当前 value 的 data（指向被回收的旧
+ * type）重定向到缓存 type，并扫描操作数栈把所有引用旧 type 的 type value 一并
+ * 重定向，避免悬空指针。返回密封后的 type value（即入参 src，data 可能已更新）。
+ */
+const value_t *value_seal(vm_t *vm, value_t *src);
+
 /** type value 的 == 代理：比较两个类型值是否鸭子类型相等（type_equal） */
 value_t *value_type_eq(vm_t *vm, value_t *a, value_t *b);
 

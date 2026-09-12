@@ -281,11 +281,13 @@ static value_t *op_func_type_vararg(vm_t *vm, bytecode_t *bc, size_t *pc) {
     return NULL;
 }
 
-/* FUNC_TYPE_SEAL：密封当前 func type（去重 intern，标记 sealed） */
+/* FUNC_TYPE_SEAL：密封当前 func type（去重 intern，标记 sealed）。
+ * 经 value_seal 代理到 type->vtable->type_seal（统一 SEAL 路径；去重复用时由
+ * value_seal 重定向操作数栈中所有引用旧 type 的 type value）。 */
 static value_t *op_func_type_seal(vm_t *vm, bytecode_t *bc, size_t *pc) {
     (void)bc; (void)pc;
-    const type_t *ft = stack_top_func_type(vm);
-    func_type_seal(vm, ft);  /* 内部在去重复用时已重定向栈中 type value */
+    value_t *ftv = exec_stack_peek(vm, 0);
+    value_seal(vm, ftv);
     return NULL;
 }
 
