@@ -63,7 +63,6 @@ struct Point { x: i32; y: i32; };
 
 - 字段用分号 `;` 分隔
 - **鸭子类型协议**：成员名、类型、顺序相同 = 兼容；类型兼容指事实相等（布局大小、字段完全相等、kind 一致）
-- **空 struct `struct {}` 与所有结构体/数组/元组兼容**（万能兼容）
 - 编译期检查布局兼容，运行时字段拷贝
 
 ### 3. enum（严格与底层类型分离）
@@ -118,7 +117,7 @@ var arr = .[3]i32{ 1, 2, 3 };
 var mat: [2][3]i32 = ...;   // 多维 = [2]([3]i32)
 ```
 
-- 边界 N 是**编译期常量立即值**（M2 不支持泛型/编译期计算，`[2+3]i32` 暂不支持）
+- 边界 N 是**编译期常量表达式**，经 CTFE 求值为 u64 立即值（见 §8/§9）：`[2+3]i32`、`[sizeof(a)]i32`、`[N]i32`（`N` 为 comptime var）均合法
 - 多维天然支持：`[2][3]i32` 等价于 `[2]([3]i32)`，后者语法完全正确
 - **元组 ↔ 数组匿名互转**：布局兼容时（如 `<i32,i32>` ↔ `[2]i32`）
 
@@ -331,19 +330,23 @@ push_undefined; define "Test"   ; define 永远双弹 [value, type-spec]；undef
 ```asm
 push_array           ; 压入 array 构造器，注册全局 type 表
 load "i32"           ; 元素类型表达式入栈
-define_elem 3        ; 消费栈顶类型值设元素类型，带立即数边界 3（编译期常量）
+define_bound 3       ; 一次性确定数组类型：消费栈顶元素类型 + 边界立即数 3（编译期常量）
 seal                 ; 冻结 + 布局（size = bound * elem_size）
 ```
+
+- **数组类型恰好由「元素类型 + 边界」两项构成**，故 `define_bound N` 是一条**定长成形**指令：消费栈顶元素类型值并带上边界立即数 N，数组类型即已完整（无需再追加）。在 `seal` 前重复 `define_bound` 是错误（数组只有一个元素类型槽位）
 
 **元组类型** `<i32, i32>`
 ```asm
 push_tuple           ; 压入 tuple 构造器，注册全局 type 表
 load "i32"
-define_elem          ; 追加匿名字段（位置 0）
+append_elem          ; 追加元组成员（位置 0）——只消费栈顶类型值，长度按追加次数增长
 load "i32"
-define_elem          ; 追加匿名字段（位置 1）
+append_elem          ; 追加元组成员（位置 1）
 seal                 ; 冻结 + C 布局（与 struct 同布局规则）
 ```
+
+- **元组类型是「n 个成员类型的有序序列」**，长度不预先给定，故用 `append_elem` **逐项追加**（追加次数即长度）。元组成员匿名，无字段名
 
 **type 别名变体**（struct 为例，数组/元组同理）——**与 struct 定义完全等价**：
 ```asm
@@ -388,9 +391,9 @@ construct 2          ; 弹出 2 个字段值 + 类型位，分配数据块写值
 ```asm
 push_tuple           ; 在栈上构造匿名 tuple 类型
 load "i32"
-define_elem
+append_elem
 load "i32"
-define_elem
+append_elem
 seal                 ; 匿名 tuple 类型值留栈顶
 push 0
 push 1
@@ -399,16 +402,24 @@ construct 2          ; 弹出 2 个值 + 类型位，完成元组值构造
 
 数组值构造 `.[1]i32{ 0 }`：
 ```asm
-push_array; load "i32"; define_elem 1; seal  ; 内联构造数组类型 [1]i32（类型值留栈顶）
+push_array; load "i32"; define_bound 1; seal  ; 内联构造数组类型 [1]i32（类型值留栈顶）
 push 0
 construct 1          ; 弹出 1 个元素值 + 类型位，完成数组值构造
 ```
 
 **统一规则**：
 - `push_struct`/`push_array`/`push_tuple`：压**类型**构造器，**无参数，一律注册全局 type 表**（构造期间即被登记，类型引用可解析）
-- `define_field name` / `define_elem [bound]`：消费栈顶类型值追加成分
+- **三条成分定义指令，按类型结构各自唯一**（互不重叠，均消费栈顶类型值）：
+
+  | 指令 | 适用类型 | 参数 | 语义 | 可重复 |
+  |------|----------|------|------|--------|
+  | `define_field name` | struct | 字段名（strtable） | 追加一个**具名**成员 | 是（成员数 = 字段数） |
+  | `append_elem` | tuple | 无 | 追加一个**匿名**成员 | 是（长度 = 追加次数） |
+  | `define_bound N` | array | 边界立即数（u32，编译期常量） | **一次性**设定元素类型 + 边界，数组类型即完整 | **否**（数组只有一个元素类型槽位） |
+
+  之所以拆成三条而非统一 `define_elem`：数组类型是**定长成形**（元素类型 + 边界两项即完整），元组/结构体是**逐项增长**（长度 = 追加次数）；且 struct 成员具名、数组/元组成员匿名。三者语义不同，共用一条指令会造成同名不同参的歧义（数组带边界立即数、元组不带）
 - **`seal` 只用于类型构造完成**：冻结 + 布局计算（C 对齐规则）
-- **`construct N` 用于值构造完成**（新指令，非 seal）：N = 字段数量立即数，弹出 N 个字段值 + 类型位，分配数据块按布局写值，校验字段数
+- **`construct N` 用于值构造完成**（新指令，非 seal）：N = 成员数量立即数（struct = 字段数 / tuple = 元素数 / array = 元素个数，须等于类型边界），弹出 N 个成员值 + 类型位，分配数据块按布局写值，校验成员数
 - **值构造类型位统一**：类型位永远是栈顶一个类型值——命名类型 = `load "Test"`，匿名类型 = 先 `push_xxx...seal` 在栈上构造类型值留栈顶（等价于具名 `load`）；随后字段值按类型字段序压栈 → `construct N`。**类型生成发生在类型构造阶段（push_xxx...seal），construct 不负责生成类型**
 - **字段名纯编译期**：具名字段 `.field = v` 的字段名只在编译期用于重排值压栈顺序 + 字段存在性/缺失校验，**不产生运行时指令**（运行时按类型字段序写值，无 store_field）
 - **缺失字段递归补全 0 值**（compiler 职责）：用户只提供部分字段时（`.{ .x = 1 }` 缺 y），编译器按类型字段序对**缺失字段递归生成该字段类型的 0 值构造字节码**，保证 `construct N` 的 N 个字段值齐全——基本类型压 0 立即数；复合类型（struct/array/tuple）递归构造零值对象（复用类型位 + 各子字段 0 值 + construct）。示例 `var p = .Point{ .x = 1 }`：
@@ -436,7 +447,7 @@ load "Point"; push 1; push 0; construct 2   ; y 缺失 → 补 i32 0 值
 
 `struct_type_t`/`array_type_t`/`tuple_type_t`/`enum_type_t` 全跟 `func_type_t` C 继承，各列 interning 池 + 独立 vtable。
 
-- `VTABLE_STRUCT.implicit_cast`：鸭子类型检查，空 struct 万能兼容
+- `VTABLE_STRUCT.implicit_cast`：鸭子类型检查（成员名/类型/顺序一致）
 - `VTABLE_ARRAY.implicit_cast`：Array↔Tuple，同元素数+类型
 - `VTABLE_TUPLE.implicit_cast`：Tuple↔Array
 - `VTABLE_ENUM.implicit_cast`：仅同枚举（严格分离）；`explicit_cast`：仅到声明底层类型
@@ -444,7 +455,7 @@ load "Point"; push 1; push 0; construct 2   ; y 缺失 → 补 i32 0 值
 
 ### 8. 鸭子类型协议
 
-成员/类型/顺序相同 = 兼容；空 struct 万能兼容；编译期检查，运行时字段拷贝。
+成员/类型/顺序相同 = 兼容；编译期检查，运行时字段拷贝。
 
 ### 8. 编译期计算（CTFE）：直接运行 AST 的常量求值器
 
@@ -582,7 +593,14 @@ var arr:[N]i32 = .{};                // N 是 comptime var（全局/局部），
 ### Phase 4: 构造 + 访问
 
 **新字节码**
-- `BCODE_MAKE_STRUCT`/`BCODE_MAKE_ARRAY`/`BCODE_MAKE_TUPLE`
+
+类型构造（多步协议，见「关键架构决策 3」）：
+- `BCODE_PUSH_STRUCT` / `BCODE_PUSH_ARRAY` / `BCODE_PUSH_TUPLE`（压类型构造器，注册全局 type 表）
+- `BCODE_DEFINE_FIELD`（struct：追加具名字段） / `BCODE_APPEND_ELEM`（tuple：追加匿名成员） / `BCODE_DEFINE_BOUND`（array：一次性设定元素类型 + 边界）
+- `BCODE_SEAL`（冻结类型 + C 布局计算）
+- `BCODE_CONSTRUCT`（值构造：弹 N 个字段/元素值 + 类型位 → 按布局分配写值）
+
+访问与运算：
 - `BCODE_GET_FIELD`/`BCODE_SET_FIELD`（借用数据：is_own=false, data=parent.data+offset）
 - `BCODE_INDEX_GET`/`BCODE_INDEX_SET`
 - `BCODE_GET_ENUM_VARIANT`
