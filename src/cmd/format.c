@@ -161,8 +161,8 @@ int cmd_format(const cmd_args_t *args) {
         /* 诊断已打印 */
         rc = 1;
     } else if (from_stdin) {
+        /* 原样写出：fmt_format 已保证结果以换行结尾，不再追加 */
         fwrite(formatted, 1, out_len, stdout);
-        if (out_len > 0) fputc('\n', stdout);
     } else {
         /* 输出目标：-o/--output 指定，否则位置参数，否则原地写回 */
         const char *out_path = opt_out;
