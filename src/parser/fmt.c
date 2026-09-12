@@ -84,19 +84,6 @@ static bool is_word_like(token_kind_t k) {
            k == TOKEN_TYPE_CHARACTER;
 }
 
-/* 前一个 token 后是否禁用空格 */
-static bool no_space_after(const token_t *t) {
-    return sym_is(t, '(') || sym_is(t, '[') || sym_is(t, '.') ||
-           sym_is(t, ':');
-}
-
-/* 当前 token 前是否禁用空格 */
-static bool no_space_before(const token_t *t) {
-    return sym_is(t, ')') || sym_is(t, ']') || sym_is(t, ',') ||
-           sym_is(t, ';') || sym_is(t, '.') || sym_is(t, '(') ||
-           sym_is(t, ':');
-}
-
 /* 运算符（两侧留空格） */
 static bool is_operator(const token_t *t) {
     if (token_get_kind(t) != TOKEN_TYPE_SYMBOL) return false;
@@ -112,6 +99,71 @@ static bool is_operator(const token_t *t) {
         if (token_is(t, ops[i])) return true;
     }
     return false;
+}
+
+/* 前一个 token 后是否禁用空格（`(`/`[` 后紧跟内容，`.` 后紧贴成员） */
+static bool no_space_after(const token_t *t) {
+    return sym_is(t, '(') || sym_is(t, '[') || sym_is(t, '.');
+}
+
+/* 当前 token 前是否禁用空格（闭合符 / 分隔符 / 类型标注冒号） */
+static bool no_space_before(const token_t *t) {
+    return sym_is(t, ')') || sym_is(t, ']') || sym_is(t, ',') ||
+           sym_is(t, ';') || sym_is(t, '.') || sym_is(t, ':');
+}
+
+/* 控制流关键字：其后紧跟 `(` 的须以空格分隔，写作 `if (cond)` /
+ * `while (cond)` / `for (...)` / `foreach (x of ...)` / `switch (...)`.
+ * 注意 `func f(` 这类函数名调用不属此列。
+ *
+ * 注意：clux 的软关键字（foreach / switch / of 等）在词法器中并未登记进
+ * g_keywords，而是以标识符（IDENTIFIER）身份产出，到 parser 阶段才按上下文
+ * 识别为关键字。因此这里直接按文本内容判定，而非依赖 kind == KEYWORD，
+ * 否则 foreach(x of b) 会被判为非控制流关键字而漏掉应有的空格。 */
+static bool is_control_keyword(const token_t *t) {
+    if (!t) return false;
+    return token_is(t, "if") || token_is(t, "while") ||
+           token_is(t, "for") || token_is(t, "foreach") ||
+           token_is(t, "switch");
+}
+
+/* `(` 之前是否需要空格：仅当它是控制流关键字调用括号（`if (`）时为真；
+ * 函数调用/泛型实例化的 `name(` 紧贴（`main(`, `foo(`）。 */
+static bool need_space_before_paren(const token_t *prev,
+                                    const token_t *cur) {
+    if (!sym_is(cur, '(')) return false;
+    if (!prev) return false;
+    return is_control_keyword(prev);
+}
+
+/* 两个 token 在源码中是否紧贴（无任何字符间隔）。
+ *
+ * 注意：lexer 不把数值的类型后缀并入 NUMERIC，而是切成两个 token
+ * （`7i8` → NUMERIC("7") + IDENTIFIER("i8")，后缀由 parser 消费）。这类
+ * 组合在语法上必须紧贴，格式化时若插入空格会直接改变语义（`7 i8`）。
+ * 用字节偏移判断相邻性，从而只对"源码本就紧贴"的后缀生效。 */
+static bool tok_adjacent(const token_t *a, const token_t *b) {
+    if (!a || !b) return false;
+    const location_t *la = token_get_location(a);
+    const location_t *lb = token_get_location(b);
+    if (!la || !lb) return false;
+    return la->end.offset == lb->begin.offset;
+}
+
+/* 当前 token 是否为前一 NUMERIC 的**紧贴类型后缀**（`7i8` / `2.5f32`）。
+ * 后缀是标识符且与数字在源码中相邻（区别于 `7 i8` 这种本就分开的写法）。 */
+/* 当前 token 是否为前一 NUMERIC 的**紧贴类型后缀**（`7i8` / `2.5f32`）。
+ * 词法器把数值与类型后缀切成两个 token（`7` + `i8`，后缀由 parser 消费）。
+ * 后缀是类型名，在词法器中以关键字形式出现（kind = KEYWORD），也可能落为
+ * 普通标识符，二者都算"紧贴后缀"。若在此处插入空格会直接改变语义
+ * （`7 i8` 不再是字面量）。用字节偏移判断相邻性，只对"源码本就紧贴"的
+ * 后缀生效（区别于 `7 i8` 这种本就分开的写法）。 */
+static bool is_numeric_suffix(const token_t *prev, const token_t *cur) {
+    if (!prev || !cur) return false;
+    if (token_get_kind(prev) != TOKEN_TYPE_NUMERIC) return false;
+    token_kind_t ck = token_get_kind(cur);
+    if (ck != TOKEN_TYPE_IDENTIFIER && ck != TOKEN_TYPE_KEYWORD) return false;
+    return tok_adjacent(prev, cur);
 }
 
 /* 该实义 token 之前是否有换行（来自其前导空白） */
@@ -311,7 +363,13 @@ char *fmt_format(allocator_t *alloc, const vec_t *tokens, size_t *out_len) {
         } else {
             bool need = false;
             if (prev) {
-                if (!no_space_before(tok) && !no_space_after(prev)) {
+                if (is_numeric_suffix(prev, tok)) {
+                    need = false;   /* 数字类型后缀紧贴：7i8 / 2.5f32 */
+                } else if (sym_is(tok, '(')) {
+                    /* `(` 前：控制流关键字要空格（`if (`），
+                     * 函数调用/泛型实例化紧贴（`main(`, `foo(`） */
+                    need = need_space_before_paren(prev, tok);
+                } else if (!no_space_before(tok) && !no_space_after(prev)) {
                     need = true;   /* 运算符/字面量/标识符等均以单空格分隔 */
                 }
             }

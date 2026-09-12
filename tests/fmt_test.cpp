@@ -52,7 +52,7 @@ std::string fmt(const char *src) {
 TEST(Fmt, BasicBracesAndIndent) {
     std::string out = fmt("func main():i32{\nreturn 0;\n}\n");
     EXPECT_EQ(out,
-              "func main():i32 {\n"
+              "func main(): i32 {\n"
               "    return 0;\n"
               "}\n");
 }
@@ -60,16 +60,16 @@ TEST(Fmt, BasicBracesAndIndent) {
 /* 空块紧凑：`{}` 写在同一行。 */
 TEST(Fmt, EmptyBlockIsCompact) {
     std::string out = fmt("func f():void{}\n");
-    EXPECT_EQ(out, "func f():void {}\n");
+    EXPECT_EQ(out, "func f(): void {}\n");
 }
 
 /* 分号后必须换行（非括号内）。 */
 TEST(Fmt, SemicolonForcesNewline) {
     std::string out = fmt("func main():void{var a:i32=1;var b:i32=2;}\n");
     EXPECT_EQ(out,
-              "func main():void {\n"
-              "    var a:i32 = 1;\n"
-              "    var b:i32 = 2;\n"
+              "func main(): void {\n"
+              "    var a: i32 = 1;\n"
+              "    var b: i32 = 2;\n"
               "}\n");
 }
 
@@ -77,8 +77,8 @@ TEST(Fmt, SemicolonForcesNewline) {
 TEST(Fmt, SemicolonInsideParensStaysInline) {
     std::string out = fmt("func main():void{for(var i:i32=0;i<5;i=i+1){}}\n");
     EXPECT_EQ(out,
-              "func main():void {\n"
-              "    for(var i:i32 = 0; i < 5; i = i + 1) {}\n"
+              "func main(): void {\n"
+              "    for (var i: i32 = 0; i < 5; i = i + 1) {}\n"
               "}\n");
 }
 
@@ -93,8 +93,8 @@ TEST(Fmt, ElseFollowsCloseBrace) {
         "}\n"
         "}\n");
     EXPECT_EQ(out,
-              "func f():void {\n"
-              "    if(1 > 0) {\n"
+              "func f(): void {\n"
+              "    if (1 > 0) {\n"
               "        return;\n"
               "    } else {\n"
               "        return;\n"
@@ -106,8 +106,8 @@ TEST(Fmt, ElseFollowsCloseBrace) {
 TEST(Fmt, EmptyBlocksWithElseStayCompact) {
     std::string out = fmt("func f():void{if(1>0){}else{}}\n");
     EXPECT_EQ(out,
-              "func f():void {\n"
-              "    if(1 > 0) {} else {}\n"
+              "func f(): void {\n"
+              "    if (1 > 0) {} else {}\n"
               "}\n");
 }
 
@@ -115,7 +115,7 @@ TEST(Fmt, EmptyBlocksWithElseStayCompact) {
 TEST(Fmt, TabBecomesFourSpaces) {
     std::string out = fmt("func f():void{\n\treturn;\n}\n");
     EXPECT_EQ(out,
-              "func f():void {\n"
+              "func f(): void {\n"
               "    return;\n"
               "}\n");
 }
@@ -125,8 +125,8 @@ TEST(Fmt, CommentsPreserved) {
     std::string out = fmt("// lead\nfunc f():void{\nvar a:i32=1; // inline\n}\n");
     EXPECT_EQ(out,
               "// lead\n"
-              "func f():void {\n"
-              "    var a:i32 = 1; // inline\n"
+              "func f(): void {\n"
+              "    var a: i32 = 1; // inline\n"
               "}\n");
 }
 
@@ -134,10 +134,10 @@ TEST(Fmt, CommentsPreserved) {
 TEST(Fmt, BlankLinePreserved) {
     std::string out = fmt("func f():void{\nvar a:i32=1;\n\nvar b:i32=2;\n}\n");
     EXPECT_EQ(out,
-              "func f():void {\n"
-              "    var a:i32 = 1;\n"
+              "func f(): void {\n"
+              "    var a: i32 = 1;\n"
               "\n"
-              "    var b:i32 = 2;\n"
+              "    var b: i32 = 2;\n"
               "}\n");
 }
 
@@ -169,13 +169,59 @@ TEST(Fmt, NestedIndent) {
         "}\n"
         "}\n");
     EXPECT_EQ(out,
-              "func f():void {\n"
-              "    while(1 > 0) {\n"
-              "        if(2 > 0) {\n"
+              "func f(): void {\n"
+              "    while (1 > 0) {\n"
+              "        if (2 > 0) {\n"
               "            return;\n"
               "        }\n"
               "    }\n"
               "}\n");
+}
+
+/* 控制流关键字与 `(` 之间须有空格；函数调用 `name(` 紧贴。 */
+TEST(Fmt, ControlKeywordSpaceBeforeParen) {
+    std::string out = fmt(
+        "func f():void{\n"
+        "if(1>0){}\n"
+        "while(1>0){}\n"
+        "for(var i:i32=0;i<1;i=i+1){}\n"
+        "}\n");
+    EXPECT_EQ(out,
+              "func f(): void {\n"
+              "    if (1 > 0) {}\n"
+              "    while (1 > 0) {}\n"
+              "    for (var i: i32 = 0; i < 1; i = i + 1) {}\n"
+              "}\n");
+
+    /* 函数调用：名与 `(` 紧贴，参数列表内外无多余空格 */
+    std::string call = fmt("func main():void{printf(\"hi\\n\");}\n");
+    EXPECT_EQ(call,
+              "func main(): void {\n"
+              "    printf(\"hi\\n\");\n"
+              "}\n");
+}
+
+/* 数字类型后缀须与数值紧贴：`7i8` / `2.5f32` 不得被切成 `7 i8`，
+ * 否则会改变语义（后缀本由词法器切为独立 token，但语法上必须紧邻）。 */
+TEST(Fmt, NumericTypeSuffixStaysGlued) {
+    std::string out = fmt(
+        "func main():void{\n"
+        "var a:i8=7i8;\n"
+        "var b:f32=2.5f32;\n"
+        "var c:u32=255u32;\n"
+        "var d:f64=1.0f64;\n"
+        "}\n");
+    EXPECT_EQ(out,
+              "func main(): void {\n"
+              "    var a: i8 = 7i8;\n"
+              "    var b: f32 = 2.5f32;\n"
+              "    var c: u32 = 255u32;\n"
+              "    var d: f64 = 1.0f64;\n"
+              "}\n");
+
+    /* 幂等性：再次格式化不变 */
+    std::string twice = fmt(out.c_str());
+    EXPECT_EQ(out, twice);
 }
 
 /* 输出总以换行结束（非空输入）。 */
